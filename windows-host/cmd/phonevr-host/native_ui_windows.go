@@ -373,7 +373,7 @@ func runNativeDesktopApp(service *HostService, config HostConfig) error {
 	}
 	title, _ := syscall.UTF16PtrFromString("PhoneVR Host " + appVersion)
 	class, _ := syscall.UTF16PtrFromString("PhoneVRNativeMain")
-	style := uintptr(wsOverlapped | wsCaption | wsSysMenu | wsMinimizeBox | wsMaximizeBox | wsThickFrame | wsVisible | wsClipChildren)
+	style := uintptr(wsOverlapped | wsCaption | wsSysMenu | wsMinimizeBox | wsThickFrame | wsVisible | wsClipChildren)
 	hwnd, _, callErr := pCreateWindowEx.Call(0x00040000, uintptr(unsafe.Pointer(class)), uintptr(unsafe.Pointer(title)), style,
 		0x80000000, 0x80000000, 1024, 853, 0, 0, instance, 0)
 	if hwnd == 0 {
@@ -497,7 +497,7 @@ func nativeMainWndProc(hwnd uintptr, message uint32, wParam, lParam uintptr) uin
 	switch message {
 	case wmCreate:
 		app.createMainControls(hwnd)
-		pSetTimer.Call(hwnd, 1, 50, 0)
+		pSetTimer.Call(hwnd, 1, 33, 0)
 		return 0
 	case wmSize:
 		app.layoutMain(hwnd)
@@ -528,7 +528,8 @@ func nativeMainWndProc(hwnd uintptr, message uint32, wParam, lParam uintptr) uin
 		if app.glHWnd != 0 {
 			pInvalidateRect.Call(app.glHWnd, 0, 0)
 		}
-		pInvalidateRect.Call(hwnd, 0, 0)
+		// The static dashboard is redrawn only when status data changes (500 ms),
+		// never on every pose tick. This avoids continuous GDI erase/repaint flicker.
 		return 0
 	case wmCommand:
 		app.handleMainCommand(int(wParam & 0xffff))
@@ -640,6 +641,11 @@ func (app *nativeUI) layoutMain(hwnd uintptr) {
 		return
 	}
 	viewport := ComputeNativePoseViewport(w, h)
+	if app.menuOpen {
+		// Reserve a right-side rail for the menu so the OpenGL child cannot cover it.
+		viewport = ComputeNativePoseViewport(w-240, h)
+		viewport.Left += 0
+	}
 	pMoveWindow.Call(app.glHWnd, uintptr(viewport.Left), uintptr(viewport.Top), uintptr(viewport.Width), uintptr(viewport.Height), 1)
 	pInvalidateRect.Call(hwnd, 0, 0)
 }

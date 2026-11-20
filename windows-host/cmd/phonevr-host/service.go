@@ -49,6 +49,7 @@ type DeviceSnapshot struct {
 	ConnectedAt     string                `json:"connectedAt"`
 	DisplaySettings *PhoneDisplaySettings `json:"displaySettings,omitempty"`
 	BatteryLevel    *int                  `json:"batteryLevel,omitempty"`
+	Charging        bool                  `json:"charging,omitempty"`
 }
 
 type PoseSnapshot struct {
@@ -118,6 +119,7 @@ type controlMessage struct {
 	Status       string                `json:"status,omitempty"`
 	Message      string                `json:"message,omitempty"`
 	BatteryLevel *int                  `json:"batteryLevel,omitempty"`
+	Charging     bool                  `json:"charging,omitempty"`
 }
 
 type activeDevice struct {
@@ -499,6 +501,7 @@ func (s *HostService) handleControlConnection(ctx context.Context, conn net.Conn
 				s.mu.Lock()
 				if current, ok := s.devices[remote]; ok && current.Conn == conn {
 					current.Snapshot.BatteryLevel = &level
+					current.Snapshot.Charging = message.Charging
 					s.devices[remote] = current
 				}
 				s.mu.Unlock()

@@ -59,6 +59,15 @@ class NetworkClient(
     }
 
 
+
+    private fun isCharging(): Boolean {
+        return try {
+            val battery = appContext.registerReceiver(null, android.content.IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+            val status = battery?.getIntExtra(BatteryManager.EXTRA_STATUS, -1) ?: -1
+            status == BatteryManager.BATTERY_STATUS_CHARGING || status == BatteryManager.BATTERY_STATUS_FULL
+        } catch (_: Exception) { false }
+    }
+
     private fun batteryLevel(): Int? {
         return try {
             val manager = appContext.getSystemService(Context.BATTERY_SERVICE) as? BatteryManager
@@ -280,7 +289,7 @@ class NetworkClient(
         while (isSessionActive(generation) && !tcp.isClosed) {
             val nowNs = System.nanoTime()
             if (nowNs - lastHeartbeatNs >= HEARTBEAT_INTERVAL_NS) {
-                writeControlMessage(writer, JSONObject().put("type", "ping").put("sentAtNs", nowNs).put("batteryLevel", batteryLevel()))
+                writeControlMessage(writer, JSONObject().put("type", "ping").put("sentAtNs", nowNs).put("batteryLevel", batteryLevel()).put("charging", isCharging()))
                 lastHeartbeatNs = nowNs
             }
             if (nowNs - lastPongNs > HEARTBEAT_TIMEOUT_NS) {

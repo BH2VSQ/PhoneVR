@@ -183,7 +183,11 @@ func (app *nativeUI) paintMain(hdc uintptr) {
 	}
 	fillNativeRect(hdc, nativeRect{0, 0, int32(w), int32(h)}, rgb(9, 17, 27))
 	// Top status bar mirrors the original browser UI proportions and palette.
-	drawNativePill(hdc, 12, 8, 112, 34, app.text("运行中", "RUNNING"), app.snapshot.Running, !app.snapshot.Running, app.fontBody)
+	runLabel := app.text("运行中", "RUNNING")
+	if !app.snapshot.Running {
+		runLabel = app.text("已停止", "STOPPED")
+	}
+	drawNativePill(hdc, 12, 8, 112, 34, runLabel, app.snapshot.Running, !app.snapshot.Running, app.fontBody)
 	steamText := app.text("SteamVR 未连接", "SteamVR DISCONNECTED")
 	drawNativeSteamPill(hdc, (w-202)/2, 8, 202, 34, steamText, app.fontBody)
 	connected := len(app.snapshot.ConnectedDevices) > 0
@@ -197,6 +201,9 @@ func (app *nativeUI) paintMain(hdc uintptr) {
 	if connected && app.snapshot.ConnectedDevices[0].BatteryLevel != nil {
 		level := *app.snapshot.ConnectedDevices[0].BatteryLevel
 		batteryText = strconv.Itoa(level) + "%"
+		if app.snapshot.ConnectedDevices[0].Charging {
+			batteryText += " ⚡"
+		}
 		batteryActive = level > 15
 		batteryWarning = level <= 15
 	}
@@ -273,10 +280,12 @@ func (app *nativeUI) handleMainClick(x, y int) {
 			}
 			if target.ID == idMenu {
 				app.menuOpen = !app.menuOpen
+				app.layoutMain(app.mainHWnd)
 				pInvalidateRect.Call(app.mainHWnd, 0, 0)
 				return
 			}
 			app.menuOpen = false
+			app.layoutMain(app.mainHWnd)
 			app.handleMainCommand(target.ID)
 			pInvalidateRect.Call(app.mainHWnd, 0, 0)
 			return

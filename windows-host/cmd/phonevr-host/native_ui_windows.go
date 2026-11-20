@@ -20,70 +20,84 @@ var (
 	ntdll    = syscall.NewLazyDLL("ntdll.dll")
 	gl32     = syscall.NewLazyDLL("opengl32.dll")
 
-	pRegisterClassEx     = user32.NewProc("RegisterClassExW")
-	pCreateWindowEx      = user32.NewProc("CreateWindowExW")
-	pDefWindowProc       = user32.NewProc("DefWindowProcW")
-	pGetMessage          = user32.NewProc("GetMessageW")
-	pTranslateMessage    = user32.NewProc("TranslateMessage")
-	pDispatchMessage     = user32.NewProc("DispatchMessageW")
-	pPostQuitMessage     = user32.NewProc("PostQuitMessage")
-	pShowWindow          = user32.NewProc("ShowWindow")
-	pUpdateWindow        = user32.NewProc("UpdateWindow")
-	pDestroyWindow       = user32.NewProc("DestroyWindow")
-	pMoveWindow          = user32.NewProc("MoveWindow")
-	pSetWindowText       = user32.NewProc("SetWindowTextW")
-	pGetWindowText       = user32.NewProc("GetWindowTextW")
-	pGetWindowTextLength = user32.NewProc("GetWindowTextLengthW")
-	pSendMessage         = user32.NewProc("SendMessageW")
-	pSetTimer            = user32.NewProc("SetTimer")
-	pKillTimer           = user32.NewProc("KillTimer")
-	pInvalidateRect      = user32.NewProc("InvalidateRect")
-	pGetClientRect       = user32.NewProc("GetClientRect")
-	pBeginPaint          = user32.NewProc("BeginPaint")
-	pEndPaint            = user32.NewProc("EndPaint")
-	pFillRect            = user32.NewProc("FillRect")
-	pGetModuleHandle     = kernel32.NewProc("GetModuleHandleW")
-	pRtlMoveMemory       = ntdll.NewProc("RtlMoveMemory")
-	pLoadCursor          = user32.NewProc("LoadCursorW")
-	pCreateSolidBrush    = gdi32.NewProc("CreateSolidBrush")
-	pDeleteObject        = gdi32.NewProc("DeleteObject")
-	pSetTextColor        = gdi32.NewProc("SetTextColor")
-	pSetBkMode           = gdi32.NewProc("SetBkMode")
-	pDrawText            = user32.NewProc("DrawTextW")
-	pChoosePixelFormat   = gdi32.NewProc("ChoosePixelFormat")
-	pSetPixelFormat      = gdi32.NewProc("SetPixelFormat")
-	pSwapBuffers         = gdi32.NewProc("SwapBuffers")
-	pGetDC               = user32.NewProc("GetDC")
-	pReleaseDC           = user32.NewProc("ReleaseDC")
-	pWGLCreateContext    = gl32.NewProc("wglCreateContext")
-	pWGLMakeCurrent      = gl32.NewProc("wglMakeCurrent")
-	pWGLDeleteContext    = gl32.NewProc("wglDeleteContext")
-	pGLClearColor        = gl32.NewProc("glClearColor")
-	pGLClear             = gl32.NewProc("glClear")
-	pGLViewport          = gl32.NewProc("glViewport")
-	pGLMatrixMode        = gl32.NewProc("glMatrixMode")
-	pGLLoadIdentity      = gl32.NewProc("glLoadIdentity")
-	pGLFrustum           = gl32.NewProc("glFrustum")
-	pGLTranslatef        = gl32.NewProc("glTranslatef")
-	pGLRotatef           = gl32.NewProc("glRotatef")
-	pGLMultMatrixf       = gl32.NewProc("glMultMatrixf")
-	pGLEnable            = gl32.NewProc("glEnable")
-	pGLDisable           = gl32.NewProc("glDisable")
-	pGLCullFace          = gl32.NewProc("glCullFace")
-	pGLShadeModel        = gl32.NewProc("glShadeModel")
-	pGLColorMaterial     = gl32.NewProc("glColorMaterial")
-	pGLLightfv           = gl32.NewProc("glLightfv")
-	pGLBegin             = gl32.NewProc("glBegin")
-	pGLEnd               = gl32.NewProc("glEnd")
-	pGLColor3f           = gl32.NewProc("glColor3f")
-	pGLNormal3f          = gl32.NewProc("glNormal3f")
-	pGLVertex3f          = gl32.NewProc("glVertex3f")
-	pGLLineWidth         = gl32.NewProc("glLineWidth")
-	pGLGenLists          = gl32.NewProc("glGenLists")
-	pGLNewList           = gl32.NewProc("glNewList")
-	pGLEndList           = gl32.NewProc("glEndList")
-	pGLCallList          = gl32.NewProc("glCallList")
-	pGLClearDepth        = gl32.NewProc("glClearDepth")
+	pRegisterClassEx               = user32.NewProc("RegisterClassExW")
+	pCreateWindowEx                = user32.NewProc("CreateWindowExW")
+	pDefWindowProc                 = user32.NewProc("DefWindowProcW")
+	pGetMessage                    = user32.NewProc("GetMessageW")
+	pTranslateMessage              = user32.NewProc("TranslateMessage")
+	pDispatchMessage               = user32.NewProc("DispatchMessageW")
+	pPostQuitMessage               = user32.NewProc("PostQuitMessage")
+	pShowWindow                    = user32.NewProc("ShowWindow")
+	pUpdateWindow                  = user32.NewProc("UpdateWindow")
+	pDestroyWindow                 = user32.NewProc("DestroyWindow")
+	pMoveWindow                    = user32.NewProc("MoveWindow")
+	pSetWindowText                 = user32.NewProc("SetWindowTextW")
+	pGetWindowText                 = user32.NewProc("GetWindowTextW")
+	pGetWindowTextLength           = user32.NewProc("GetWindowTextLengthW")
+	pSendMessage                   = user32.NewProc("SendMessageW")
+	pSetTimer                      = user32.NewProc("SetTimer")
+	pKillTimer                     = user32.NewProc("KillTimer")
+	pInvalidateRect                = user32.NewProc("InvalidateRect")
+	pGetClientRect                 = user32.NewProc("GetClientRect")
+	pBeginPaint                    = user32.NewProc("BeginPaint")
+	pEndPaint                      = user32.NewProc("EndPaint")
+	pFillRect                      = user32.NewProc("FillRect")
+	pGetModuleHandle               = kernel32.NewProc("GetModuleHandleW")
+	pRtlMoveMemory                 = ntdll.NewProc("RtlMoveMemory")
+	pLoadCursor                    = user32.NewProc("LoadCursorW")
+	pCreateSolidBrush              = gdi32.NewProc("CreateSolidBrush")
+	pCreatePen                     = gdi32.NewProc("CreatePen")
+	pCreateFont                    = gdi32.NewProc("CreateFontW")
+	pSelectObject                  = gdi32.NewProc("SelectObject")
+	pRoundRect                     = gdi32.NewProc("RoundRect")
+	pEllipse                       = gdi32.NewProc("Ellipse")
+	pMoveToEx                      = gdi32.NewProc("MoveToEx")
+	pLineTo                        = gdi32.NewProc("LineTo")
+	pDeleteObject                  = gdi32.NewProc("DeleteObject")
+	pSetTextColor                  = gdi32.NewProc("SetTextColor")
+	pSetBkMode                     = gdi32.NewProc("SetBkMode")
+	pSetBkColor                    = gdi32.NewProc("SetBkColor")
+	pDrawText                      = user32.NewProc("DrawTextW")
+	pSetProcessDPIAware            = user32.NewProc("SetProcessDPIAware")
+	pSetProcessDpiAwarenessContext = user32.NewProc("SetProcessDpiAwarenessContext")
+	pSetWindowTheme                = syscall.NewLazyDLL("uxtheme.dll").NewProc("SetWindowTheme")
+	pDwmSetWindowAttr              = syscall.NewLazyDLL("dwmapi.dll").NewProc("DwmSetWindowAttribute")
+	pChoosePixelFormat             = gdi32.NewProc("ChoosePixelFormat")
+	pSetPixelFormat                = gdi32.NewProc("SetPixelFormat")
+	pSwapBuffers                   = gdi32.NewProc("SwapBuffers")
+	pGetDC                         = user32.NewProc("GetDC")
+	pReleaseDC                     = user32.NewProc("ReleaseDC")
+	pWGLCreateContext              = gl32.NewProc("wglCreateContext")
+	pWGLMakeCurrent                = gl32.NewProc("wglMakeCurrent")
+	pWGLDeleteContext              = gl32.NewProc("wglDeleteContext")
+	pGLClearColor                  = gl32.NewProc("glClearColor")
+	pGLClear                       = gl32.NewProc("glClear")
+	pGLViewport                    = gl32.NewProc("glViewport")
+	pGLMatrixMode                  = gl32.NewProc("glMatrixMode")
+	pGLLoadIdentity                = gl32.NewProc("glLoadIdentity")
+	pGLFrustum                     = gl32.NewProc("glFrustum")
+	pGLTranslatef                  = gl32.NewProc("glTranslatef")
+	pGLRotatef                     = gl32.NewProc("glRotatef")
+	pGLMultMatrixf                 = gl32.NewProc("glMultMatrixf")
+	pGLEnable                      = gl32.NewProc("glEnable")
+	pGLDisable                     = gl32.NewProc("glDisable")
+	pGLCullFace                    = gl32.NewProc("glCullFace")
+	pGLShadeModel                  = gl32.NewProc("glShadeModel")
+	pGLColorMaterial               = gl32.NewProc("glColorMaterial")
+	pGLLightfv                     = gl32.NewProc("glLightfv")
+	pGLBegin                       = gl32.NewProc("glBegin")
+	pGLEnd                         = gl32.NewProc("glEnd")
+	pGLColor3f                     = gl32.NewProc("glColor3f")
+	pGLNormal3f                    = gl32.NewProc("glNormal3f")
+	pGLVertex3f                    = gl32.NewProc("glVertex3f")
+	pGLLineWidth                   = gl32.NewProc("glLineWidth")
+	pGLGenLists                    = gl32.NewProc("glGenLists")
+	pGLNewList                     = gl32.NewProc("glNewList")
+	pGLEndList                     = gl32.NewProc("glEndList")
+	pGLCallList                    = gl32.NewProc("glCallList")
+	pGLClearDepth                  = gl32.NewProc("glClearDepth")
+	pGLBlendFunc                   = gl32.NewProc("glBlendFunc")
+	pGLHint                        = gl32.NewProc("glHint")
 )
 
 const (
@@ -98,6 +112,9 @@ const (
 	wmCtlColor          = 0x0138
 	wmNcDestroy         = 0x0082
 	wmSizing            = 0x0214
+	wmLButtonUp         = 0x0202
+	wmDrawItem          = 0x002B
+	wmSetFont           = 0x0030
 	wsOverlapped        = 0x00000000
 	wsCaption           = 0x00C00000
 	wsSysMenu           = 0x00080000
@@ -117,6 +134,7 @@ const (
 	esMultiline         = 0x0004
 	esWantReturn        = 0x1000
 	bsPushButton        = 0x00000000
+	bsOwnerDraw         = 0x0000000B
 	cbDropDownList      = 0x0003
 	lbnSelChange        = 1
 	cbnSelChange        = 1
@@ -151,6 +169,12 @@ const (
 	glQuads             = 0x0007
 	glLines             = 0x0001
 	glTriangles         = 0x0004
+	glLineSmooth        = 0x0B20
+	glBlend             = 0x0BE2
+	glSrcAlpha          = 0x0302
+	glOneMinusSrcAlpha  = 0x0303
+	glPerspectiveHint   = 0x0C50
+	glNicest            = 0x1102
 	glCompile           = 0x1300
 	glPosition          = 0x1203
 	pfdDrawToWindow     = 0x00000004
@@ -167,6 +191,7 @@ const (
 	idNetwork      = 103
 	idLogs         = 104
 	idLanguage     = 105
+	idMenu         = 106
 	idProfile      = 200
 	idApply        = 201
 	idDialogCenter = 202
@@ -246,6 +271,11 @@ type nativePixelFormatDescriptor struct {
 	DamageMask     uint32
 }
 
+type nativeHitTarget struct {
+	ID   int
+	Rect nativeRect
+}
+
 type nativeDialog struct {
 	kind            string
 	hwnd            uintptr
@@ -257,31 +287,40 @@ type nativeDialog struct {
 	config          HostConfig
 }
 type nativeUI struct {
-	service         *HostService
-	config          HostConfig
-	mainHWnd        uintptr
-	glHWnd          uintptr
-	glDC            uintptr
-	glRC            uintptr
-	modelList       uintptr
-	model           *nativeHeadsetModel
-	pose            PoseFrameSnapshot
-	snapshot        HostSnapshot
-	statusHost      uintptr
-	statusSteam     uintptr
-	statusHMD       uintptr
-	battery         uintptr
-	yaw             uintptr
-	pitch           uintptr
-	roll            uintptr
-	buttons         map[int]uintptr
-	dialogs         map[uintptr]*nativeDialog
-	currentSettings PhoneDisplaySettings
-	language        string
-	languageButton  uintptr
-	background      uintptr
-	lastRender      time.Time
-	lastStatus      time.Time
+	service          *HostService
+	config           HostConfig
+	mainHWnd         uintptr
+	glHWnd           uintptr
+	glDC             uintptr
+	glRC             uintptr
+	modelList        uintptr
+	model            *nativeHeadsetModel
+	pose             PoseFrameSnapshot
+	snapshot         HostSnapshot
+	statusHost       uintptr
+	statusSteam      uintptr
+	statusHMD        uintptr
+	battery          uintptr
+	yaw              uintptr
+	pitch            uintptr
+	roll             uintptr
+	buttons          map[int]uintptr
+	dialogs          map[uintptr]*nativeDialog
+	currentSettings  PhoneDisplaySettings
+	language         string
+	languageButton   uintptr
+	background       uintptr
+	dialogBackground uintptr
+	editBackground   uintptr
+	buttonBackground uintptr
+	fontBody         uintptr
+	fontSmall        uintptr
+	fontValue        uintptr
+	gdiplusToken     uintptr
+	hitTargets       []nativeHitTarget
+	menuOpen         bool
+	lastRender       time.Time
+	lastStatus       time.Time
 }
 
 var activeNativeUI *nativeUI
@@ -292,7 +331,14 @@ var nativeDialogProcCallback = syscall.NewCallback(nativeDialogWndProc)
 func runNativeDesktopApp(service *HostService, config HostConfig) error {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
+	if result, _, _ := pSetProcessDpiAwarenessContext.Call(^uintptr(3)); result == 0 {
+		pSetProcessDPIAware.Call()
+	}
 	app := &nativeUI{service: service, config: config, dialogs: make(map[uintptr]*nativeDialog), buttons: make(map[int]uintptr), currentSettings: DefaultPhoneDisplaySettings(), language: loadNativeLanguage()}
+	app.fontBody = createNativeFont("Segoe UI", 14, 400)
+	app.fontSmall = createNativeFont("Segoe UI", 11, 600)
+	app.fontValue = createNativeFont("Consolas", 21, 700)
+	app.gdiplusToken = startNativeGDIPlus()
 	if model, err := loadNativeHeadsetModel(); err == nil {
 		app.model = model
 	} else {
@@ -301,13 +347,21 @@ func runNativeDesktopApp(service *HostService, config HostConfig) error {
 	activeNativeUI = app
 	defer func() {
 		activeNativeUI = nil
-		if app.background != 0 {
-			pDeleteObject.Call(app.background)
+		for _, object := range []uintptr{app.background, app.dialogBackground, app.editBackground, app.buttonBackground, app.fontBody, app.fontSmall, app.fontValue} {
+			if object != 0 {
+				pDeleteObject.Call(object)
+			}
+		}
+		if app.gdiplusToken != 0 {
+			shutdownNativeGDIPlus(app.gdiplusToken)
 		}
 	}()
 	instance, _, _ := pGetModuleHandle.Call(0)
 	cursor, _, _ := pLoadCursor.Call(0, idcArrow)
-	app.background, _, _ = pCreateSolidBrush.Call(rgb(10, 18, 28))
+	app.background, _, _ = pCreateSolidBrush.Call(rgb(9, 17, 27))
+	app.dialogBackground, _, _ = pCreateSolidBrush.Call(rgb(16, 29, 42))
+	app.editBackground, _, _ = pCreateSolidBrush.Call(rgb(9, 21, 33))
+	app.buttonBackground, _, _ = pCreateSolidBrush.Call(rgb(20, 38, 56))
 	if err := registerNativeClass(instance, cursor, "PhoneVRNativeMain", nativeWndProcCallback, app.background); err != nil {
 		return err
 	}
@@ -321,11 +375,12 @@ func runNativeDesktopApp(service *HostService, config HostConfig) error {
 	class, _ := syscall.UTF16PtrFromString("PhoneVRNativeMain")
 	style := uintptr(wsOverlapped | wsCaption | wsSysMenu | wsMinimizeBox | wsMaximizeBox | wsThickFrame | wsVisible | wsClipChildren)
 	hwnd, _, callErr := pCreateWindowEx.Call(0x00040000, uintptr(unsafe.Pointer(class)), uintptr(unsafe.Pointer(title)), style,
-		0x80000000, 0x80000000, 1080, 900, 0, 0, instance, 0)
+		0x80000000, 0x80000000, 1024, 853, 0, 0, instance, 0)
 	if hwnd == 0 {
 		return fmt.Errorf("create native PhoneVR Host window: %w", callErr)
 	}
 	app.mainHWnd = hwnd
+	app.applyDarkWindow(hwnd)
 	pShowWindow.Call(hwnd, swShow)
 	pUpdateWindow.Call(hwnd)
 	var message nativeMsg
@@ -446,6 +501,18 @@ func nativeMainWndProc(hwnd uintptr, message uint32, wParam, lParam uintptr) uin
 		return 0
 	case wmSize:
 		app.layoutMain(hwnd)
+		pInvalidateRect.Call(hwnd, 0, 0)
+		return 0
+	case wmPaint:
+		var paint nativePaintStruct
+		hdc, _, _ := pBeginPaint.Call(hwnd, uintptr(unsafe.Pointer(&paint)))
+		app.paintMain(hdc)
+		pEndPaint.Call(hwnd, uintptr(unsafe.Pointer(&paint)))
+		return 0
+	case wmEraseBkgnd:
+		return 1
+	case wmLButtonUp:
+		app.handleMainClick(int(int16(lParam&0xffff)), int(int16((lParam>>16)&0xffff)))
 		return 0
 	case wmSizing:
 		constrainNativeWindowRectAddress(lParam, int(wParam))
@@ -461,15 +528,13 @@ func nativeMainWndProc(hwnd uintptr, message uint32, wParam, lParam uintptr) uin
 		if app.glHWnd != 0 {
 			pInvalidateRect.Call(app.glHWnd, 0, 0)
 		}
+		pInvalidateRect.Call(hwnd, 0, 0)
 		return 0
 	case wmCommand:
 		app.handleMainCommand(int(wParam & 0xffff))
 		return 0
-	case wmCtlColor:
-		hdc := wParam
-		pSetTextColor.Call(hdc, rgb(220, 232, 242))
-		pSetBkMode.Call(hdc, transparent)
-		return app.background
+	case 0x0132, 0x0133, 0x0134, 0x0135, 0x0136, wmCtlColor:
+		return app.controlColor(wParam, message)
 	case wmClose:
 		pDestroyWindow.Call(hwnd)
 		return 0
@@ -522,11 +587,10 @@ func nativeDialogWndProc(hwnd uintptr, message uint32, wParam, lParam uintptr) u
 			app.handleDialogCommand(dialog, int(wParam&0xffff))
 		}
 		return 0
-	case wmCtlColor:
-		hdc := wParam
-		pSetTextColor.Call(hdc, rgb(220, 232, 242))
-		pSetBkMode.Call(hdc, transparent)
-		return app.background
+	case wmDrawItem:
+		return app.drawDialogButton(lParam)
+	case 0x0132, 0x0133, 0x0134, 0x0135, 0x0136, wmCtlColor:
+		return app.controlColor(wParam, message)
 	case wmClose:
 		pDestroyWindow.Call(hwnd)
 		return 0
@@ -538,27 +602,16 @@ func nativeDialogWndProc(hwnd uintptr, message uint32, wParam, lParam uintptr) u
 }
 
 func (app *nativeUI) createMainControls(hwnd uintptr) {
-	app.statusHost = app.createControl(hwnd, "STATIC", app.text("● 运行中", "● RUNNING"), wsChild|wsVisible, 16, 12, 125, 28, 0)
-	app.statusSteam = app.createControl(hwnd, "STATIC", app.text("● SteamVR 未连接", "● SteamVR DISCONNECTED"), wsChild|wsVisible, 420, 12, 220, 28, 0)
-	app.statusHMD = app.createControl(hwnd, "STATIC", app.text("● HMD 离线", "● HMD OFFLINE"), wsChild|wsVisible, 850, 12, 110, 28, 0)
-	app.battery = app.createControl(hwnd, "STATIC", "--%", wsChild|wsVisible, 970, 12, 65, 28, 0)
-	app.buttons[idCenter] = app.createButton(hwnd, app.text("视角居中", "Center View"), idCenter)
-	app.buttons[idSettings] = app.createButton(hwnd, app.text("手机参数", "Device"), idSettings)
-	app.buttons[idPresets] = app.createButton(hwnd, app.text("光学预设", "Presets"), idPresets)
-	app.buttons[idNetwork] = app.createButton(hwnd, app.text("网络", "Network"), idNetwork)
-	app.buttons[idLogs] = app.createButton(hwnd, app.text("日志", "Logs"), idLogs)
-	app.languageButton = app.createButton(hwnd, app.text("EN", "中文"), idLanguage)
+	// Main window is fully custom painted to preserve the original PhoneVR
+	// dark dashboard style without browser or legacy common-control chrome.
+	app.glHWnd = 0
 	instance, _, _ := pGetModuleHandle.Call(0)
 	class, _ := syscall.UTF16PtrFromString("PhoneVRNativeGL")
-	glHwnd, _, _ := pCreateWindowEx.Call(0, uintptr(unsafe.Pointer(class)), 0,
+	glHWnd, _, _ := pCreateWindowEx.Call(0, uintptr(unsafe.Pointer(class)), 0,
 		uintptr(wsChild|wsVisible|wsClipSiblings|wsClipChildren), 0, 0, 640, 640, hwnd, 0, instance, 0)
-	app.glHWnd = glHwnd
-	app.yaw = app.createControl(hwnd, "STATIC", "YAW  0.0°", wsChild|wsVisible, 0, 0, 160, 42, 0)
-	app.pitch = app.createControl(hwnd, "STATIC", "PITCH  0.0°", wsChild|wsVisible, 0, 0, 160, 42, 0)
-	app.roll = app.createControl(hwnd, "STATIC", "ROLL  0.0°", wsChild|wsVisible, 0, 0, 160, 42, 0)
+	app.glHWnd = glHWnd
 	app.refreshPoseFrame()
 	app.refreshStatusSnapshot()
-	app.updateStatusControls()
 	app.lastStatus = time.Now()
 	app.layoutMain(hwnd)
 }
@@ -567,46 +620,28 @@ func (app *nativeUI) createControl(parent uintptr, class, text string, style uin
 	classPtr, _ := syscall.UTF16PtrFromString(class)
 	textPtr, _ := syscall.UTF16PtrFromString(text)
 	hwnd, _, _ := pCreateWindowEx.Call(0, uintptr(unsafe.Pointer(classPtr)), uintptr(unsafe.Pointer(textPtr)), uintptr(style), uintptr(x), uintptr(y), uintptr(w), uintptr(h), parent, uintptr(id), 0, 0)
+	if hwnd != 0 && app.fontBody != 0 {
+		pSendMessage.Call(hwnd, wmSetFont, app.fontBody, 1)
+	}
+	if hwnd != 0 {
+		app.applyDarkControl(hwnd)
+	}
 	return hwnd
 }
 func (app *nativeUI) createButton(parent uintptr, text string, id int) uintptr {
-	return app.createControl(parent, "BUTTON", text, wsChild|wsVisible|wsTabStop|bsPushButton, 0, 0, 90, 30, id)
+	return app.createControl(parent, "BUTTON", text, wsChild|wsVisible|wsTabStop|bsOwnerDraw, 0, 0, 90, 30, id)
 }
 
 func (app *nativeUI) layoutMain(hwnd uintptr) {
 	var rect nativeRect
 	pGetClientRect.Call(hwnd, uintptr(unsafe.Pointer(&rect)))
 	w, h := int(rect.Right), int(rect.Bottom)
-	pMoveWindow.Call(app.statusHost, 16, 12, 120, 28, 1)
-	pMoveWindow.Call(app.statusSteam, uintptr(w/2-95), 12, 190, 28, 1)
-	pMoveWindow.Call(app.statusHMD, uintptr(w-260), 12, 95, 28, 1)
-	pMoveWindow.Call(app.battery, uintptr(w-158), 12, 60, 28, 1)
-	pMoveWindow.Call(app.languageButton, uintptr(w-88), 12, 60, 28, 1)
-	buttons := []int{idCenter, idSettings, idPresets, idNetwork, idLogs}
-	buttonW, buttonGap := 92, 8
-	startX := w - (buttonW*len(buttons) + buttonGap*(len(buttons)-1)) - 16
-	for index, id := range buttons {
-		pMoveWindow.Call(app.buttons[id], uintptr(startX+index*(buttonW+buttonGap)), 46, uintptr(buttonW), 30, 1)
+	if w <= 0 || h <= 0 {
+		return
 	}
-	viewTop := 86
-	footerHeight := 64
-	availableHeight := h - viewTop - footerHeight - 16
-	availableWidth := w - 32
-	size := availableWidth
-	if availableHeight < size {
-		size = availableHeight
-	}
-	if size < 240 {
-		size = 240
-	}
-	left := (w - size) / 2
-	pMoveWindow.Call(app.glHWnd, uintptr(left), uintptr(viewTop), uintptr(size), uintptr(size), 1)
-	metricY := h - footerHeight + 8
-	metricW, gap := 164, 10
-	metricStart := (w - (metricW*3 + gap*2)) / 2
-	pMoveWindow.Call(app.yaw, uintptr(metricStart), uintptr(metricY), uintptr(metricW), 42, 1)
-	pMoveWindow.Call(app.pitch, uintptr(metricStart+metricW+gap), uintptr(metricY), uintptr(metricW), 42, 1)
-	pMoveWindow.Call(app.roll, uintptr(metricStart+(metricW+gap)*2), uintptr(metricY), uintptr(metricW), 42, 1)
+	viewport := ComputeNativePoseViewport(w, h)
+	pMoveWindow.Call(app.glHWnd, uintptr(viewport.Left), uintptr(viewport.Top), uintptr(viewport.Width), uintptr(viewport.Height), 1)
+	pInvalidateRect.Call(hwnd, 0, 0)
 }
 
 func (app *nativeUI) refreshPoseFrame() {
@@ -619,34 +654,11 @@ func (app *nativeUI) refreshStatusSnapshot() {
 	}
 }
 func (app *nativeUI) updateStatusControls() {
-	if app.snapshot.Running {
-		setNativeText(app.statusHost, app.text("● 运行中", "● RUNNING"))
-	} else {
-		setNativeText(app.statusHost, app.text("● 已停止", "● STOPPED"))
-	}
-	if len(app.snapshot.ConnectedDevices) > 0 {
-		device := app.snapshot.ConnectedDevices[0]
-		setNativeText(app.statusHMD, app.text("● HMD 在线", "● HMD ONLINE"))
-		if device.BatteryLevel != nil {
-			setNativeText(app.battery, fmt.Sprintf("%d%%", *device.BatteryLevel))
-		} else {
-			setNativeText(app.battery, "--%")
-		}
-	} else {
-		setNativeText(app.statusHMD, app.text("● HMD 离线", "● HMD OFFLINE"))
-		setNativeText(app.battery, "--%")
-	}
-	if app.pose.LatestPose != nil {
-		pose := app.pose.LatestPose
-		setNativeText(app.yaw, fmt.Sprintf("YAW  %+.1f°", pose.Yaw))
-		setNativeText(app.pitch, fmt.Sprintf("PITCH  %+.1f°", pose.Pitch))
-		setNativeText(app.roll, fmt.Sprintf("ROLL  %+.1f°", pose.Roll))
-	} else {
-		setNativeText(app.yaw, "YAW  0.0°")
-		setNativeText(app.pitch, "PITCH  0.0°")
-		setNativeText(app.roll, "ROLL  0.0°")
+	if app.mainHWnd != 0 {
+		pInvalidateRect.Call(app.mainHWnd, 0, 0)
 	}
 }
+
 func setNativeText(hwnd uintptr, text string) {
 	ptr, _ := syscall.UTF16PtrFromString(text)
 	pSetWindowText.Call(hwnd, uintptr(unsafe.Pointer(ptr)))
@@ -681,13 +693,13 @@ func (app *nativeUI) openDialog(kind string) {
 	width, height, title := 600, 470, "PhoneVR"
 	switch kind {
 	case "settings":
-		width, height, title = 720, 570, app.text("手机显示参数", "Phone Display Settings")
+		width, height, title = 800, 500, app.text("手机显示参数", "Phone Display Settings")
 	case "presets":
-		width, height, title = 620, 450, app.text("光学预设", "Optical Presets")
+		width, height, title = 700, 450, app.text("光学预设", "Optical Presets")
 	case "network":
-		width, height, title = 450, 350, app.text("网络设置", "Network")
+		width, height, title = 520, 350, app.text("网络设置", "Network")
 	case "logs":
-		width, height, title = 720, 520, app.text("运行日志", "Logs")
+		width, height, title = 780, 520, app.text("运行日志", "Logs")
 	}
 	instance, _, _ := pGetModuleHandle.Call(0)
 	class, _ := syscall.UTF16PtrFromString("PhoneVRNativeDialog")
@@ -699,6 +711,7 @@ func (app *nativeUI) openDialog(kind string) {
 	}
 	dialog := &nativeDialog{kind: kind, hwnd: hwnd, controls: make(map[int]uintptr), settings: app.currentSettings, config: app.config}
 	app.dialogs[hwnd] = dialog
+	app.applyDarkWindow(hwnd)
 	app.createDialogControls(dialog)
 	pShowWindow.Call(hwnd, swShow)
 	pUpdateWindow.Call(hwnd)
@@ -735,15 +748,15 @@ func (app *nativeUI) createDialogControls(d *nativeDialog) {
 		for index, field := range fields {
 			column := index / 6
 			row := index % 6
-			x := 16 + column*340
-			y := 52 + row*54
-			addLabel(field.label, x, y, 150, 20)
-			addEdit(field.id, strconv.FormatFloat(float64(field.value), 'f', 3, 32), x, y+22, 270, 25)
+			x := 18 + column*382
+			y := 48 + row*54
+			addLabel(field.label, x, y, 354, 20)
+			addEdit(field.id, strconv.FormatFloat(float64(field.value), 'f', 3, 32), x, y+22, 354, 26)
 		}
-		d.status = app.createControl(d.hwnd, "STATIC", "", wsChild|wsVisible, 16, 390, 650, 26, 0)
-		addButton(idApply, app.text("推送到手机", "Apply to Phone"), 16, 430, 130, 32)
-		addButton(idDialogCenter, app.text("视角居中", "Center View"), 156, 430, 110, 32)
-		addButton(idClose, app.text("关闭", "Close"), 560, 430, 110, 32)
+		d.status = app.createControl(d.hwnd, "STATIC", "", wsChild|wsVisible, 18, 386, 740, 24, 0)
+		addButton(idApply, app.text("推送到手机", "Apply to Phone"), 18, 424, 140, 34)
+		addButton(idDialogCenter, app.text("视角居中", "Center View"), 170, 424, 120, 34)
+		addButton(idClose, app.text("关闭", "Close"), 658, 424, 100, 34)
 	case "presets":
 		addLabel(app.text("配置预设", "Optical Presets"), 16, 14, 120, 20)
 		d.presets = loadNativePresets()
@@ -1213,19 +1226,12 @@ func (app *nativeUI) toggleLanguage() {
 		app.language = "en"
 	}
 	saveNativeLanguage(app.language)
-	setNativeText(app.languageButton, app.text("EN", "中文"))
-	setNativeText(app.statusHost, app.text("● 运行中", "● RUNNING"))
-	setNativeText(app.statusSteam, app.text("● SteamVR 未连接", "● SteamVR DISCONNECTED"))
-	setNativeText(app.languageButton, app.text("EN", "中文"))
-	for id, labels := range map[int][2]string{
-		idCenter: {"视角居中", "Center View"}, idSettings: {"手机参数", "Device"},
-		idPresets: {"光学预设", "Presets"}, idNetwork: {"网络", "Network"}, idLogs: {"日志", "Logs"},
-	} {
-		setNativeText(app.buttons[id], app.text(labels[0], labels[1]))
-	}
-	app.updateStatusControls()
+	app.menuOpen = false
 	for hwnd := range app.dialogs {
 		pDestroyWindow.Call(hwnd)
+	}
+	if app.mainHWnd != 0 {
+		pInvalidateRect.Call(app.mainHWnd, 0, 0)
 	}
 }
 

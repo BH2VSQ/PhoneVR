@@ -1,6 +1,6 @@
 # PhoneVRStream
 
-Repository revision: **0.3.8**. Windows Host: **0.3.8**. Android client: **0.3.8**. Network protocol: **v1**.
+Repository revision: **0.3.9**. Windows Host: **0.3.9**. Android client: **0.3.9**. Network protocol: **v1**.
 
 PhoneVRStream is a two-part project for using an Android phone as a PC VR streaming HMD. Both applications live in one repository and use independent build/test pipelines.
 
@@ -24,9 +24,9 @@ PhoneVRStream/
 The Windows Host has been migrated from an Edge/Chrome app-mode dashboard to a native Windows desktop application.
 
 - The main process creates a normal top-level Win32 window with `WS_EX_APPWINDOW`, so it appears as an application in Windows Task Manager rather than leaving a browser process as the visible app.
-- The UI uses Win32 windowing and native controls. The HMD pose viewport uses a native WGL/OpenGL context and the embedded Daydream View 2017 OBJ/MTL mesh. There is no WebView, Edge, Chrome, HTML dashboard, local HTTP UI server or browser runtime dependency.
+- The UI is drawn natively with Win32, GDI+ anti-aliased shapes, ClearType Segoe UI typography and custom-drawn status pills/cards. It preserves the former browser dashboard visual language: deep navy background, blue-gray surfaces, subtle borders, green Host/HMD/battery indicators and purple SteamVR state. The HMD pose viewport uses a native WGL/OpenGL context and the embedded Daydream View 2017 OBJ/MTL mesh. There is no WebView, Edge, Chrome, HTML dashboard, local HTTP UI server or browser runtime dependency.
 - The model is rendered as a solid material mesh with depth testing and back-face culling. The local XYZ axes and gaze ray rotate with the received HMD quaternion; the floor grid remains world-aligned.
-- The main window shows Host state, SteamVR state, HMD state, phone battery, the 3D HMD view and Yaw/Pitch/Roll.
+- The main window shows Host state, SteamVR state, HMD state, phone battery, the 3D HMD view and Yaw/Pitch/Roll. English labels are rendered as single-line text with end ellipsis and responsive positioning to prevent wrapping and overlap.
 - Native child windows provide phone display settings, optical preset management, network settings and logs. Phone settings are sent through the existing TCP control channel and the UI waits for the phone's applied settings acknowledgement before showing confirmation.
 - Built-in Daydream View 2017 and Generic Cardboard optical presets are available. User presets support save, clone, rename and delete. Built-in presets cannot be renamed or deleted.
 - Chinese is the default UI language. English/Chinese switching is available and persists in the user's application data.
@@ -74,7 +74,7 @@ Build only Android:
 .\scripts\build-android.ps1
 ```
 
-The Windows Host version is injected from the root VERSION file at build time. The Windows Host uses Go standard-library Win32 bindings and system OpenGL 1.1 (`opengl32.dll`). No third-party Go GUI dependency or browser runtime is required. The main GUI executable is built with `-H=windowsgui`; the console variant is retained for diagnostics.
+The Windows Host version is injected from the root VERSION file at build time. The Windows Host uses Go standard-library Win32 bindings, system GDI+ for anti-aliased native UI drawing, and system OpenGL 1.1 (`opengl32.dll`). Per-monitor DPI awareness is enabled where supported. No third-party Go GUI dependency or browser runtime is required. The main GUI executable is built with `-H=windowsgui`; the console variant is retained for diagnostics.
 
 ## Windows Host ports
 

@@ -1,33 +1,28 @@
-# Build Status - CI / Release Workflow Update
+# Build Status - Native UI polish
 
-Base application version: `0.3.8`
+Application version: `0.3.9`  
 Network protocol: `v1`
 
 ## Changes
 
-- Fixed the Windows `WM_SIZING` RECT handling so `go vet` no longer reports a possible misuse of `unsafe.Pointer`.
-- Replaced separate Android and Windows workflow files with one `.github/workflows/ci.yml` containing parallel Android, Windows Host and release-tooling jobs.
-- Added `.github/workflows/release.yml`, triggered only by `workflow_dispatch`.
-- Added canonical root `VERSION` file.
-- Added `tools/release/bump_version.py` and unit tests. Release bump synchronizes Android `versionName`, increments `versionCode`, updates Android client version, embeds Windows Host version and tags the release.
-- Updated the Windows build script to inject the repository version into the GUI and console executables.
+- Reworked the Win32 main window to match the former PhoneVR browser dashboard palette and compact layout.
+- Added GDI+ anti-aliased rounded cards, pills, dots and menu surfaces.
+- Restored green Host/HMD/battery indicators and purple SteamVR state.
+- Kept text in single-line layouts with end ellipsis and responsive positions in English mode.
+- Added Per-Monitor DPI awareness where supported, with legacy fallback.
+- Recessed Daydream optical elements remain behind the rear face foam plane.
+- Kept the native Win32/WGL application model; no Edge, Chrome, WebView or browser runtime is used.
 
-## Validation completed in this environment
+## Validation completed
 
-- `go test -race ./...`: passed (Linux host test suite).
-- `go vet ./...`: passed (Linux target).
+- `go test -race -count=1 ./...`: passed.
+- `go vet ./...`: passed.
 - `GOOS=windows GOARCH=amd64 go vet ./...`: passed.
-- Windows x64 GUI executable cross-build: passed.
-- Windows x64 console executable cross-build: passed.
-- Release versioning unit tests: 5 passed.
-- Both GitHub Actions YAML files parsed successfully.
+- Windows x64 test binary cross-compile: passed.
+- Windows GUI EXE cross-compile: passed.
+- Windows Console EXE cross-compile: passed.
 
 ## Not run here
 
-- Android Gradle build: requires Android SDK 36 and network dependency resolution.
-- Windows PowerShell 5.1 / PowerShell 7 execution: no PowerShell runtime in this environment.
-- GitHub-hosted Actions and GitHub Release publication: requires pushing this project to a GitHub repository and manually dispatching the workflow.
-
-## Release notes
-
-The manual release workflow publishes an unsigned Android Release APK unless the repository owner adds a signing configuration. Windows release artifacts include the GUI executable, console diagnostics executable and SHA-256 file.
+- Native Windows desktop runtime, GDI+ rendering, DPI changes and actual language switching: must be confirmed on a Windows desktop.
+- Android Gradle build: Android source was not changed in this UI polish revision.

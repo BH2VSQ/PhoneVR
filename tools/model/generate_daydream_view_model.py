@@ -130,22 +130,25 @@ add('foam_pad', rounded_box((-0.68,0,0.505),(0.095,0.70,0.13),0.75), COLORS['foa
 add('foam_pad', rounded_box((0.68,0,0.505),(0.095,0.70,0.13),0.75), COLORS['foam_pad'])
 
 # Nose bridge / cheek relief on wearer side.
-add('foam_pad', rounded_box((0,-0.15,0.585),(0.13,0.16,0.075),0.55), COLORS['foam_pad'])
+add('foam_pad', rounded_box((0,-0.15,0.485),(0.13,0.16,0.055),0.55), COLORS['foam_pad'])
 
 # Two optical modules are only on the rear (+Z, wearer eye side).
 for idx,x in enumerate((-0.385,0.385)):
-    # Structural barrel and stepped annular lens seats.
-    add('lens_barrel', rounded_box((x,0.015,0.605),(0.435,0.435,0.17),0.72), (0.075,0.09,0.10),0.08,0.52)
-    add('lens_rim', torus((x,0.015,0.705),0.179,0.031,'z'), (0.36,0.39,0.39),0.32,0.24)
-    add('lens_inner', torus((x,0.015,0.711),0.145,0.012,'z'), (0.13,0.18,0.19),0.25,0.2)
-    # Slightly convex dark lens, facing the wearer.
-    add_sphere('lens_glass',(x,0.015,0.706),(0.147,0.147,0.035),(0.07,0.22,0.26),.16,.26)
-    add_sphere('lens_reflection',(x-0.045,0.067,0.739),(0.025,0.018,0.006),(0.58,0.72,0.71),.1,.3)
+    # Recessed optical modules: the lens glass sits behind the face-foam datum.
+    # The outer frame is a short dark barrel; the annular seats and glass remain
+    # at least ~50 mm model-units (pre-normalization) behind the foam front.
+    add('lens_barrel', rounded_box((x,0.015,0.452),(0.415,0.415,0.095),0.72), (0.055,0.067,0.075),0.08,0.56)
+    add('lens_cavity', rounded_box((x,0.015,0.472),(0.365,0.365,0.048),0.76), (0.018,0.026,0.032),0.02,0.72)
+    add('lens_rim', torus((x,0.015,0.492),0.174,0.018,'z'), (0.23,0.27,0.28),0.28,0.30)
+    add('lens_inner', torus((x,0.015,0.496),0.143,0.008,'z'), (0.08,0.12,0.14),0.20,0.24)
+    # Slightly convex dark glass is intentionally recessed, not proud of the face pad.
+    add_sphere('lens_glass',(x,0.015,0.483),(0.145,0.145,0.012),(0.035,0.11,0.14),.12,.30)
+    add_sphere('lens_reflection',(x-0.043,0.063,0.495),(0.018,0.014,0.003),(0.48,0.64,0.66),.1,.3)
 
-# Rear alignment posts and inner phone guides (Daydream View 2017 front-cover alignment features).
+# Rear alignment posts and inner phone guides stay flush within the eye-side shell.
 for sign in (-1,1):
-    add('plastic_latch', rounded_box((sign*0.66,0.31,0.53),(0.055,0.16,0.12),0.45), COLORS['plastic_latch'],0.05,0.4)
-    add('plastic_latch', rounded_box((sign*0.66,-0.31,0.53),(0.055,0.16,0.12),0.45), COLORS['plastic_latch'],0.05,0.4)
+    add('plastic_latch', rounded_box((sign*0.66,0.31,0.455),(0.045,0.13,0.075),0.45), COLORS['plastic_latch'],0.05,0.4)
+    add('plastic_latch', rounded_box((sign*0.66,-0.31,0.455),(0.045,0.13,0.075),0.45), COLORS['plastic_latch'],0.05,0.4)
 
 # Subtle heathered woven textile texture for the 2017 fabric shell and cover.
 rng=np.random.default_rng(2017)

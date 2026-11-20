@@ -1,6 +1,9 @@
 package main
 
 import (
+	"bufio"
+	"strconv"
+	"strings"
 	"testing"
 )
 
@@ -45,5 +48,75 @@ func TestNativePresetPersistenceKeepsOnlyUserPresets(t *testing.T) {
 	}
 	if loaded[2].ID != "test-user" {
 		t.Fatalf("loaded user preset = %q", loaded[2].ID)
+	}
+}
+
+func TestNativeDaydreamOpticalAssembliesAreRecessed(t *testing.T) {
+	file, err := nativeModelAssets.Open("ui/assets/daydream_view_2017.obj")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	scanner := bufio.NewScanner(file)
+	scanner.Buffer(make([]byte, 4096), 4*1024*1024)
+	group := ""
+	foamMax, lensMax := -1e9, -1e9
+	glassCount := 0
+	for scanner.Scan() {
+		fields := strings.Fields(scanner.Text())
+		if len(fields) == 0 {
+			continue
+		}
+		switch fields[0] {
+		case "g":
+			if len(fields) > 1 {
+				group = fields[1]
+			}
+		case "v":
+			if len(fields) < 4 {
+				continue
+			}
+			z, parseErr := strconv.ParseFloat(fields[3], 64)
+			if parseErr != nil {
+				t.Fatal(parseErr)
+			}
+			if strings.HasPrefix(group, "foam_pad_") && z > foamMax {
+				foamMax = z
+			}
+			if strings.HasPrefix(group, "lens_") && z > lensMax {
+				lensMax = z
+			}
+		case "o":
+			if len(fields) > 1 && strings.HasPrefix(fields[1], "lens_glass_") {
+				glassCount++
+			}
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if glassCount != 2 {
+		t.Fatalf("lens glass components = %d, want 2", glassCount)
+	}
+	if foamMax < -1e8 || lensMax < -1e8 {
+		t.Fatalf("missing eye-side geometry: foam=%f lens=%f", foamMax, lensMax)
+	}
+	if lensMax > foamMax-0.04 {
+		t.Fatalf("lens assemblies are not sufficiently recessed: lens max Z %.4f, face pad max Z %.4f", lensMax, foamMax)
+	}
+}
+
+func TestNativePoseViewportRemainsSquareAndKeepsTelemetryFooter(t *testing.T) {
+	for _, size := range [][2]int{{1024, 820}, {1440, 1200}, {800, 700}, {900, 650}} {
+		viewport := ComputeNativePoseViewport(size[0], size[1])
+		if viewport.Width != viewport.Height {
+			t.Fatalf("viewport for %dx%d is %dx%d, want square", size[0], size[1], viewport.Width, viewport.Height)
+		}
+		if viewport.Left < 0 || viewport.Top < 0 || viewport.Left+viewport.Width > size[0] {
+			t.Fatalf("viewport outside client bounds for %dx%d: %+v", size[0], size[1], viewport)
+		}
+		if viewport.Top+viewport.Height > size[1]-78 {
+			t.Fatalf("viewport overlaps telemetry footer for %dx%d: %+v", size[0], size[1], viewport)
+		}
 	}
 }

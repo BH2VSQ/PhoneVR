@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.9
+- Reworked native Windows main UI to closely follow the original PhoneVR dark dashboard design: navy surfaces, compact status pills, rounded telemetry cards, centered SteamVR state and compact menu layout.
+- Replaced flat GDI rounded shapes with GDI+ anti-aliased drawing and ClearType Segoe UI typography; enabled Per-Monitor DPI awareness where supported.
+- Restored distinct Host/HMD/battery/SteamVR indicator colours with responsive, single-line Chinese/English labels and end ellipsis to prevent layout overlap.
+- Added dark title-bar handling, high-DPI initialization, and improved English single-line layout behavior.
+- Recessed the Daydream optical assemblies into the eye-side face cavity and reduced lens barrel depth.
+
+# Changelog
+
 ## 0.3.8 - Native Windows desktop UI
 
 - Replaced the Edge/Chrome app-mode dashboard and loopback HTTP UI server with a native Win32 desktop application.

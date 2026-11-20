@@ -473,7 +473,7 @@ class NetworkClient(
         const val DEFAULT_POSE_PORT = 48102
         const val DISCOVERY_PORT = 48100
         private const val PROTOCOL_VERSION = 1
-        private const val CLIENT_VERSION = "PhoneVRStream-0.3.8"
+        private const val CLIENT_VERSION = "PhoneVRStream-0.3.9"
         private const val DISCOVERY_REQUEST = "PHONEVR_DISCOVER_V1"
         private const val DISCOVERY_RESPONSE_PREFIX = "PHONEVR_HOST_V1 "
         private const val DISCOVERY_WINDOW_MS = 1800L

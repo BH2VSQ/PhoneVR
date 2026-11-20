@@ -1,0 +1,138 @@
+name: PhoneVR CI
+
+on:
+  push:
+    branches:
+      - "**"
+    paths:
+      - "android/**"
+      - "windows-host/**"
+      - "scripts/**"
+      - "tools/release/**"
+      - "docs/**"
+      - "VERSION"
+      - "README.md"
+      - ".github/workflows/**"
+  pull_request:
+    paths:
+      - "android/**"
+      - "windows-host/**"
+      - "scripts/**"
+      - "tools/release/**"
+      - "docs/**"
+      - "VERSION"
+      - "README.md"
+      - ".github/workflows/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: phonevr-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  release-tooling:
+    name: Release versioning tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.x"
+      - name: Test version bump tooling
+        run: python -m unittest discover -s tools/release -p "test_*.py"
+
+  android:
+    name: Android test and APK build
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: gradle
+          cache-dependency-path: |
+            android/gradle/wrapper/gradle-wrapper.properties
+            android/*.gradle.kts
+            android/gradle.properties
+            android/app/*.gradle.kts
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v4
+
+      - name: Install Android SDK 36 packages
+        run: sdkmanager "platforms;android-36" "build-tools;36.0.0"
+
+      - name: Run Android tests and build APKs
+        run: bash ./scripts/build-android.sh both
+
+      - name: Upload Android APK artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: PhoneVRStream-Android-${{ github.sha }}
+          path: dist/android/*.apk
+          if-no-files-found: error
+          retention-days: 30
+
+  windows-host:
+    name: Windows Host test and build
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: windows-host/go.mod
+          cache: true
+          cache-dependency-path: windows-host/go.mod
+
+      - name: Validate PowerShell 5.1 scripts
+        shell: powershell
+        run: |
+          $failures = @()
+          Get-ChildItem scripts -Filter *.ps1 -File | ForEach-Object {
+            $tokens = $null
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref]$tokens, [ref]$errors) | Out-Null
+            if ($errors.Count -gt 0) { $failures += "$($_.Name): $($errors.Message -join '; ')" }
+          }
+          if ($failures.Count -gt 0) { $failures | ForEach-Object { Write-Error $_ }; throw "PowerShell 5.1 syntax check failed." }
+
+      - name: Validate PowerShell 7 scripts
+        shell: pwsh
+        run: |
+          $failures = @()
+          Get-ChildItem scripts -Filter *.ps1 -File | ForEach-Object {
+            $tokens = $null
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref]$tokens, [ref]$errors) | Out-Null
+            if ($errors.Count -gt 0) { $failures += "$($_.Name): $($errors.Message -join '; ')" }
+          }
+          if ($failures.Count -gt 0) { $failures | ForEach-Object { Write-Error $_ }; throw "PowerShell 7 syntax check failed." }
+
+      - name: Test and build Windows Host
+        shell: pwsh
+        run: .\scripts\build-windows-host.ps1
+
+      - name: Upload Windows Host artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: PhoneVRHost-Windows-x64-${{ github.sha }}
+          path: |
+            dist/windows/PhoneVRHost.exe
+            dist/windows/PhoneVRHost-console.exe
+            dist/windows/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 30

@@ -2,6 +2,17 @@ plugins {
     id("com.android.application")
 }
 
+val phoneVrReleaseKeystore = System.getenv("PHONEVR_RELEASE_KEYSTORE")
+val phoneVrReleaseStorePassword = System.getenv("PHONEVR_RELEASE_STORE_PASSWORD")
+val phoneVrReleaseKeyAlias = System.getenv("PHONEVR_RELEASE_KEY_ALIAS")
+val phoneVrReleaseKeyPassword = System.getenv("PHONEVR_RELEASE_KEY_PASSWORD")
+val phoneVrReleaseSigningEnabled = listOf(
+    phoneVrReleaseKeystore,
+    phoneVrReleaseStorePassword,
+    phoneVrReleaseKeyAlias,
+    phoneVrReleaseKeyPassword
+).all { !it.isNullOrBlank() }
+
 android {
     namespace = "com.vsq.phonvrstream"
     compileSdk = 36
@@ -11,11 +22,25 @@ android {
         minSdk = 26
         targetSdk = 36
         versionCode = 12
-        versionName = "0.3.5"
+        versionName = "0.3.8"
+    }
+
+    signingConfigs {
+        if (phoneVrReleaseSigningEnabled) {
+            create("phoneVrRelease") {
+                storeFile = file(phoneVrReleaseKeystore!!)
+                storePassword = phoneVrReleaseStorePassword
+                keyAlias = phoneVrReleaseKeyAlias
+                keyPassword = phoneVrReleaseKeyPassword
+            }
+        }
     }
 
     buildTypes {
         release {
+            if (phoneVrReleaseSigningEnabled) {
+                signingConfig = signingConfigs.getByName("phoneVrRelease")
+            }
             isMinifyEnabled = false
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),

@@ -17,6 +17,7 @@ var (
 	user32   = syscall.NewLazyDLL("user32.dll")
 	gdi32    = syscall.NewLazyDLL("gdi32.dll")
 	kernel32 = syscall.NewLazyDLL("kernel32.dll")
+	ntdll    = syscall.NewLazyDLL("ntdll.dll")
 	gl32     = syscall.NewLazyDLL("opengl32.dll")
 
 	pRegisterClassEx     = user32.NewProc("RegisterClassExW")
@@ -42,6 +43,7 @@ var (
 	pEndPaint            = user32.NewProc("EndPaint")
 	pFillRect            = user32.NewProc("FillRect")
 	pGetModuleHandle     = kernel32.NewProc("GetModuleHandleW")
+	pRtlMoveMemory       = ntdll.NewProc("RtlMoveMemory")
 	pLoadCursor          = user32.NewProc("LoadCursorW")
 	pCreateSolidBrush    = gdi32.NewProc("CreateSolidBrush")
 	pDeleteObject        = gdi32.NewProc("DeleteObject")
@@ -315,7 +317,7 @@ func runNativeDesktopApp(service *HostService, config HostConfig) error {
 	if err := registerNativeClass(instance, cursor, "PhoneVRNativeDialog", nativeDialogProcCallback, app.background); err != nil {
 		return err
 	}
-	title, _ := syscall.UTF16PtrFromString("PhoneVR Host")
+	title, _ := syscall.UTF16PtrFromString("PhoneVR Host " + appVersion)
 	class, _ := syscall.UTF16PtrFromString("PhoneVRNativeMain")
 	style := uintptr(wsOverlapped | wsCaption | wsSysMenu | wsMinimizeBox | wsMaximizeBox | wsThickFrame | wsVisible | wsClipChildren)
 	hwnd, _, callErr := pCreateWindowEx.Call(0x00040000, uintptr(unsafe.Pointer(class)), uintptr(unsafe.Pointer(title)), style,
@@ -415,6 +417,22 @@ func constrainNativeWindowRect(rect *nativeRect, edge int) {
 	}
 }
 
+// constrainNativeWindowRectAddress copies the WM_SIZING RECT through the
+// Win32 RtlMoveMemory API. lParam is an address supplied by Windows. Keeping
+// it as uintptr avoids converting an arbitrary uintptr back to unsafe.Pointer,
+// which go vet correctly warns about. The local RECT remains alive throughout
+// both native memory copies.
+func constrainNativeWindowRectAddress(rectAddress uintptr, edge int) {
+	if rectAddress == 0 {
+		return
+	}
+	var rect nativeRect
+	pRtlMoveMemory.Call(uintptr(unsafe.Pointer(&rect)), rectAddress, unsafe.Sizeof(rect))
+	constrainNativeWindowRect(&rect, edge)
+	pRtlMoveMemory.Call(rectAddress, uintptr(unsafe.Pointer(&rect)), unsafe.Sizeof(rect))
+	runtime.KeepAlive(&rect)
+}
+
 func nativeMainWndProc(hwnd uintptr, message uint32, wParam, lParam uintptr) uintptr {
 	app := activeNativeUI
 	if app == nil {
@@ -430,7 +448,7 @@ func nativeMainWndProc(hwnd uintptr, message uint32, wParam, lParam uintptr) uin
 		app.layoutMain(hwnd)
 		return 0
 	case wmSizing:
-		constrainNativeWindowRect((*nativeRect)(unsafe.Pointer(lParam)), int(wParam))
+		constrainNativeWindowRectAddress(lParam, int(wParam))
 		return 1
 	case wmTimer:
 		app.refreshPoseFrame()

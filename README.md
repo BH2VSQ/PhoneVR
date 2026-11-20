@@ -1,6 +1,6 @@
 # PhoneVRStream
 
-Repository revision: **0.3.8**. Windows Host: **0.3.8**. Android client: **0.3.6**. Network protocol: **v1**.
+Repository revision: **0.3.8**. Windows Host: **0.3.8**. Android client: **0.3.8**. Network protocol: **v1**.
 
 PhoneVRStream is a two-part project for using an Android phone as a PC VR streaming HMD. Both applications live in one repository and use independent build/test pipelines.
 
@@ -15,7 +15,7 @@ PhoneVRStream/
 │   └── go.mod
 ├── scripts/                    # Local and CI build scripts
 ├── docs/                       # Shared protocol, Daydream calibration and model docs
-├── .github/workflows/          # Independent Android and Windows CI
+├── .github/workflows/          # Unified CI and manual Release workflow
 └── dist/                       # Local build output (git-ignored)
 ```
 
@@ -74,7 +74,7 @@ Build only Android:
 .\scripts\build-android.ps1
 ```
 
-The Windows Host uses Go standard-library Win32 bindings and system OpenGL 1.1 (`opengl32.dll`). No third-party Go GUI dependency or browser runtime is required. The main GUI executable is built with `-H=windowsgui`; the console variant is retained for diagnostics.
+The Windows Host version is injected from the root VERSION file at build time. The Windows Host uses Go standard-library Win32 bindings and system OpenGL 1.1 (`opengl32.dll`). No third-party Go GUI dependency or browser runtime is required. The main GUI executable is built with `-H=windowsgui`; the console variant is retained for diagnostics.
 
 ## Windows Host ports
 
@@ -85,3 +85,9 @@ The Windows Host uses Go standard-library Win32 bindings and system OpenGL 1.1 (
 | 48102 | UDP | HMD quaternion pose |
 
 The PC and phone must be on the same LAN. Guest Wi-Fi or AP/client isolation may block discovery and direct connections.
+
+## Continuous integration and releases
+
+- `.github/workflows/ci.yml` is the single CI workflow. Android and Windows Host build/test jobs run in parallel inside the same Action.
+- `.github/workflows/release.yml` is manually triggered from the Actions tab. Select `patch`, `minor` or `major`; it increments VERSION, Android versionName/versionCode, creates a version tag, builds the Android release APK and Windows Host package, then publishes a GitHub Release.
+- Android release signing is optional. Add `PHONEVR_RELEASE_KEYSTORE_BASE64`, `PHONEVR_RELEASE_STORE_PASSWORD`, `PHONEVR_RELEASE_KEY_ALIAS` and `PHONEVR_RELEASE_KEY_PASSWORD` as repository Actions secrets to publish a signed APK. Without all four secrets, the workflow publishes a clearly marked unsigned APK.

@@ -75,7 +75,11 @@ if [[ "${CONFIGURATION}" == "release" || "${CONFIGURATION}" == "both" ]]; then
   release_dir="${ANDROID_ROOT}/app/build/outputs/apk/release"
   release_apk="$(find "${release_dir}" -maxdepth 1 -type f -name '*.apk' -print -quit 2>/dev/null || true)"
   [[ -n "${release_apk}" && -f "${release_apk}" ]] || { echo "Release APK was not produced in: ${release_dir}" >&2; exit 1; }
-  destination="${OUTPUT_ROOT}/PhoneVRStream-Android-release-unsigned.apk"
+  if [[ -n "${PHONEVR_RELEASE_KEYSTORE:-}" && -n "${PHONEVR_RELEASE_STORE_PASSWORD:-}" && -n "${PHONEVR_RELEASE_KEY_ALIAS:-}" && -n "${PHONEVR_RELEASE_KEY_PASSWORD:-}" ]]; then
+    destination="${OUTPUT_ROOT}/PhoneVRStream-Android-release.apk"
+  else
+    destination="${OUTPUT_ROOT}/PhoneVRStream-Android-release-unsigned.apk"
+  fi
   cp -f "${release_apk}" "${destination}"
   artifacts+=("${destination}")
 fi

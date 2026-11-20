@@ -1,0 +1,246 @@
+name: PhoneVR Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: Version increment
+        required: true
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+        default: patch
+
+permissions:
+  contents: write
+
+concurrency:
+  group: phonevr-release
+  cancel-in-progress: false
+
+jobs:
+  prepare-release:
+    name: Bump version and create tag
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      version_code: ${{ steps.version.outputs.version_code }}
+      tag: ${{ steps.version.outputs.tag }}
+      release_sha: ${{ steps.commit.outputs.release_sha }}
+    steps:
+      - name: Checkout full history
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.x"
+
+      - name: Increment version metadata
+        id: version
+        shell: bash
+        run: |
+          result="$(python tools/release/bump_version.py "${{ inputs.bump }}")"
+          version="${result%%$'\t'*}"
+          version_code="${result#*$'\t'}"
+          tag="v${version}"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "version_code=${version_code}" >> "$GITHUB_OUTPUT"
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "Release version: ${version} (Android versionCode ${version_code})"
+
+      - name: Commit version bump and push release tag
+        id: commit
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add VERSION CHANGELOG.md README.md android/app/build.gradle.kts \
+            android/app/src/main/java/com/vsq/phonvrstream/network/NetworkClient.kt \
+            windows-host/README.md windows-host/cmd/phonevr-host/main.go
+          git commit -m "chore(release): ${{ steps.version.outputs.tag }}"
+          git tag -a "${{ steps.version.outputs.tag }}" -m "PhoneVRStream ${{ steps.version.outputs.version }}"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
+          git push origin "${{ steps.version.outputs.tag }}"
+          echo "release_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+  android-release:
+    name: Build Android release APK
+    needs: prepare-release
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.prepare-release.outputs.tag }}
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: gradle
+          cache-dependency-path: |
+            android/gradle/wrapper/gradle-wrapper.properties
+            android/*.gradle.kts
+            android/gradle.properties
+            android/app/*.gradle.kts
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v4
+
+      - name: Install Android SDK 36 packages
+        run: sdkmanager "platforms;android-36" "build-tools;36.0.0"
+
+      - name: Configure optional Android signing
+        shell: bash
+        env:
+          PHONEVR_RELEASE_KEYSTORE_BASE64: ${{ secrets.PHONEVR_RELEASE_KEYSTORE_BASE64 }}
+          PHONEVR_RELEASE_STORE_PASSWORD: ${{ secrets.PHONEVR_RELEASE_STORE_PASSWORD }}
+          PHONEVR_RELEASE_KEY_ALIAS: ${{ secrets.PHONEVR_RELEASE_KEY_ALIAS }}
+          PHONEVR_RELEASE_KEY_PASSWORD: ${{ secrets.PHONEVR_RELEASE_KEY_PASSWORD }}
+        run: |
+          if [[ -n "${PHONEVR_RELEASE_KEYSTORE_BASE64:-}" && -n "${PHONEVR_RELEASE_STORE_PASSWORD:-}" && -n "${PHONEVR_RELEASE_KEY_ALIAS:-}" && -n "${PHONEVR_RELEASE_KEY_PASSWORD:-}" ]]; then
+            keystore_path="${RUNNER_TEMP}/phonevr-release-keystore.jks"
+            printf '%s' "$PHONEVR_RELEASE_KEYSTORE_BASE64" | base64 --decode > "$keystore_path"
+            {
+              echo "PHONEVR_RELEASE_KEYSTORE=$keystore_path"
+              echo "PHONEVR_RELEASE_STORE_PASSWORD=$PHONEVR_RELEASE_STORE_PASSWORD"
+              echo "PHONEVR_RELEASE_KEY_ALIAS=$PHONEVR_RELEASE_KEY_ALIAS"
+              echo "PHONEVR_RELEASE_KEY_PASSWORD=$PHONEVR_RELEASE_KEY_PASSWORD"
+            } >> "$GITHUB_ENV"
+            echo "Android release signing is configured."
+          else
+            echo "Android release signing secrets are incomplete or absent; an unsigned APK will be published."
+          fi
+
+      - name: Test and build release APK
+        run: bash ./scripts/build-android.sh release
+
+      - name: Upload Android release APK
+        uses: actions/upload-artifact@v7
+        with:
+          name: PhoneVRStream-Android-${{ needs.prepare-release.outputs.version }}
+          path: dist/android/PhoneVRStream-Android-release*.apk
+          if-no-files-found: error
+          retention-days: 7
+
+  windows-release:
+    name: Build Windows x64 release package
+    needs: prepare-release
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.prepare-release.outputs.tag }}
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: windows-host/go.mod
+          cache: true
+          cache-dependency-path: windows-host/go.mod
+
+      - name: Test and build Windows Host
+        shell: pwsh
+        run: .\scripts\build-windows-host.ps1 -Version "${{ needs.prepare-release.outputs.version }}"
+
+      - name: Upload Windows release binaries
+        uses: actions/upload-artifact@v7
+        with:
+          name: PhoneVRHost-Windows-x64-${{ needs.prepare-release.outputs.version }}
+          path: |
+            dist/windows/PhoneVRHost.exe
+            dist/windows/PhoneVRHost-console.exe
+            dist/windows/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 7
+
+  publish-release:
+    name: Package and publish GitHub Release
+    needs:
+      - prepare-release
+      - android-release
+      - windows-release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download Android artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: PhoneVRStream-Android-${{ needs.prepare-release.outputs.version }}
+          path: release-staging/android
+
+      - name: Download Windows artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: PhoneVRHost-Windows-x64-${{ needs.prepare-release.outputs.version }}
+          path: release-staging/windows
+
+      - name: Assemble release assets and checksums
+        id: assets
+        shell: bash
+        run: |
+          version="${{ needs.prepare-release.outputs.version }}"
+          tag="${{ needs.prepare-release.outputs.tag }}"
+          mkdir -p "release-assets/PhoneVRHost-Windows-x64-${version}"
+          android_apk="$(find release-staging/android -maxdepth 1 -type f -name '*.apk' -print -quit)"
+          if [[ -z "$android_apk" ]]; then
+            echo "Release APK artifact was not downloaded." >&2
+            exit 1
+          fi
+          if [[ "$(basename "$android_apk")" == *unsigned* ]]; then
+            android_asset="PhoneVRStream-Android-${version}-release-unsigned.apk"
+          else
+            android_asset="PhoneVRStream-Android-${version}-release.apk"
+          fi
+          cp "$android_apk" "release-assets/${android_asset}"
+          cp release-staging/windows/PhoneVRHost.exe \
+            "release-assets/PhoneVRHost-Windows-x64-${version}/"
+          cp release-staging/windows/PhoneVRHost-console.exe \
+            "release-assets/PhoneVRHost-Windows-x64-${version}/"
+          cp release-staging/windows/SHA256SUMS.txt \
+            "release-assets/PhoneVRHost-Windows-x64-${version}/"
+          cat > "release-assets/PhoneVRHost-Windows-x64-${version}/README.txt" <<EOF
+          PhoneVR Host ${version}
+
+          Run PhoneVRHost.exe for the native desktop application.
+          Run PhoneVRHost-console.exe -headless for console diagnostics.
+          EOF
+          (cd release-assets && zip -qr "PhoneVRHost-Windows-x64-${version}.zip" "PhoneVRHost-Windows-x64-${version}")
+          (cd release-assets && sha256sum "PhoneVRStream-Android-${version}-release-unsigned.apk" "PhoneVRHost-Windows-x64-${version}.zip" > SHA256SUMS.txt)
+          cat > release-notes.md <<EOF
+          ## PhoneVRStream ${version}
+
+          - Android versionName: ${version}
+          - Android versionCode: ${{ needs.prepare-release.outputs.version_code }}
+          - Windows Host: ${version}
+          - Network protocol: v1
+
+          Android APK signing is enabled when the repository has all four secrets: `PHONEVR_RELEASE_KEYSTORE_BASE64`, `PHONEVR_RELEASE_STORE_PASSWORD`, `PHONEVR_RELEASE_KEY_ALIAS`, and `PHONEVR_RELEASE_KEY_PASSWORD`. Without them, the workflow publishes a clearly named unsigned APK that must be signed before installation.
+
+          See CHANGELOG.md in the tagged source for project changes.
+          EOF
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          tag="${{ needs.prepare-release.outputs.tag }}"
+          title="PhoneVRStream ${{ needs.prepare-release.outputs.version }}"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release edit "$tag" --title "$title" --notes-file release-notes.md
+          else
+            gh release create "$tag" --title "$title" --notes-file release-notes.md
+          fi
+          gh release upload "$tag" release-assets/PhoneVRStream-Android-*-release-unsigned.apk \
+            release-assets/PhoneVRHost-Windows-x64-*.zip release-assets/SHA256SUMS.txt --clobber

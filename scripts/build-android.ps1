@@ -55,7 +55,13 @@ if ($Configuration -eq "Release" -or $Configuration -eq "Both") {
     if (-not $releaseApk) {
         throw "Release APK was not produced in: $releaseDir"
     }
-    $destination = Join-Path $outputRoot "PhoneVRStream-Android-release-unsigned.apk"
+    if ($env:PHONEVR_RELEASE_KEYSTORE -and $env:PHONEVR_RELEASE_STORE_PASSWORD -and $env:PHONEVR_RELEASE_KEY_ALIAS -and $env:PHONEVR_RELEASE_KEY_PASSWORD) {
+        $releaseFileName = "PhoneVRStream-Android-release.apk"
+    }
+    else {
+        $releaseFileName = "PhoneVRStream-Android-release-unsigned.apk"
+    }
+    $destination = Join-Path $outputRoot $releaseFileName
     Copy-Item $releaseApk.FullName $destination -Force
     $artifacts += $destination
 }

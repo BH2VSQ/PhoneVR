@@ -1,5 +1,7 @@
 # PhoneVR Host 0.3.8
 
+Executable version is injected from the repository root `VERSION` file during builds.
+
 Native Windows desktop application and Go networking service for the PhoneVRStream Android HMD client.
 
 ## Native desktop UI

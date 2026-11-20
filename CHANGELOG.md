@@ -12,4 +12,7 @@
 - Removed browser dashboard endpoints, Edge/Chrome launch helpers and browser-embedded HTML/JavaScript assets.
 - Added mesh loading, Daydream preset and native preset persistence tests.
 - Removed the old dashboard window resize test that failed when a test process had no real GUI window; native resize geometry now runs in the actual main-window `WM_SIZING` handler.
+- Reworked the `WM_SIZING` RECT copy to use Win32 `RtlMoveMemory`, removing the `go vet` unsafe uintptr-to-pointer warning while keeping the native aspect-ratio resize logic.
+- Consolidated Android and Windows checks/builds into one `PhoneVR CI` workflow with parallel platform jobs.
+- Added a manually triggered Release workflow with patch/minor/major version bump, Android `versionCode` increment, synchronized client/Host version metadata, tagged builds, packaged Windows binaries, APK and GitHub Release publication.
 - Network protocol remains v1. Android client source remains unchanged at version 0.3.6.

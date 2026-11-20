@@ -1,12 +1,22 @@
 ﻿[CmdletBinding()]
 param(
-    [switch]$SkipTests
+    [switch]$SkipTests,
+    [string]$Version = ""
 )
 
 $ErrorActionPreference = "Stop"
 . (Join-Path $PSScriptRoot "common.ps1")
 
 $repoRoot = Get-PhoneVRRepositoryRoot
+if (-not $Version) {
+    $versionFile = Join-Path $repoRoot "VERSION"
+    if (Test-Path $versionFile) {
+        $Version = ([System.IO.File]::ReadAllText($versionFile)).Trim()
+    }
+}
+if (-not $Version -or $Version -notmatch '^\d+\.\d+\.\d+$') {
+    throw "A valid semantic version is required. Set VERSION or pass -Version."
+}
 $hostRoot = Join-Path $repoRoot "windows-host"
 $outputRoot = Join-Path $repoRoot "dist\windows"
 
@@ -44,7 +54,7 @@ try {
 
     Write-BuildStep "Building Windows x64 Host"
     $guiBuildArgs = @(
-        "build", "-trimpath", "-ldflags=-s -w -H=windowsgui",
+        "build", "-trimpath", "-ldflags=-s -w -H=windowsgui -X main.appVersion=$Version",
         "-o", (Join-Path $outputRoot "PhoneVRHost.exe"),
         "./cmd/phonevr-host"
     )
@@ -52,7 +62,7 @@ try {
 
     # A console build is retained for diagnostics and headless deployments.
     $consoleBuildArgs = @(
-        "build", "-trimpath", "-ldflags=-s -w",
+        "build", "-trimpath", "-ldflags=-s -w -X main.appVersion=$Version",
         "-o", (Join-Path $outputRoot "PhoneVRHost-console.exe"),
         "./cmd/phonevr-host"
     )

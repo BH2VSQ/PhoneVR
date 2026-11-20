@@ -1,0 +1,17 @@
+# Gradle / Android Studio
+.gradle/
+**/.gradle/
+.idea/
+**/local.properties
+**/build/
+*.iml
+
+# Go / generated build outputs
+**/dist/
+*.exe
+*.test
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/

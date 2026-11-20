@@ -1,0 +1,88 @@
+name: Windows Host CI
+
+on:
+  push:
+    paths:
+      - "windows-host/**"
+      - "docs/network-protocol-v1.md"
+      - "scripts/**"
+      - ".github/workflows/windows-host.yml"
+  pull_request:
+    paths:
+      - "windows-host/**"
+      - "docs/network-protocol-v1.md"
+      - "scripts/**"
+      - ".github/workflows/windows-host.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-host-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test-and-build:
+    name: Test and build Windows x64 Host
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: windows-host/go.mod
+          cache: true
+          cache-dependency-path: windows-host/go.mod
+
+      - name: Validate PowerShell 5.1 syntax
+        shell: powershell
+        run: |
+          $parseFailures = @()
+          Get-ChildItem -Path scripts -Filter *.ps1 -File | ForEach-Object {
+            $tokens = $null
+            $parseErrors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref]$tokens, [ref]$parseErrors) | Out-Null
+            if ($parseErrors.Count -gt 0) {
+              $parseFailures += "$($_.Name): $($parseErrors.Message -join '; ')"
+            }
+          }
+          if ($parseFailures.Count -gt 0) {
+            $parseFailures | ForEach-Object { Write-Host $_ -ForegroundColor Red }
+            throw "PowerShell 5.1 syntax validation failed."
+          }
+
+      - name: Validate PowerShell build scripts
+        shell: pwsh
+        run: |
+          $parseFailures = @()
+          Get-ChildItem -Path scripts -Filter *.ps1 -File | ForEach-Object {
+            $tokens = $null
+            $parseErrors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref]$tokens, [ref]$parseErrors) | Out-Null
+            if ($parseErrors.Count -gt 0) {
+              $parseFailures += "$($_.Name): $($parseErrors.Message -join '; ')"
+            }
+          }
+          if ($parseFailures.Count -gt 0) {
+            $parseFailures | ForEach-Object { Write-Host $_ -ForegroundColor Red }
+            throw "PowerShell build script syntax validation failed."
+          }
+
+      - name: Test and build Windows Host
+        shell: pwsh
+        run: .\scripts\build-windows-host.ps1
+
+      - name: Upload Windows Host artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: PhoneVRHost-Windows-x64-${{ github.sha }}
+          path: |
+            dist/windows/PhoneVRHost.exe
+            dist/windows/PhoneVRHost-console.exe
+            dist/windows/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 30

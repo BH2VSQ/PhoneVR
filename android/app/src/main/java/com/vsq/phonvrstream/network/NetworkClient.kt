@@ -31,6 +31,7 @@ class NetworkClient(
     private val applyRemoteDeviceAction: (String) -> Unit = {},
 ) {
     private val appContext = context.applicationContext
+    private val batteryManager = appContext.getSystemService(Context.BATTERY_SERVICE) as? BatteryManager
     private val mainHandler = Handler(Looper.getMainLooper())
     private val discoveryExecutor = Executors.newSingleThreadExecutor()
     private val sessionExecutor = Executors.newSingleThreadExecutor()
@@ -62,17 +63,21 @@ class NetworkClient(
 
     private fun isCharging(): Boolean {
         return try {
-            val battery = appContext.registerReceiver(null, android.content.IntentFilter(Intent.ACTION_BATTERY_CHANGED))
-            val status = battery?.getIntExtra(BatteryManager.EXTRA_STATUS, -1) ?: -1
-            status == BatteryManager.BATTERY_STATUS_CHARGING || status == BatteryManager.BATTERY_STATUS_FULL
-        } catch (_: Exception) { false }
+            // BatteryManager.isCharging() includes fully charged devices and avoids
+            // querying the sticky ACTION_BATTERY_CHANGED broadcast on every heartbeat.
+            batteryManager?.isCharging() == true
+        } catch (_: Exception) {
+            false
+        }
     }
 
     private fun batteryLevel(): Int? {
         return try {
-            val manager = appContext.getSystemService(Context.BATTERY_SERVICE) as? BatteryManager
-            manager?.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)?.takeIf { it in 0..100 }
-        } catch (_: Exception) { null }
+            batteryManager?.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)
+                ?.takeIf { it in 0..100 }
+        } catch (_: Exception) {
+            null
+        }
     }
 
     fun updatePose(pose: HeadPose) {

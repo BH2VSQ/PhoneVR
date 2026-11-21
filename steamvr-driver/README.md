@@ -1,4 +1,4 @@
-# PhoneVR SteamVR Driver — 0.4.9
+# PhoneVR SteamVR Driver — 0.4.10
 
 Windows x64 OpenVR server driver foundation for the PhoneVR wireless HMD.
 
@@ -63,3 +63,22 @@ subsequent integration step.
 
 The driver exposes only the phone's 3DoF orientation. No room-scale position
 or 6DoF tracking is synthesized.
+
+## Chaperone / tracking universe
+
+On HMD activation the driver publishes a built-in OpenVR v5 `chaperone_info`
+JSON string through `Prop_DriverProvidedChaperoneJson_String` and sets
+`Prop_CurrentUniverseId_Uint64` to the matching stable PhoneVR universe ID.
+The JSON defines both seated and standing origins with neutral transforms.
+Collision bounds are intentionally empty because this version has no position
+tracking and must not claim a room-scale safety boundary. The `[1, 1]` play-area
+value is metadata required by the Chaperone structure, not a measured physical
+play area. PhoneVR remains a 3DoF orientation-only HMD.
+
+The driver checks both property-write results and logs either successful
+publication or the OpenVR property error codes. A Chaperone-property write
+failure is non-fatal to HMD activation: pose tracking continues, while the log
+warns that SteamVR may still request Room Setup. A user may also see SteamVR's
+first-run onboarding independently of this driver property. Windows/SteamVR
+runtime testing is required to confirm the prompt disappears on the target
+installation.

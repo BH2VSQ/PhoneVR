@@ -30,6 +30,33 @@ constexpr uint32_t kEyeHeight = 1080;
 constexpr double kDisplayRefreshRateHz = 72.0;
 constexpr double kDisplayFrameIntervalSeconds = 1.0 / kDisplayRefreshRateHz;
 
+// Stable four-character PhoneVR tag (PHVR in ASCII).
+// SteamVR requires the JSON universeID (uint32) to match the HMD's
+// Prop_CurrentUniverseId_Uint64 property.
+constexpr uint32_t kPhoneVRUniverseId = 0x50485652u;
+constexpr char kDriverProvidedChaperoneJson[] = R"phonevr_chaperone(
+{
+  "json_id": "chaperone_info",
+  "version": 5,
+  "time": "2026-11-21T00:00:00Z",
+  "universes": [
+    {
+      "collision_bounds": [],
+      "play_area": [1.0, 1.0],
+      "seated": {
+        "translation": [0.0, 0.0, 0.0],
+        "yaw": 0.0
+      },
+      "standing": {
+        "translation": [0.0, 0.0, 0.0],
+        "yaw": 0.0
+      },
+      "universeID": 1346917970
+    }
+  ]
+}
+)phonevr_chaperone";
+
 uint32_t ReadBE32(const uint8_t* p) {
     return (static_cast<uint32_t>(p[0]) << 24) | (static_cast<uint32_t>(p[1]) << 16) |
            (static_cast<uint32_t>(p[2]) << 8) | static_cast<uint32_t>(p[3]);
@@ -236,6 +263,37 @@ public:
         properties->SetFloatProperty(container, vr::Prop_UserIpdMeters_Float, 0.064f);
         properties->SetFloatProperty(container, vr::Prop_DisplayFrequency_Float,
                                      static_cast<float>(kDisplayRefreshRateHz));
+
+        // PhoneVR supplies orientation only. Publish an explicit, stable
+        // driver-owned Chaperone universe so SteamVR does not depend on a
+        // user-created room-scale calibration for this 3DoF device. Empty
+        // collision bounds are intentional: PhoneVR has no positional
+        // tracking and must not advertise a fictitious room-scale boundary.
+        const auto universeResult = properties->SetUint64Property(
+            container, vr::Prop_CurrentUniverseId_Uint64,
+            static_cast<uint64_t>(kPhoneVRUniverseId));
+        const auto chaperoneResult = properties->SetStringProperty(
+            container, vr::Prop_DriverProvidedChaperoneJson_String,
+            kDriverProvidedChaperoneJson);
+        if (universeResult != vr::TrackedProp_Success ||
+            chaperoneResult != vr::TrackedProp_Success) {
+            char message[224]{};
+            std::snprintf(message, sizeof(message),
+                          "PhoneVR: failed to publish driver Chaperone (universe property=%d, JSON property=%d)",
+                          static_cast<int>(universeResult), static_cast<int>(chaperoneResult));
+            if (vr::VRDriverLog()) {
+                vr::VRDriverLog()->Log(message);
+                vr::VRDriverLog()->Log(
+                    "PhoneVR: continuing HMD activation without driver Chaperone; SteamVR may request Room Setup");
+            }
+        } else if (vr::VRDriverLog()) {
+            char message[160]{};
+            std::snprintf(message, sizeof(message),
+                          "PhoneVR: driver-provided Chaperone published (universe 0x%08X; 3DoF; no room-scale bounds)",
+                          kPhoneVRUniverseId);
+            vr::VRDriverLog()->Log(message);
+        }
+
         if (!m_receiver.Start() && vr::VRDriverLog())
             vr::VRDriverLog()->Log("PhoneVR: failed to bind local pose bridge on UDP 48103");
         return vr::VRInitError_None;
@@ -680,7 +738,7 @@ public:
         if (!host->TrackedDeviceAdded("PHONEVR-DISPLAY-001", vr::TrackedDeviceClass_DisplayRedirect, m_redirect)) {
             Cleanup(); return vr::VRInitError_Driver_Unknown;
         }
-        if (vr::VRDriverLog()) vr::VRDriverLog()->Log("PhoneVR 0.4.9 SteamVR driver initialized");
+        if (vr::VRDriverLog()) vr::VRDriverLog()->Log("PhoneVR 0.4.10 SteamVR driver initialized");
         return vr::VRInitError_None;
     }
     void Cleanup() override {

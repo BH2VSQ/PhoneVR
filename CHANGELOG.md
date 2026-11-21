@@ -1,3 +1,12 @@
+## 0.4.10 - Driver-provided Chaperone and stable universe
+
+- Added a valid OpenVR v5 `chaperone_info` JSON directly to the HMD properties, avoiding an external per-user file dependency.
+- Added a stable PhoneVR universe ID and set `Prop_CurrentUniverseId_Uint64` to the same identifier used by the JSON `universeID`.
+- Defined neutral seated and standing transforms and empty collision bounds, accurately reflecting the current 3DoF orientation-only tracking capability without inventing room-scale position or safety boundaries.
+- Checked both OpenVR property-write results and added explicit success/failure diagnostics to `vrserver.txt`; Chaperone failure is non-fatal so HMD pose tracking can continue.
+- Added automated JSON/schema, ID-consistency and 3DoF-boundary regression tests.
+- Bumped synchronized Android, Windows Host and SteamVR driver version metadata.
+
 ## 0.4.9 - SteamVR frame-sync load reduction and diagnostics
 
 - Removed the unused full-resolution D3D11 staging copy from `IVRVirtualDisplay::Present`; P0 has no encoder or frame consumer yet, so the extra 2400x1080 copy was wasted GPU bandwidth and memory traffic.

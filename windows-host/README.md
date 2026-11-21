@@ -1,4 +1,4 @@
-# PhoneVR Host 0.4.9 bundled SteamVR driver
+# PhoneVR Host 0.4.10 bundled SteamVR driver
 
 Executable version is injected from the repository root `VERSION` file during builds.
 

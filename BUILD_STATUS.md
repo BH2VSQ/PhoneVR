@@ -1,4 +1,12 @@
-# PhoneVR 0.4.9 Build Status
+# PhoneVR 0.4.10 Build Status
+
+## 0.4.10 Driver-provided Chaperone and stable universe
+
+- Added OpenVR v5 `chaperone_info` JSON on the HMD property container and published the matching stable `Prop_CurrentUniverseId_Uint64` value.
+- Chaperone provides neutral seated and standing transforms, an empty collision-bounds array, and a 1 x 1 metadata play area. The empty bounds are deliberate because the phone currently supplies only 3DoF orientation and cannot provide room-scale safety boundaries.
+- Both property writes are checked. If SteamVR rejects either property, the driver logs both error codes and continues HMD activation without the driver Chaperone so pose tracking is not taken down by a setup-metadata failure.
+- Added Python regression tests for JSON syntax/schema basics, the shared 32-bit universe ID, origin transforms and empty bounds.
+- The configuration is intended to remove PhoneVR's dependency on manually creating a room-scale setup. Whether the SteamVR first-run/room-setup prompt is suppressed must still be verified on the target Windows installation.
 
 ## 0.4.9 SteamVR flicker and load investigation
 
@@ -24,17 +32,17 @@
 - `go vet ./...`
 - Windows AMD64 Go Vet and test-binary cross-compilation
 - Windows AMD64 GUI and console Host cross-compilation (embedded-driver directory contains the tracked placeholder; real DLL embedding happens in the Windows build script)
-- Python release tooling unit tests
+- Python release tooling and Chaperone regression tests: 9 tests passed
 - GitHub Actions workflow YAML parsing
 - ZIP integrity and SHA-256 verification
 
 
 ## Requires Windows build and SteamVR runtime validation
 
-- Build the native driver with the pinned OpenVR SDK, Windows SDK and Visual Studio C++ x64 toolchain. This Linux environment does not have MSVC/Windows SDK, so the updated D3D11 driver cannot be natively compiled here.
-- Run SteamVR and inspect `vrserver.txt` for the enumerated adapter list, selected LUID, shared backbuffer dimensions/format, keyed-mutex timeout counts and GPU Map/device-removal errors.
-- Confirm Host's completed-frame counter increases continuously during a sustained SteamVR session, and verify the VR View remains stable.
-- Compare the logged adapter LUID with the GPU used by `vrcompositor.exe` in Task Manager/GPU Engine or SteamVR logs. A mismatch would require adapter selection to be corrected for the user's multi-GPU configuration.
-- Confirm Steam Client WebHelper CPU usage with SteamVR dashboard/overlay closed and open separately; do not assume it is caused by the PhoneVR driver without that comparison.
+- Build the native driver with the pinned OpenVR SDK, Windows SDK and Visual Studio C++ x64 toolchain. This Linux environment does not have MSVC/Windows SDK, so the updated C++ driver cannot be natively compiled here.
+- Restart SteamVR and inspect `vrserver.txt` for `PhoneVR: driver-provided Chaperone published`. If it reports a property error, also capture `PhoneVR: continuing HMD activation without driver Chaperone` and include both error numbers in the report.
+- Confirm whether the SteamVR Room Setup prompt no longer appears for PhoneVR. SteamVR first-run onboarding may still show independently of the driver's Chaperone properties.
+- Verify SteamVR's seated origin behaves as expected. The current configuration is orientation-only, uses neutral transforms and intentionally provides no room-scale boundary; do not use it as a 6DoF or guardian solution.
+- Continue checking the previously added DXGI adapter, shared-backbuffer, mutex and GPU synchronization diagnostics if the display remains unstable. Chaperone setup does not repair the separate D3D11 frame-submission path.
 
 P0 source changes are included. Final acceptance requires the user's Windows/SteamVR hardware validation. P1 video streaming remains unimplemented.

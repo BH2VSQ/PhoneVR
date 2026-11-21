@@ -1,3 +1,9 @@
+## 0.4.8 - SteamVR driver MSVC compatibility fix
+
+- Removed the invalid `override` specifier from `VirtualDisplayComponent`'s destructor. The pinned OpenVR 2.15.6 `IVRVirtualDisplay` interface has no virtual destructor; the concrete component still runs `Shutdown()` when its owning display device is destroyed.
+- Guarded `WIN32_LEAN_AND_MEAN` and `NOMINMAX` definitions so MSVC does not emit C4005 redefinition warnings when CMake already supplies them.
+- Bumped the synchronized application and driver version metadata.
+
 ## 0.4.7 - P0 SteamVR status and display-frame synchronization
 
 - Replaced the hard-coded SteamVR state with a live loopback driver heartbeat and explicit HMD, tracking, display and completed-frame states.

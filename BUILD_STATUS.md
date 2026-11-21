@@ -1,4 +1,10 @@
-# PhoneVR 0.4.7 Build Status
+# PhoneVR 0.4.8 Build Status
+
+## 0.4.8 MSVC build-log fixes
+
+- Fixed MSVC C3668: `IVRVirtualDisplay` in the pinned OpenVR 2.15.6 header declares only `Present`, `WaitForPresent` and `GetTimeSinceLastVsync`; it does not declare a virtual destructor. `VirtualDisplayComponent` now has a normal concrete destructor that calls `Shutdown()` without `override`.
+- Removed C4005 macro-redefinition warnings by guarding `WIN32_LEAN_AND_MEAN` and `NOMINMAX` when they are not already defined by the CMake target.
+- The user's reported Windows build log stops at this C++ compile error. The corrected source has not yet been built with MSVC in this environment; rebuild on Windows to confirm the full native driver link and embedding stages.
 
 ## P0 changes
 

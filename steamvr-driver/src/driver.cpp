@@ -1,5 +1,9 @@
+#ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
 #define NOMINMAX
+#endif
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <windows.h>
@@ -301,7 +305,7 @@ private:
 class VirtualDisplayComponent final : public vr::IVRVirtualDisplay {
 public:
     VirtualDisplayComponent() = default;
-    ~VirtualDisplayComponent() override { Shutdown(); }
+    ~VirtualDisplayComponent() { Shutdown(); }
 
     bool Initialize(uint64_t* adapterLuid) {
         if (!adapterLuid) return false;
@@ -625,7 +629,7 @@ public:
         if (!host->TrackedDeviceAdded("PHONEVR-DISPLAY-001", vr::TrackedDeviceClass_DisplayRedirect, m_redirect)) {
             Cleanup(); return vr::VRInitError_Driver_Unknown;
         }
-        if (vr::VRDriverLog()) vr::VRDriverLog()->Log("PhoneVR 0.4.7 SteamVR driver initialized");
+        if (vr::VRDriverLog()) vr::VRDriverLog()->Log("PhoneVR 0.4.8 SteamVR driver initialized");
         return vr::VRInitError_None;
     }
     void Cleanup() override {

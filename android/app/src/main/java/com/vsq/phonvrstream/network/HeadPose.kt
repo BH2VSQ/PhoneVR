@@ -11,8 +11,7 @@ data class HeadPose(
 
 enum class DiscoveryMode(val preferenceValue: String) {
     AUTO("auto"),
-    WIFI("wifi"),
-    USB("usb");
+    WIFI("wifi");
 
     companion object {
         fun fromPreference(value: String?): DiscoveryMode = values().firstOrNull { it.preferenceValue == value } ?: AUTO

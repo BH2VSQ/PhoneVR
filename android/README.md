@@ -66,6 +66,6 @@ After pairing, the Windows Host sends `get_optical_presets`. Android returns the
 The `display_settings` report and `set_display_settings` command remain supported for compatibility with earlier Host builds. The current Windows UI manages parameters through optical presets instead of directly editing a separate phone calibration state.
 
 
-## Wired USB connection
+## Live SBS video reception
 
-The PC connection panel offers Auto, Wi-Fi and USB/RNDIS discovery. For wired streaming, connect the handset to the Windows PC using a data-capable USB cable and enable **USB tethering / USB 网络共享** in Android Settings. Select **USB 有线（RNDIS）** and search. The app enumerates active IPv4 interfaces and sends directed discovery broadcasts through the USB tether interface (normally `rndis0`, `usb0` or an Ethernet-style interface). Once discovered, the same TCP control, UDP pose and H.264 video flows run over the USB network. This mode does not require ADB or Android USB debugging.
+When the Host negotiates a supported hardware H.264 decoder, the Android client binds UDP 48104, reassembles complete PVRV v1 access units and decodes them with the exact negotiated MediaCodec name into the stereo renderer's SurfaceTexture. The Android client reports receiver, UDP, fragment reassembly, decoder and first-render stages to the Host over the TCP control channel. The current streaming path is Wi-Fi; USB tether/RNDIS support is deferred.

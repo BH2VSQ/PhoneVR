@@ -231,15 +231,60 @@ func (app *nativeUI) paintMain(hdc uintptr) {
 	if app.snapshot.SteamVRConnected {
 		switch {
 		case !app.snapshot.SteamVRHMDActive:
-			steamText = app.text("SteamVR 已连接 · HMD 未激活", "STEAMVR CONNECTED · HMD INACTIVE")
+			steamText = app.text("SteamVR · HMD 未激活", "STEAMVR · HMD INACTIVE")
 		case !app.snapshot.SteamVRDisplayActive:
-			steamText = app.text("SteamVR 已连接 · 显示设备异常", "STEAMVR CONNECTED · DISPLAY ERROR")
+			steamText = app.text("SteamVR · 显示设备未激活", "STEAMVR · DISPLAY INACTIVE")
+		case !app.snapshot.SteamVRPresentCallbackSeen:
+			steamText = app.text("SteamVR · 尚未调用虚拟显示 Present", "STEAMVR · NO VIRTUAL PRESENT")
 		case !app.snapshot.SteamVRHasPresentedFrame:
-			steamText = app.text("SteamVR 已连接 · 等待画面", "STEAMVR CONNECTED · WAITING FRAME")
-		case !app.snapshot.SteamVRPoseValid:
-			steamText = app.text("SteamVR 已连接 · 等待姿态", "STEAMVR CONNECTED · WAITING POSE")
+			steamText = app.text("SteamVR · Present 已调用，等待 GPU 同步", "STEAMVR · WAITING GPU SYNC")
+		case !app.snapshot.VideoEncoderReady:
+			steamText = app.text("GPU 同步正常 · Host 硬件编码器未就绪", "GPU SYNC OK · HW ENCODER NOT READY")
+		case len(app.snapshot.ConnectedDevices) == 0 || !app.snapshot.ConnectedDevices[0].VideoEnabled:
+			steamText = app.text("画面时序正常 · 手机视频未协商", "DISPLAY OK · VIDEO NOT NEGOTIATED")
+		case !app.snapshot.SteamVRCaptureBridgeReady:
+			steamText = app.text("视频编码已协商 · 等待采集桥", "VIDEO NEGOTIATED · WAITING BRIDGE")
+		case !app.snapshot.SteamVRCaptureResourcesReady:
+			steamText = app.text("采集桥已连接 · 等待兼容的 GPU 采集纹理", "BRIDGE READY · WAITING GPU CAPTURE RESOURCES")
+		case !app.snapshot.SteamVRRawFrameSent:
+			steamText = app.text("GPU 采集资源就绪 · 等待首个原始帧", "GPU CAPTURE READY · WAITING RAW FRAME")
+		case app.snapshot.VideoEncodedFrames == 0:
+			steamText = app.text("Host 已收到原始画面 · 等待 H.264 编码输出", "RAW FRAME RECEIVED · WAITING H.264 OUTPUT")
+		case app.snapshot.VideoUDPPackets == 0:
+			steamText = app.text("H.264 已编码 · 等待 UDP 发送", "H.264 ENCODED · WAITING UDP SEND")
+		case len(app.snapshot.ConnectedDevices) > 0 && app.snapshot.ConnectedDevices[0].VideoStage != "":
+			switch app.snapshot.ConnectedDevices[0].VideoStage {
+			case "negotiated":
+				steamText = app.text("视频已协商 · 等待 Android 接收器", "VIDEO NEGOTIATED · WAITING ANDROID RECEIVER")
+			case "waiting_surface":
+				steamText = app.text("手机视频已协商 · 等待显示 Surface", "VIDEO NEGOTIATED · WAITING DISPLAY SURFACE")
+			case "receiver_started":
+				steamText = app.text("手机 UDP 接收器已启动 · 等待视频包", "PHONE UDP RECEIVER READY · WAITING PACKETS")
+			case "udp_wait":
+				steamText = app.text("手机已监听视频端口 · 尚未收到 UDP 数据", "PHONE LISTENING · NO VIDEO UDP RECEIVED")
+			case "fragment_wait":
+				steamText = app.text("手机已收到视频分片 · 尚未组成完整帧", "PHONE RECEIVED FRAGMENTS · NO COMPLETE FRAME")
+			case "udp_foreign_source":
+				steamText = app.text("手机收到了非预期来源的视频包", "PHONE RECEIVED VIDEO FROM UNEXPECTED SOURCE")
+			case "receiver_error":
+				steamText = app.text("手机视频接收器启动失败", "PHONE VIDEO RECEIVER FAILED")
+			case "udp_first_datagram":
+				steamText = app.text("视频 UDP 已到达手机 · 等待完整帧", "VIDEO UDP REACHED PHONE · WAITING FRAME")
+			case "first_access_unit", "receiving":
+				steamText = app.text("手机已收到视频 · 等待解码器", "PHONE RECEIVING VIDEO · WAITING DECODER")
+			case "decoder_ready", "decoder_input":
+				steamText = app.text("手机 H.264 解码器已启动", "PHONE H.264 DECODER ACTIVE")
+			case "decoded_frame":
+				steamText = app.text("手机已解码画面 · 等待屏幕显示", "PHONE DECODED · WAITING DISPLAY")
+			case "surface_frame":
+				steamText = app.text("双目视频正在显示", "STEREO VIDEO DISPLAYING")
+			case "decoder_error":
+				steamText = app.text("手机视频解码失败", "PHONE VIDEO DECODER ERROR")
+			default:
+				steamText = app.text("视频已发送 · 手机阶段："+app.snapshot.ConnectedDevices[0].VideoStage, "VIDEO SENT · PHONE: "+app.snapshot.ConnectedDevices[0].VideoStage)
+			}
 		default:
-			steamText = app.text("SteamVR 已连接 · 画面与姿态正常", "STEAMVR CONNECTED · DISPLAY + TRACKING OK")
+			steamText = app.text("视频 UDP 已发送 · 等待手机接收确认", "VIDEO UDP SENT · WAITING PHONE ACK")
 		}
 	}
 	// Fit the status into the free space between the left state pill and the

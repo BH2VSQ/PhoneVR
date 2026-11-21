@@ -1,3 +1,20 @@
+## 0.4.21 - Video capture bridge and Android receive diagnostics
+
+- Deferred USB tether/RNDIS streaming; the supported connection paths remain Auto and Wi-Fi while the Wi-Fi video pipeline is stabilized.
+- Fixed the SteamVR driver capture-ready status flag: `m_captureResourcesReady` is now set after successful D3D11 capture resource creation, including the already-initialized fast path.
+- Changed video staging readback from a one-shot nonblocking Map that dropped `DXGI_ERROR_WAS_STILL_DRAWING` frames to a bounded 20-attempt worker-side retry. Each retry releases resource locks before sleeping, so the compositor thread is not blocked by GPU readback wait.
+- Added SteamVR driver stage counters for captured, readback, sent, Map retries and skipped video frames, making D3D11 capture progress visible in `vrserver.txt`.
+- Fixed Android-to-Host video stage feedback wiring: the `VideoStreamReceiver` callback is now passed by `NetworkClient`, so UDP receive, access-unit reassembly, MediaCodec startup, decode output and SurfaceTexture presentation can update the Host status.
+- Added explicit Android `waiting_surface`, `receiver_started`, `udp_wait`, `udp_foreign_source` and `receiver_error` states to distinguish no incoming UDP from decode/display failures.
+- Updated the Host status pill to show each Android receive stage rather than leaving the user with a generic waiting-for-frame message.
+- Kept the OpenVR HMD `IVRDisplayComponent` and the separate `TrackedDeviceClass_DisplayRedirect` / `IVRVirtualDisplay` path; they serve distinct display-calibration and compositor-redirection responsibilities.
+- Android versionCode increased to 37. Windows MSVC native driver compilation and Android Gradle/device end-to-end streaming still require validation on target hardware.
+
+## 0.4.20 - Automated release
+
+- Android versionName and versionCode bumped by the manual release workflow.
+- Windows Host version metadata updated from the repository VERSION file.
+
 ## 0.4.19 - USB tethered streaming and D3D11 build fix
 
 - Fixed the MSVC C2065 build failure by including the Windows SDK `d3d11_4.h` header that declares `ID3D11Multithread`.

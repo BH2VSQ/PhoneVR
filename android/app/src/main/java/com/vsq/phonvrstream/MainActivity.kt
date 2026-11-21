@@ -190,6 +190,7 @@ class MainActivity : Activity(), SensorEventListener {
 
         renderer = StereoRenderer()
         renderer.setVideoSurfaceListener { surface -> networkClient.attachVideoSurface(surface) }
+        renderer.setFirstVideoFrameListener { networkClient.reportVideoStatus("surface_frame", "First decoded SBS frame consumed by the OpenGL display renderer") }
         glView = GLSurfaceView(this).apply {
             setEGLContextClientVersion(3)
             preserveEGLContextOnPause = true
@@ -452,17 +453,13 @@ class MainActivity : Activity(), SensorEventListener {
 
         content.addView(label("连接方式", secondary = true))
         connectionModeSpinner = Spinner(this).apply {
-            val options = listOf("自动（USB + Wi-Fi）", "Wi-Fi 无线", "USB 有线（RNDIS）")
+            val options = listOf("自动搜索网络", "Wi-Fi 无线")
             adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_item, options).also {
                 it.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
             }
             val savedMode = getSharedPreferences("phone_vr_connection", MODE_PRIVATE)
                 .getString("connection_mode", "auto")
-            setSelection(when (DiscoveryMode.fromPreference(savedMode)) {
-                DiscoveryMode.WIFI -> 1
-                DiscoveryMode.USB -> 2
-                else -> 0
-            })
+            setSelection(if (DiscoveryMode.fromPreference(savedMode) == DiscoveryMode.WIFI) 1 else 0)
         }
         content.addView(connectionModeSpinner, LinearLayout.LayoutParams(-1, dp(40)))
         content.addView(label("PC 地址", secondary = true).apply { setPadding(0, dp(6), 0, 0) })
@@ -499,9 +496,8 @@ class MainActivity : Activity(), SensorEventListener {
             getSharedPreferences("phone_vr_connection", MODE_PRIVATE).edit()
                 .putString("connection_mode", discoveryMode.preferenceValue).apply()
             connectionMessage = when (discoveryMode) {
-                DiscoveryMode.USB -> "正在 USB/RNDIS 有线网络中搜索 PhoneVR Host"
                 DiscoveryMode.WIFI -> "正在 Wi-Fi 网络中搜索 PhoneVR Host"
-                else -> "正在 USB 与 Wi-Fi 网络中搜索 PhoneVR Host"
+                else -> "正在可用网络接口中搜索 PhoneVR Host"
             }
             connectionStatusLabel.text = "$connectionMessage…"
             updateTopHud()
@@ -509,11 +505,7 @@ class MainActivity : Activity(), SensorEventListener {
             networkClient.discover(discoveryMode) { hosts ->
                 discoveredHostList.removeAllViews()
                 if (hosts.isEmpty()) {
-                    val emptyMessage = if (discoveryMode == DiscoveryMode.USB) {
-                        "没有发现 USB 主机。请用支持数据传输的 USB 线连接手机和电脑，在手机设置中开启‘USB 网络共享’，等待 Windows 出现 USB/RNDIS 网卡后重试。"
-                    } else {
-                        "没有发现 PC。请确认主机程序已启动、Windows 防火墙允许 PhoneVRHost，或手动输入 IP 地址。"
-                    }
+                    val emptyMessage = "没有发现 PC。请确认主机程序已启动、手机和电脑处于同一局域网且 Windows 防火墙允许 PhoneVRHost，或手动输入 IP 地址。"
                     discoveredHostList.addView(label(emptyMessage, true).apply { setPadding(0, dp(6), 0, dp(6)) })
                 } else {
                     // Always populate the address fields as soon as discovery
@@ -521,13 +513,7 @@ class MainActivity : Activity(), SensorEventListener {
                     // to transfer the discovered IP into the manual connect form.
                     val saved = getSharedPreferences("phone_vr_connection", MODE_PRIVATE)
                     val rememberedAddress = saved.getString("host", null)
-                    val selected = if (discoveryMode == DiscoveryMode.AUTO) {
-                        hosts.firstOrNull { it.connectionType == "USB" }
-                            ?: hosts.firstOrNull { it.address == rememberedAddress }
-                            ?: hosts.first()
-                    } else {
-                        hosts.firstOrNull { it.address == rememberedAddress } ?: hosts.first()
-                    }
+                    val selected = hosts.firstOrNull { it.address == rememberedAddress } ?: hosts.first()
                     fillConnectionAddress(selected, persist = true)
                     hosts.forEach { host -> addDiscoveredHost(host, selected.address == host.address) }
                     connectionStatusLabel.text = if (hosts.size == 1) {
@@ -549,7 +535,7 @@ class MainActivity : Activity(), SensorEventListener {
         content.addView(discoveredHostList)
 
         content.addView(label(
-            "Wi-Fi：手机和电脑连接同一局域网。USB：使用数据线连接手机和电脑，并在手机系统设置中开启 USB 网络共享（RNDIS）；USB 模式不需要 ADB 或 USB 调试。若发现失败，可手动输入 Host 对应网卡的 IPv4 地址。",
+            "请确保手机和电脑连接同一局域网，且允许 PhoneVRHost 通过 Windows 防火墙。若自动发现失败，可手动输入 Host 的 IPv4 地址。",
             secondary = true,
         ).apply { setPadding(0, dp(8), 0, dp(10)) })
 
@@ -586,10 +572,10 @@ class MainActivity : Activity(), SensorEventListener {
         return panel
     }
 
-    private fun selectedDiscoveryMode(): DiscoveryMode = when (connectionModeSpinner.selectedItemPosition) {
-        1 -> DiscoveryMode.WIFI
-        2 -> DiscoveryMode.USB
-        else -> DiscoveryMode.AUTO
+    private fun selectedDiscoveryMode(): DiscoveryMode = if (connectionModeSpinner.selectedItemPosition == 1) {
+        DiscoveryMode.WIFI
+    } else {
+        DiscoveryMode.AUTO
     }
 
     private fun fillConnectionAddress(host: DiscoveredHost, persist: Boolean) {

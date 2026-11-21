@@ -92,12 +92,3 @@ This removes generated build outputs while preserving Android SDK, Gradle user c
 Java version detection captures standard output and standard error separately. This is intentional: `java -version` normally prints to standard error, which must not be confused with a PowerShell error when `$ErrorActionPreference` is set to `Stop`. JDK 17 or newer is accepted.
 
 
-## USB tethering firewall
-
-When Windows marks the Android USB/RNDIS adapter as a Public network, use an elevated PowerShell to allow PhoneVR only from the directly connected local subnet:
-
-```powershell
-.\tools\enable-usb-tethering-firewall.ps1
-```
-
-Remove the three rules with `-Remove`. The helper opens only inbound discovery UDP 48100, pose UDP 48102 and control TCP 48101. The video stream UDP 48104 is sent outbound to the Android peer; SteamVR bridge ports remain loopback-only.

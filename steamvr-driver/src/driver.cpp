@@ -355,6 +355,10 @@ constexpr uint8_t kStatusHmdActive = 1 << 1;
 constexpr uint8_t kStatusPoseValid = 1 << 2;
 constexpr uint8_t kStatusDisplayActive = 1 << 3;
 constexpr uint8_t kStatusPresentedFrame = 1 << 4;
+constexpr uint8_t kStatusPresentCallbackSeen = 1 << 5;
+constexpr uint8_t kStatusCaptureBridgeReady = 1 << 6;
+constexpr uint8_t kStatusFirstRawFrameSent = 1 << 7;
+constexpr uint8_t kStatus2CaptureResourcesReady = 1 << 0;
 
 class SteamVRStatusReporter {
 public:
@@ -374,7 +378,7 @@ public:
         return true;
     }
 
-    void Send(uint8_t flags, uint64_t frameCounter) {
+    void Send(uint8_t flags, uint8_t flags2, uint64_t frameCounter) {
         if (m_socket == INVALID_SOCKET) return;
         const uint64_t now = MonotonicNowNs();
         if (m_lastSentNs && now - m_lastSentNs < 250000000ULL) return;
@@ -383,6 +387,7 @@ public:
         std::memcpy(packet.data(), "PVST", 4);
         packet[4] = 1;
         packet[5] = flags;
+        packet[6] = flags2;
         for (int i = 0; i < 8; ++i)
             packet[8 + i] = static_cast<uint8_t>(frameCounter >> (56 - i * 8));
         (void)sendto(m_socket, reinterpret_cast<const char*>(packet.data()),
@@ -777,6 +782,7 @@ public:
 
     void Present(const vr::PresentInfo_t* info, uint32_t infoSize) override {
         ScopedCallbackTiming timing(m_presentCalls, m_maxPresentDurationNs);
+        m_presentCallbackSeen.store(true, std::memory_order_release);
         std::lock_guard<std::mutex> lock(m_mutex);
         if (!info || infoSize < sizeof(vr::PresentInfo_t) || !info->backbufferTextureHandle) {
             return;
@@ -787,6 +793,9 @@ public:
         if (sharedHandle != m_sharedHandle) {
             ReleaseTexture(m_sharedTexture);
             ReleaseTexture(m_flushTexture);
+            ReleaseTexture(m_syncResolveTexture);
+            m_sharedFormat = DXGI_FORMAT_UNKNOWN;
+            m_sharedSampleCount = 1;
             m_sharedHandle = sharedHandle;
             HRESULT openResult = m_device->OpenSharedResource(
                 sharedHandle, __uuidof(ID3D11Texture2D), reinterpret_cast<void**>(&m_sharedTexture));
@@ -802,18 +811,26 @@ public:
             if (vr::VRDriverLog()) {
                 char line[256]{};
                 std::snprintf(line, sizeof(line),
-                              "PhoneVR: opened compositor backbuffer %ux%u format=%u samples=%u array=%u mips=%u misc=0x%X",
+                              "PhoneVR: opened compositor backbuffer %ux%u format=%u samples=%u array=%u mips=%u misc=0x%X (capture target 1600x720 BGRA8)",
                               source.Width, source.Height, static_cast<unsigned>(source.Format),
                               source.SampleDesc.Count, source.ArraySize, source.MipLevels, source.MiscFlags);
                 vr::VRDriverLog()->Log(line);
             }
-            if (!EnsureSyncTexture()) return;
+            if (!EnsureSyncTexture()) {
+                ReleaseTexture(m_sharedTexture);
+                m_sharedHandle = nullptr;
+                return;
+            }
         }
         if (!m_sharedTexture || !m_flushTexture) return;
-        if (m_captureBridgeReady.load(std::memory_order_acquire) && !m_captureInputTexture) {
+        if (m_captureBridgeReady.load(std::memory_order_acquire)) {
             D3D11_TEXTURE2D_DESC captureSource{};
             m_sharedTexture->GetDesc(&captureSource);
-            EnsureVideoCaptureResources(captureSource);
+            if (!m_captureInputTexture || m_captureWidth != captureSource.Width ||
+                m_captureHeight != captureSource.Height || m_captureSourceFormat != captureSource.Format ||
+                m_captureSampleCount != captureSource.SampleDesc.Count) {
+                EnsureVideoCaptureResources(captureSource);
+            }
         }
 
         IDXGIKeyedMutex* keyedMutex = nullptr;
@@ -842,9 +859,17 @@ public:
         if (m_captureBridgeReady.load(std::memory_order_acquire) && (!keyedMutex || mutexAcquired) && m_captureInputTexture) CaptureVideoFrameUnlocked(info->nFrameId);
 
         // Keep the small GPU completion fence used by Valve's virtual-display sample.
+        // Resolve multisampled compositor buffers first; CopySubresourceRegion cannot
+        // copy directly from an MSAA resource into a single-sample staging texture.
+        ID3D11Texture2D* syncSource = m_sharedTexture;
+        if (m_sharedSampleCount > 1) {
+            if (!m_syncResolveTexture) return;
+            m_context->ResolveSubresource(m_syncResolveTexture, 0, m_sharedTexture, 0, m_sharedFormat);
+            syncSource = m_syncResolveTexture;
+        }
         const D3D11_BOX syncBox{0, 0, 0, 1, 1, 1};
         m_context->CopySubresourceRegion(m_flushTexture, 0, 0, 0, 0,
-                                         m_sharedTexture, 0, &syncBox);
+                                         syncSource, 0, &syncBox);
         m_context->Flush();
 
         if (mutexAcquired) keyedMutex->ReleaseSync(0);
@@ -897,6 +922,10 @@ public:
     }
 
     uint64_t PresentCounter() const { return m_completedFrameCounter.load(std::memory_order_relaxed); }
+    bool PresentCallbackSeen() const { return m_presentCallbackSeen.load(std::memory_order_acquire); }
+    bool CaptureBridgeReady() const { return m_captureBridgeReady.load(std::memory_order_acquire); }
+    bool FirstRawFrameSent() const { return m_firstRawFrameSent.load(std::memory_order_acquire); }
+    bool CaptureResourcesReady() const { return m_captureResourcesReady.load(std::memory_order_acquire); }
     VirtualDisplayTimingSnapshot TakeTimingSnapshot() {
         VirtualDisplayTimingSnapshot snapshot{};
         snapshot.presentCalls = m_presentCalls.exchange(0, std::memory_order_relaxed);
@@ -930,24 +959,19 @@ private:
         if (!m_sharedTexture || !m_device) return false;
         D3D11_TEXTURE2D_DESC source{};
         m_sharedTexture->GetDesc(&source);
-        if (source.Width == 0 || source.Height == 0 || source.SampleDesc.Count != 1) {
-            if (vr::VRDriverLog()) vr::VRDriverLog()->Log("PhoneVR: unsupported compositor backbuffer dimensions or sample count");
+        if (source.Width == 0 || source.Height == 0 || source.ArraySize != 1 || source.SampleDesc.Count == 0) {
+            if (vr::VRDriverLog()) vr::VRDriverLog()->Log("PhoneVR: unsupported compositor backbuffer dimensions, array size or sample count");
             return false;
         }
-        // D3D11 staging texture used solely as a GPU completion fence. The
-        // actual source rectangle copied into it is 1x1, as in Valve's sample.
-        constexpr UINT syncWidth = 32;
-        constexpr UINT syncHeight = 32;
         if (m_flushTexture) {
             D3D11_TEXTURE2D_DESC current{};
             m_flushTexture->GetDesc(&current);
-            if (current.Width != syncWidth || current.Height != syncHeight || current.Format != source.Format)
-                ReleaseTexture(m_flushTexture);
+            if (current.Format != source.Format) ReleaseTexture(m_flushTexture);
         }
         if (!m_flushTexture) {
             D3D11_TEXTURE2D_DESC flush{};
-            flush.Width = syncWidth;
-            flush.Height = syncHeight;
+            flush.Width = 32;
+            flush.Height = 32;
             flush.MipLevels = 1;
             flush.ArraySize = 1;
             flush.Format = source.Format;
@@ -963,6 +987,35 @@ private:
             }
             m_loggedSyncTextureFailure = false;
         }
+        if (source.SampleDesc.Count > 1) {
+            if (m_syncResolveTexture) {
+                D3D11_TEXTURE2D_DESC current{};
+                m_syncResolveTexture->GetDesc(&current);
+                if (current.Width != source.Width || current.Height != source.Height || current.Format != source.Format)
+                    ReleaseTexture(m_syncResolveTexture);
+            }
+            if (!m_syncResolveTexture) {
+                UINT formatSupport = 0;
+                if (FAILED(m_device->CheckFormatSupport(source.Format, &formatSupport)) ||
+                    !(formatSupport & D3D11_FORMAT_SUPPORT_MULTISAMPLE_RESOLVE)) {
+                    if (vr::VRDriverLog()) vr::VRDriverLog()->Log("PhoneVR: compositor MSAA format cannot be resolved for virtual-display synchronization");
+                    return false;
+                }
+                D3D11_TEXTURE2D_DESC resolve{};
+                resolve.Width = source.Width; resolve.Height = source.Height;
+                resolve.MipLevels = 1; resolve.ArraySize = 1; resolve.Format = source.Format;
+                resolve.SampleDesc.Count = 1; resolve.Usage = D3D11_USAGE_DEFAULT;
+                const HRESULT hr = m_device->CreateTexture2D(&resolve, nullptr, &m_syncResolveTexture);
+                if (FAILED(hr) || !m_syncResolveTexture) {
+                    LogD3DFailureOnce("CreateTexture2D(sync resolve)", hr, m_loggedSyncTextureFailure);
+                    return false;
+                }
+            }
+        } else {
+            ReleaseTexture(m_syncResolveTexture);
+        }
+        m_sharedFormat = source.Format;
+        m_sharedSampleCount = source.SampleDesc.Count;
         return m_flushTexture != nullptr;
     }
 
@@ -1014,24 +1067,59 @@ float4 main(float4 position : SV_POSITION, float2 uv : TEXCOORD0) : SV_TARGET {
 )HLSL";
 
     bool EnsureVideoCaptureResources(const D3D11_TEXTURE2D_DESC& source) {
-        if (!m_device || !m_context || source.SampleDesc.Count != 1 ||
-            (source.Format != DXGI_FORMAT_B8G8R8A8_UNORM && source.Format != DXGI_FORMAT_R8G8B8A8_UNORM)) {
+        m_captureResourcesReady.store(false, std::memory_order_release);
+        const bool supportedFormat = source.Format == DXGI_FORMAT_B8G8R8A8_UNORM ||
+            source.Format == DXGI_FORMAT_R8G8B8A8_UNORM ||
+            source.Format == DXGI_FORMAT_R10G10B10A2_UNORM ||
+            source.Format == DXGI_FORMAT_R16G16B16A16_FLOAT;
+        if (!m_device || !m_context || source.ArraySize != 1 || !supportedFormat) {
             if (!m_loggedVideoFormatFailure && vr::VRDriverLog()) {
-                vr::VRDriverLog()->Log("PhoneVR: video capture requires single-sample BGRA8/RGBA8 compositor texture; video stream disabled for this backbuffer");
+                char line[256]{};
+                std::snprintf(line, sizeof(line),
+                    "PhoneVR: unsupported video compositor texture format=%u samples=%u array=%u; supported formats are BGRA8/RGBA8/R10G10B10A2/RGBA16F",
+                    static_cast<unsigned>(source.Format), source.SampleDesc.Count, source.ArraySize);
+                vr::VRDriverLog()->Log(line);
                 m_loggedVideoFormatFailure = true;
             }
             return false;
         }
+        if (source.SampleDesc.Count > 1) {
+            UINT support = 0;
+            if (FAILED(m_device->CheckFormatSupport(source.Format, &support)) ||
+                !(support & D3D11_FORMAT_SUPPORT_MULTISAMPLE_RESOLVE)) {
+                if (!m_loggedVideoFormatFailure && vr::VRDriverLog())
+                    vr::VRDriverLog()->Log("PhoneVR: compositor multisample format does not support D3D11 ResolveSubresource; video capture disabled");
+                m_loggedVideoFormatFailure = true;
+                return false;
+            }
+        }
         std::lock_guard<std::mutex> lock(m_captureResourcesMutex);
-        if (m_captureInputTexture && m_captureOutputTexture && m_captureSrv && m_captureRtv) return true;
+        if (m_captureInputTexture && m_captureOutputTexture && m_captureSrv && m_captureRtv &&
+            m_captureWidth == source.Width && m_captureHeight == source.Height &&
+            m_captureSourceFormat == source.Format && m_captureSampleCount == source.SampleDesc.Count) {
+            m_captureResourcesReady.store(true, std::memory_order_release);
+            return true;
+        }
         ReleaseVideoCaptureResourcesUnlocked();
 
         D3D11_TEXTURE2D_DESC input = source;
-        input.MipLevels = 1; input.ArraySize = 1; input.Usage = D3D11_USAGE_DEFAULT;
+        input.MipLevels = 1; input.ArraySize = 1; input.SampleDesc.Count = 1; input.SampleDesc.Quality = 0;
+        input.Usage = D3D11_USAGE_DEFAULT;
         input.BindFlags = D3D11_BIND_SHADER_RESOURCE; input.CPUAccessFlags = 0; input.MiscFlags = 0;
         HRESULT hr = m_device->CreateTexture2D(&input, nullptr, &m_captureInputTexture);
         if (FAILED(hr)) { LogD3DFailure("CreateTexture2D(video input)", hr); return false; }
-        hr = m_device->CreateShaderResourceView(m_captureInputTexture, nullptr, &m_captureSrv);
+        if (source.SampleDesc.Count > 1) {
+            D3D11_TEXTURE2D_DESC resolve = input;
+            resolve.BindFlags = 0;
+            hr = m_device->CreateTexture2D(&resolve, nullptr, &m_captureResolveTexture);
+            if (FAILED(hr)) { LogD3DFailure("CreateTexture2D(video resolve)", hr); ReleaseVideoCaptureResourcesUnlocked(); return false; }
+        }
+        D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc{};
+        srvDesc.Format = source.Format;
+        srvDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+        srvDesc.Texture2D.MostDetailedMip = 0;
+        srvDesc.Texture2D.MipLevels = 1;
+        hr = m_device->CreateShaderResourceView(m_captureInputTexture, &srvDesc, &m_captureSrv);
         if (FAILED(hr)) { LogD3DFailure("CreateShaderResourceView(video)", hr); ReleaseVideoCaptureResourcesUnlocked(); return false; }
 
         D3D11_TEXTURE2D_DESC output{};
@@ -1067,7 +1155,10 @@ float4 main(float4 position : SV_POSITION, float2 uv : TEXCOORD0) : SV_TARGET {
             hr = m_device->CreateTexture2D(&staging, nullptr, &slot.staging);
             if (FAILED(hr)) { LogD3DFailure("CreateTexture2D(video staging)", hr); ReleaseVideoCaptureResourcesUnlocked(); return false; }
         }
-        m_captureWidth = source.Width; m_captureHeight = source.Height; m_loggedVideoFormatFailure = false;
+        m_captureWidth = source.Width; m_captureHeight = source.Height;
+        m_captureSourceFormat = source.Format; m_captureSampleCount = source.SampleDesc.Count;
+        m_loggedVideoFormatFailure = false;
+        m_captureResourcesReady.store(true, std::memory_order_release);
         if (vr::VRDriverLog()) {
             char line[192]{}; std::snprintf(line, sizeof(line), "PhoneVR: H.264 capture resources ready: source %ux%u -> SBS %ux%u @ %u FPS", source.Width, source.Height, kVideoWidth, kVideoHeight, kVideoFrameRate);
             vr::VRDriverLog()->Log(line);
@@ -1090,7 +1181,13 @@ float4 main(float4 position : SV_POSITION, float2 uv : TEXCOORD0) : SV_TARGET {
         }
         if (slotIndex == kVideoCaptureSlots) { m_videoFramesSkipped.fetch_add(1, std::memory_order_relaxed); return; }
         auto& slot = m_captureSlots[slotIndex];
-        m_context->CopyResource(m_captureInputTexture, m_sharedTexture);
+        if (m_captureSampleCount > 1) {
+            if (!m_captureResolveTexture) { slot.busy.store(false, std::memory_order_release); return; }
+            m_context->ResolveSubresource(m_captureResolveTexture, 0, m_sharedTexture, 0, m_captureSourceFormat);
+            m_context->CopyResource(m_captureInputTexture, m_captureResolveTexture);
+        } else {
+            m_context->CopyResource(m_captureInputTexture, m_sharedTexture);
+        }
         ID3D11RenderTargetView* target = m_captureRtv;
         m_context->OMSetRenderTargets(1, &target, nullptr);
         D3D11_VIEWPORT viewport{}; viewport.Width = static_cast<float>(kVideoWidth); viewport.Height = static_cast<float>(kVideoHeight); viewport.MaxDepth = 1.0f;
@@ -1112,6 +1209,7 @@ float4 main(float4 position : SV_POSITION, float2 uv : TEXCOORD0) : SV_TARGET {
             }
             m_captureQueue.push_back(slotIndex);
         }
+        m_videoFramesCaptured.fetch_add(1, std::memory_order_relaxed);
         m_captureCv.notify_one();
     }
 
@@ -1137,7 +1235,27 @@ float4 main(float4 position : SV_POSITION, float2 uv : TEXCOORD0) : SV_TARGET {
         }
         SOCKET bridge = INVALID_SOCKET;
         std::vector<uint8_t> pixels(static_cast<size_t>(kVideoWidth) * kVideoHeight * 4);
+        uint64_t lastCaptureStatsNs = MonotonicNowNs();
         while (m_captureRunning.load(std::memory_order_acquire)) {
+            const uint64_t statsNow = MonotonicNowNs();
+            if (statsNow - lastCaptureStatsNs >= 5000000000ULL) {
+                const double seconds = static_cast<double>(statsNow - lastCaptureStatsNs) / 1.0e9;
+                lastCaptureStatsNs = statsNow;
+                const auto captured = m_videoFramesCaptured.exchange(0, std::memory_order_relaxed);
+                const auto readback = m_videoFramesReadback.exchange(0, std::memory_order_relaxed);
+                const auto sent = m_videoFramesSent.exchange(0, std::memory_order_relaxed);
+                const auto retries = m_videoMapPendingRetries.exchange(0, std::memory_order_relaxed);
+                const auto skipped = m_videoFramesSkipped.exchange(0, std::memory_order_relaxed);
+                if (vr::VRDriverLog()) {
+                    char line[256]{};
+                    std::snprintf(line, sizeof(line),
+                        "PhoneVR: video capture stages captured=%.1f/s readback=%.1f/s sent=%.1f/s map-retries=%llu skipped=%llu bridge=%d resources=%d",
+                        captured / seconds, readback / seconds, sent / seconds,
+                        static_cast<unsigned long long>(retries), static_cast<unsigned long long>(skipped),
+                        m_captureBridgeReady.load() ? 1 : 0, m_captureResourcesReady.load() ? 1 : 0);
+                    vr::VRDriverLog()->Log(line);
+                }
+            }
             if (bridge == INVALID_SOCKET) {
                 bridge = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
                 if (bridge != INVALID_SOCKET) {
@@ -1151,7 +1269,7 @@ float4 main(float4 position : SV_POSITION, float2 uv : TEXCOORD0) : SV_TARGET {
                             closesocket(bridge); bridge = INVALID_SOCKET;
                         } else {
                             m_captureBridgeReady.store(true, std::memory_order_release);
-                            if (vr::VRDriverLog()) vr::VRDriverLog()->Log("PhoneVR: Host accepted the H.264 capture bridge");
+                            if (vr::VRDriverLog()) vr::VRDriverLog()->Log("PhoneVR: Host accepted the H.264 capture bridge; waiting for first raw BGRA frame");
                         }
                     }
                 }
@@ -1165,29 +1283,86 @@ float4 main(float4 position : SV_POSITION, float2 uv : TEXCOORD0) : SV_TARGET {
                 if (!m_captureQueue.empty()) { slotIndex = m_captureQueue.front(); m_captureQueue.pop_front(); }
             }
             if (slotIndex == kVideoCaptureSlots) continue;
-            bool sentFrame = false;
-            {
-                std::lock_guard<std::mutex> resourceLock(m_captureResourcesMutex);
-                auto& slot = m_captureSlots[slotIndex];
-                D3D11_MAPPED_SUBRESOURCE mapped{};
-                const HRESULT hr = m_context->Map(slot.staging, 0, D3D11_MAP_READ, 0, &mapped);
-                if (SUCCEEDED(hr)) {
-                    for (uint32_t row = 0; row < kVideoHeight; ++row)
-                        std::memcpy(pixels.data() + static_cast<size_t>(row) * kVideoWidth * 4,
-                                    static_cast<const uint8_t*>(mapped.pData) + static_cast<size_t>(row) * mapped.RowPitch,
-                                    static_cast<size_t>(kVideoWidth) * 4);
-                    m_context->Unmap(slot.staging, 0);
-                    uint8_t header[32]{}; std::memcpy(header, "PVRC", 4); header[4] = 1; header[5] = 1;
-                    PutBE16(header + 6, 32); PutBE32(header + 8, slot.frameId); PutBE64(header + 12, slot.timestampNs);
-                    PutBE16(header + 20, kVideoWidth); PutBE16(header + 22, kVideoHeight);
-                    PutBE32(header + 24, kVideoWidth * 4); PutBE32(header + 28, static_cast<uint32_t>(pixels.size()));
-                    sentFrame = SendAll(bridge, reinterpret_cast<const char*>(header), sizeof(header)) &&
-                                SendAll(bridge, reinterpret_cast<const char*>(pixels.data()), pixels.size());
+            bool mappedFrame = false;
+            HRESULT mapResult = E_FAIL;
+            uint32_t frameId = 0;
+            uint64_t timestampNs = 0;
+            // The staging copy is queued by Present() and is not guaranteed to
+            // be CPU-readable immediately. A single DO_NOT_WAIT Map commonly
+            // returns WAS_STILL_DRAWING; dropping that first result could starve
+            // the entire stream. Retry on this worker thread, releasing both the
+            // resource mutex and D3D multithread lock between attempts. Present()
+            // never waits for this bounded retry loop.
+            bool slotMetadataRead = false;
+            constexpr int kMapRetryCount = 20;
+            for (int attempt = 0; attempt < kMapRetryCount && m_captureRunning.load(std::memory_order_acquire); ++attempt) {
+                bool retryLater = false;
+                {
+                    std::lock_guard<std::mutex> resourceLock(m_captureResourcesMutex);
+                    auto& slot = m_captureSlots[slotIndex];
+                    if (!slot.staging || !m_context) {
+                        mapResult = E_FAIL;
+                        slot.busy.store(false, std::memory_order_release);
+                        break;
+                    }
+                    if (!slotMetadataRead) {
+                        frameId = slot.frameId;
+                        timestampNs = slot.timestampNs;
+                        slotMetadataRead = true;
+                    }
+                    D3D11_MAPPED_SUBRESOURCE mapped{};
+                    mapResult = m_context->Map(slot.staging, 0, D3D11_MAP_READ, D3D11_MAP_FLAG_DO_NOT_WAIT, &mapped);
+                    if (SUCCEEDED(mapResult)) {
+                        for (uint32_t row = 0; row < kVideoHeight; ++row)
+                            std::memcpy(pixels.data() + static_cast<size_t>(row) * kVideoWidth * 4,
+                                        static_cast<const uint8_t*>(mapped.pData) + static_cast<size_t>(row) * mapped.RowPitch,
+                                        static_cast<size_t>(kVideoWidth) * 4);
+                        m_context->Unmap(slot.staging, 0);
+                        slot.busy.store(false, std::memory_order_release);
+                        mappedFrame = true;
+                    } else if (mapResult == DXGI_ERROR_WAS_STILL_DRAWING) {
+                        retryLater = true;
+                    } else {
+                        slot.busy.store(false, std::memory_order_release);
+                    }
                 }
-                slot.busy.store(false, std::memory_order_release);
+                if (mappedFrame || !retryLater) break;
+                m_videoMapPendingRetries.fetch_add(1, std::memory_order_relaxed);
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            }
+            if (!mappedFrame) {
+                {
+                    std::lock_guard<std::mutex> resourceLock(m_captureResourcesMutex);
+                    m_captureSlots[slotIndex].busy.store(false, std::memory_order_release);
+                }
+                m_videoFramesSkipped.fetch_add(1, std::memory_order_relaxed);
+                if (mapResult != DXGI_ERROR_WAS_STILL_DRAWING) {
+                    const uint64_t now = MonotonicNowNs();
+                    if (now - m_lastVideoMapFailureLogNs > 2000000000ULL) {
+                        m_lastVideoMapFailureLogNs = now;
+                        LogD3DFailure("Map(video staging)", mapResult);
+                        const HRESULT removed = m_device ? m_device->GetDeviceRemovedReason() : E_FAIL;
+                        if (FAILED(removed)) LogD3DFailure("video capture device removed", removed);
+                    }
+                }
+                continue;
+            }
+            m_videoFramesReadback.fetch_add(1, std::memory_order_relaxed);
+
+            uint8_t header[32]{}; std::memcpy(header, "PVRC", 4); header[4] = 1; header[5] = 1;
+            PutBE16(header + 6, 32); PutBE32(header + 8, frameId); PutBE64(header + 12, timestampNs);
+            PutBE16(header + 20, kVideoWidth); PutBE16(header + 22, kVideoHeight);
+            PutBE32(header + 24, kVideoWidth * 4); PutBE32(header + 28, static_cast<uint32_t>(pixels.size()));
+            const bool sentFrame = SendAll(bridge, reinterpret_cast<const char*>(header), sizeof(header)) &&
+                                   SendAll(bridge, reinterpret_cast<const char*>(pixels.data()), pixels.size());
+            if (sentFrame) {
+                m_videoFramesSent.fetch_add(1, std::memory_order_relaxed);
+                if (!m_firstRawFrameSent.exchange(true, std::memory_order_acq_rel) && vr::VRDriverLog())
+                    vr::VRDriverLog()->Log("PhoneVR: first raw BGRA stereo frame delivered to Host over loopback TCP");
             }
             if (!sentFrame) {
                 m_captureBridgeReady.store(false, std::memory_order_release);
+                m_captureResourcesReady.store(false, std::memory_order_release);
                 closesocket(bridge); bridge = INVALID_SOCKET;
                 m_videoFramesSkipped.fetch_add(1, std::memory_order_relaxed);
             }
@@ -1198,13 +1373,15 @@ float4 main(float4 position : SV_POSITION, float2 uv : TEXCOORD0) : SV_TARGET {
     }
 
     void ReleaseVideoCaptureResourcesUnlocked() {
+        m_captureResourcesReady.store(false, std::memory_order_release);
         for (auto& slot : m_captureSlots) { if (slot.staging) { slot.staging->Release(); slot.staging = nullptr; } slot.busy.store(false); }
         if (m_captureSampler) { m_captureSampler->Release(); m_captureSampler = nullptr; }
         if (m_capturePS) { m_capturePS->Release(); m_capturePS = nullptr; }
         if (m_captureVS) { m_captureVS->Release(); m_captureVS = nullptr; }
         if (m_captureRtv) { m_captureRtv->Release(); m_captureRtv = nullptr; }
         if (m_captureSrv) { m_captureSrv->Release(); m_captureSrv = nullptr; }
-        ReleaseTexture(m_captureOutputTexture); ReleaseTexture(m_captureInputTexture);
+        ReleaseTexture(m_captureOutputTexture); ReleaseTexture(m_captureInputTexture); ReleaseTexture(m_captureResolveTexture);
+        m_captureSourceFormat = DXGI_FORMAT_UNKNOWN; m_captureSampleCount = 1;
         std::lock_guard<std::mutex> queueLock(m_captureQueueMutex); m_captureQueue.clear();
     }
     void ReleaseVideoCaptureResources() {
@@ -1218,6 +1395,7 @@ float4 main(float4 position : SV_POSITION, float2 uv : TEXCOORD0) : SV_TARGET {
         m_sharedHandle = nullptr;
         ReleaseTexture(m_sharedTexture);
         ReleaseTexture(m_flushTexture);
+        ReleaseTexture(m_syncResolveTexture);
         if (m_context) { m_context->ClearState(); m_context->Flush(); m_context->Release(); m_context = nullptr; }
         if (m_device) { m_device->Release(); m_device = nullptr; }
         m_adapterLuid = 0;
@@ -1227,6 +1405,10 @@ float4 main(float4 position : SV_POSITION, float2 uv : TEXCOORD0) : SV_TARGET {
         m_frameCounter = 0;
         m_vsyncOriginFrameCounter = 0;
         m_completedFrameCounter.store(0, std::memory_order_relaxed);
+        m_presentCallbackSeen.store(false, std::memory_order_relaxed);
+        m_firstRawFrameSent.store(false, std::memory_order_relaxed);
+        m_captureBridgeReady.store(false, std::memory_order_relaxed);
+        m_captureResourcesReady.store(false, std::memory_order_relaxed);
     }
 
     mutable std::mutex m_mutex;
@@ -1234,7 +1416,10 @@ float4 main(float4 position : SV_POSITION, float2 uv : TEXCOORD0) : SV_TARGET {
     ID3D11DeviceContext* m_context = nullptr;
     ID3D11Texture2D* m_sharedTexture = nullptr;
     ID3D11Texture2D* m_flushTexture = nullptr;
+    ID3D11Texture2D* m_syncResolveTexture = nullptr;
     HANDLE m_sharedHandle = nullptr;
+    DXGI_FORMAT m_sharedFormat = DXGI_FORMAT_UNKNOWN;
+    UINT m_sharedSampleCount = 1;
     uint64_t m_adapterLuid = 0;
     uint64_t m_lastFrameId = 0;
     uint64_t m_frameCounter = 0;
@@ -1250,6 +1435,8 @@ float4 main(float4 position : SV_POSITION, float2 uv : TEXCOORD0) : SV_TARGET {
     uint64_t m_lastMutexFailureLogNs = 0;
     uint64_t m_lastMapFailureLogNs = 0;
     std::atomic<uint64_t> m_completedFrameCounter{0};
+    std::atomic<bool> m_presentCallbackSeen{false};
+    std::atomic<bool> m_firstRawFrameSent{false};
     std::atomic<uint64_t> m_presentCalls{0};
     std::atomic<uint64_t> m_waitCalls{0};
     std::atomic<uint64_t> m_timingCompletedFrames{0};
@@ -1261,6 +1448,7 @@ float4 main(float4 position : SV_POSITION, float2 uv : TEXCOORD0) : SV_TARGET {
     std::deque<size_t> m_captureQueue;
     std::array<CaptureSlot, kVideoCaptureSlots> m_captureSlots{};
     ID3D11Texture2D* m_captureInputTexture = nullptr;
+    ID3D11Texture2D* m_captureResolveTexture = nullptr;
     ID3D11Texture2D* m_captureOutputTexture = nullptr;
     ID3D11ShaderResourceView* m_captureSrv = nullptr;
     ID3D11RenderTargetView* m_captureRtv = nullptr;
@@ -1270,10 +1458,18 @@ float4 main(float4 position : SV_POSITION, float2 uv : TEXCOORD0) : SV_TARGET {
     std::thread m_captureThread;
     std::atomic<bool> m_captureRunning{false};
     std::atomic<bool> m_captureBridgeReady{false};
+    std::atomic<bool> m_captureResourcesReady{false};
     std::atomic<uint64_t> m_videoFramesSkipped{0};
+    std::atomic<uint64_t> m_videoFramesCaptured{0};
+    std::atomic<uint64_t> m_videoFramesReadback{0};
+    std::atomic<uint64_t> m_videoFramesSent{0};
+    std::atomic<uint64_t> m_videoMapPendingRetries{0};
     uint64_t m_lastVideoCaptureNs = 0;
     uint32_t m_captureWidth = 0;
     uint32_t m_captureHeight = 0;
+    DXGI_FORMAT m_captureSourceFormat = DXGI_FORMAT_UNKNOWN;
+    UINT m_captureSampleCount = 1;
+    uint64_t m_lastVideoMapFailureLogNs = 0;
     bool m_loggedVideoFormatFailure = false;
 };
 
@@ -1300,6 +1496,10 @@ public:
     void EnterStandby() override {}
     bool IsActive() const { return m_active; }
     uint64_t PresentCounter() const { return m_display.PresentCounter(); }
+    bool PresentCallbackSeen() const { return m_display.PresentCallbackSeen(); }
+    bool CaptureBridgeReady() const { return m_display.CaptureBridgeReady(); }
+    bool FirstRawFrameSent() const { return m_display.FirstRawFrameSent(); }
+    bool CaptureResourcesReady() const { return m_display.CaptureResourcesReady(); }
     VirtualDisplayTimingSnapshot TakeTimingSnapshot() { return m_display.TakeTimingSnapshot(); }
     void* GetComponent(const char* nameAndVersion) override {
         if (nameAndVersion && std::strcmp(nameAndVersion, vr::IVRVirtualDisplay_Version) == 0) return &m_display;
@@ -1337,7 +1537,7 @@ public:
         if (!host->TrackedDeviceAdded("PHONEVR-DISPLAY-001", vr::TrackedDeviceClass_DisplayRedirect, m_redirect)) {
             Cleanup(); return vr::VRInitError_Driver_Unknown;
         }
-        if (vr::VRDriverLog()) vr::VRDriverLog()->Log("PhoneVR 0.4.19 SteamVR driver initialized");
+        if (vr::VRDriverLog()) vr::VRDriverLog()->Log("PhoneVR 0.4.21 SteamVR driver initialized");
         return vr::VRInitError_None;
     }
     void Cleanup() override {
@@ -1370,7 +1570,12 @@ public:
         if (m_redirect && m_redirect->IsActive()) flags |= kStatusDisplayActive;
         const uint64_t presented = m_redirect ? m_redirect->PresentCounter() : 0;
         if (presented > 0) flags |= kStatusPresentedFrame;
-        m_statusReporter.Send(flags, presented);
+        if (m_redirect && m_redirect->PresentCallbackSeen()) flags |= kStatusPresentCallbackSeen;
+        if (m_redirect && m_redirect->CaptureBridgeReady()) flags |= kStatusCaptureBridgeReady;
+        if (m_redirect && m_redirect->FirstRawFrameSent()) flags |= kStatusFirstRawFrameSent;
+        uint8_t flags2 = 0;
+        if (m_redirect && m_redirect->CaptureResourcesReady()) flags2 |= kStatus2CaptureResourcesReady;
+        m_statusReporter.Send(flags, flags2, presented);
     }
     bool ShouldBlockStandbyMode() override { return false; }
     void EnterStandby() override {}

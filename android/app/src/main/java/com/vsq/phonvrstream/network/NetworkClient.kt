@@ -107,6 +107,12 @@ class NetworkClient(
             return
         }
         videoConfig = config
+        sendVideoStatus(
+            generation,
+            "negotiated",
+            "H.264 ${config.width}x${config.height}@${config.fps}; decoder=${config.decoderName}; UDP port=${config.port}",
+            0L, 0L, 0L,
+        )
         restartVideoReceiver()
         postStatus("H.264 双目视频已协商：${config.width}×${config.height}@${config.fps} · ${config.decoderName}", true)
     }
@@ -118,15 +124,34 @@ class NetworkClient(
                 videoReceiver = null
                 val config = videoConfig ?: return@synchronized
                 if (!isSessionActive(config.generation)) return@synchronized
-                val surface = videoSurface ?: return@synchronized
+                val surface = videoSurface
+                if (surface == null) {
+                    sendVideoStatus(
+                        config.generation, "waiting_surface",
+                        "Video was negotiated; waiting for the OpenGL SurfaceTexture output surface",
+                        0L, 0L, 0L,
+                    )
+                    return@synchronized
+                }
                 try {
                     val receiver = VideoStreamReceiver(
-                        config.host, config.port, config.width, config.height, config.fps, config.decoderName, surface,
+                        config.host,
+                        config.port,
+                        config.width,
+                        config.height,
+                        config.fps,
+                        config.decoderName,
+                        surface,
+                        onStage = { stage, detail, datagrams, accessUnits, decoded ->
+                            sendVideoStatus(config.generation, stage, detail, datagrams, accessUnits, decoded)
+                        },
                     )
                     receiver.start()
                     videoReceiver = receiver
                 } catch (error: Throwable) {
-                    postStatus("视频接收启动失败：${error.message ?: error.javaClass.simpleName}", true)
+                    val detail = error.message ?: error.javaClass.simpleName
+                    sendVideoStatus(config.generation, "receiver_error", detail, 0L, 0L, 0L)
+                    postStatus("视频接收启动失败：$detail", true)
                 }
             }
         }
@@ -141,6 +166,26 @@ class NetworkClient(
                 if (generation == null || videoConfig?.generation == generation) videoConfig = null
             }
         }
+    }
+
+    fun reportVideoStatus(stage: String, detail: String = "") {
+        sendVideoStatus(activeControlGeneration, stage, detail, 0L, 0L, 0L)
+    }
+
+    private fun sendVideoStatus(
+        generation: Long, stage: String, detail: String, datagrams: Long, accessUnits: Long, decoded: Long,
+    ) {
+        val writer = activeControlWriter ?: return
+        if (!isSessionActive(generation)) return
+        val message = JSONObject()
+            .put("type", "video_status")
+            .put("videoStage", stage)
+            .put("videoDetail", detail.take(512))
+            .put("videoDatagrams", datagrams)
+            .put("videoAccessUnits", accessUnits)
+            .put("videoDecoded", decoded)
+        runCatching { writeControlMessage(writer, message) }
+            .onFailure { postStatus("视频状态回报失败：${it.message ?: it.javaClass.simpleName}", true) }
     }
 
     fun publishDisplaySettings(settings: JSONObject) {
@@ -195,7 +240,7 @@ class NetworkClient(
             val sockets = mutableListOf<DiscoverySocket>()
             try {
                 val wifiManager = appContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
-                if (wifiManager != null && mode != DiscoveryMode.USB) {
+                if (wifiManager != null) {
                     multicastLock = wifiManager.createMulticastLock("PhoneVR-LAN-Discovery").apply {
                         setReferenceCounted(false)
                         acquire()
@@ -239,7 +284,7 @@ class NetworkClient(
                     val deadline = System.currentTimeMillis() + DISCOVERY_WINDOW_MS
                     // Poll each per-interface socket with a short timeout. Binding
                     // each socket to the interface address forces discovery over
-                    // both Wi-Fi and Android USB tethering (rndis0/usb0).
+                    // each active IPv4 network interface.
                     while (System.currentTimeMillis() < deadline && sockets.isNotEmpty()) {
                         var receivedAny = false
                         val remaining = (deadline - System.currentTimeMillis()).coerceAtLeast(1L)
@@ -268,8 +313,7 @@ class NetworkClient(
                 } catch (_: Exception) { }
             }
             val sorted = found.values.sortedWith(
-                compareBy<DiscoveredHost> { if (mode == DiscoveryMode.AUTO && it.connectionType == "USB") 0 else 1 }
-                    .thenBy { it.name }.thenBy { it.address },
+                compareBy<DiscoveredHost> { it.name }.thenBy { it.address },
             )
             mainHandler.post { onResults(sorted) }
         }
@@ -443,12 +487,11 @@ class NetworkClient(
                 if (welcome.optInt("protocol") != PROTOCOL_VERSION) {
                     throw ProtocolMismatchException("PC 通信协议版本不兼容")
                 }
-                configureVideoStream(generation, address, welcome)
-
                 synchronized(socketLock) {
                     activeControlWriter = writer
                     activeControlGeneration = generation
                 }
+                configureVideoStream(generation, address, welcome)
                 writeControlMessage(
                     writer,
                     JSONObject().put("type", "display_settings").put("settings", currentDisplaySettings()),
@@ -792,13 +835,13 @@ class NetworkClient(
         const val DEFAULT_VIDEO_FPS = 60
         const val DISCOVERY_PORT = 48100
         private const val PROTOCOL_VERSION = 1
-        private const val CLIENT_VERSION = "PhoneVRStream-0.4.19"
+        private const val CLIENT_VERSION = "PhoneVRStream-0.4.21"
         private const val DISCOVERY_REQUEST = "PHONEVR_DISCOVER_V1"
         private const val DISCOVERY_RESPONSE_PREFIX = "PHONEVR_HOST_V1 "
         private const val DISCOVERY_WINDOW_MS = 1800L
         private const val DISCOVERY_READ_TIMEOUT_MS = 300
         private const val CONNECT_TIMEOUT_MS = 4000
-        private const val HANDSHAKE_TIMEOUT_MS = 5000
+        private const val HANDSHAKE_TIMEOUT_MS = 30000
         private const val CONTROL_READ_TIMEOUT_MS = 1000
         private const val HEARTBEAT_INTERVAL_NS = 2_000_000_000L
         private const val HEARTBEAT_TIMEOUT_NS = 10_000_000_000L

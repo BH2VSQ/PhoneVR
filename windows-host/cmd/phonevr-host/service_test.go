@@ -138,7 +138,8 @@ func TestSteamVRDriverHeartbeatUpdatesConnectionState(t *testing.T) {
 	packet := make([]byte, steamVRHeartbeatPacketSize)
 	copy(packet[:4], "PVST")
 	packet[4] = 1
-	packet[5] = steamVRFlagDriverLoaded | steamVRFlagHMDActive | steamVRFlagPoseValid | steamVRFlagDisplayActive | steamVRFlagPresentedFrame
+	packet[5] = steamVRFlagDriverLoaded | steamVRFlagHMDActive | steamVRFlagPoseValid | steamVRFlagDisplayActive | steamVRFlagPresentedFrame | steamVRFlagPresentCallbackSeen | steamVRFlagCaptureBridgeReady | steamVRFlagFirstRawFrameSent
+	packet[6] = steamVRFlag2CaptureResourcesReady
 	binary.BigEndian.PutUint64(packet[8:], 123456)
 	if _, err := sender.Write(packet); err != nil {
 		t.Fatalf("send SteamVR heartbeat: %v", err)
@@ -831,13 +832,11 @@ func TestPoseUpdateDoesNotWaitForGeneralServiceMutex(t *testing.T) {
 
 func TestClassifyHostInterface(t *testing.T) {
 	cases := map[string]string{
-		"Remote NDIS Compatible Device": "USB/RNDIS",
-		"USB Ethernet/RNDIS Gadget":     "USB/RNDIS",
-		"Wi-Fi":                         "Wi-Fi",
-		"wlan0":                         "Wi-Fi",
-		"Ethernet 3":                    "Ethernet",
-		"eth0":                          "Ethernet",
-		"vEthernet (Default Switch)":    "Network",
+		"Wi-Fi":                      "Wi-Fi",
+		"wlan0":                      "Wi-Fi",
+		"Ethernet 3":                 "Ethernet",
+		"eth0":                       "Ethernet",
+		"vEthernet (Default Switch)": "Network",
 	}
 	for name, expected := range cases {
 		if actual := classifyHostInterface(name); actual != expected {

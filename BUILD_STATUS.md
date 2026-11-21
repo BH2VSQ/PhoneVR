@@ -1,5 +1,13 @@
 # Build status
 
+## 0.4.24 DisplayRedirect activation ordering
+
+- Root cause identified in the previous provider initialization order: `PHONEVR-HMD-001` was registered before `PHONEVR-DISPLAY-001`. `TrackedDeviceAdded` schedules device activation, while OpenVR only makes `k_ulDisplayRedirectContainer` valid after the DisplayRedirect device's `Activate()` has run. Thus the HMD could initialize its display properties before the redirect overrides existed.
+- Provider `Init()` now queues only the DisplayRedirect device. It waits for the device's `Activate()` to finish (including both HMD override writes) before queuing the HMD from `RunFrame()`. This avoids relying on `TrackedDeviceAdded()` queue order alone. If DisplayRedirect activation fails or does not finish within 5 seconds, the HMD still registers for pose-only operation and logs that video redirection is unavailable; phone tracking is not blocked by the video path.
+- HMD `Activate()` reads back the effective merged `HasVirtualDisplayComponent` and graphics adapter LUID values and logs both values and property read errors. This turns the ordering assumption into an explicit runtime check.
+- Regression tests require the DisplayRedirect registration statement to precede HMD registration and verify the HMD readback diagnostics.
+- **Runtime confirmation still required:** after rebuilding and restarting SteamVR, confirm the HMD readback says `HasVirtualDisplay=true`, then `IVRVirtualDisplay_002` is queried, `Present` increases, and the Host gets its first BGRA frame. If the readback is false, the property override is not being applied; if true but Present remains zero, inspect SteamVR display redirection / compositor routing next.
+
 ## 0.4.23 DisplayRedirect-to-HMD property association
 
 - Fixed a missing OpenVR property bridge in `PhoneVRDisplayRedirect::Activate()`. The driver previously wrote `Prop_GraphicsAdapterLuid_Uint64` only to the DisplayRedirect accessory's own container.

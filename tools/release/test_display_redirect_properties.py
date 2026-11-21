@@ -45,6 +45,40 @@ class DisplayRedirectPropertyTests(unittest.TestCase):
         self.assertIn("hmdVirtualDisplayResult != vr::TrackedProp_Success", self.redirect)
         self.assertIn("k_ulDisplayRedirectContainer", self.redirect)
 
+    def test_hmd_registration_waits_for_display_redirect_activation(self):
+        provider_start = self.source.index("class PhoneVRProvider")
+        provider_end = self.source.index("PhoneVRProvider g_provider", provider_start)
+        provider = self.source[provider_start:provider_end]
+        init_start = provider.index("vr::EVRInitError Init(")
+        cleanup_start = provider.index("void Cleanup()", init_start)
+        init_body = provider[init_start:cleanup_start]
+        self.assertIn(
+            'TrackedDeviceAdded("PHONEVR-DISPLAY-001", vr::TrackedDeviceClass_DisplayRedirect, m_redirect)',
+            init_body,
+        )
+        self.assertNotIn('TrackedDeviceAdded("PHONEVR-HMD-001"', init_body)
+
+        runframe_start = provider.index("void RunFrame() override")
+        runframe_end = provider.index("bool ShouldBlockStandbyMode()", runframe_start)
+        runframe = provider[runframe_start:runframe_end]
+        activation_gate = runframe.index("m_redirect->ActivationFinished()")
+        hmd_add = runframe.index(
+            'TrackedDeviceAdded("PHONEVR-HMD-001", vr::TrackedDeviceClass_HMD, m_hmd)'
+        )
+        self.assertLess(activation_gate, hmd_add)
+        self.assertIn("redirectActivationTimedOut", runframe)
+        self.assertIn("5000000000ULL", runframe)
+        self.assertIn("registering HMD for pose-only operation without live video", runframe)
+
+    def test_hmd_activation_reads_effective_redirect_override(self):
+        hmd_start = self.source.index("class PhoneVRHmd")
+        hmd_end = self.source.index("class VirtualDisplayComponent", hmd_start)
+        hmd = self.source[hmd_start:hmd_end]
+        self.assertIn("GetBoolProperty(", hmd)
+        self.assertIn("Prop_HasVirtualDisplayComponent_Bool", hmd)
+        self.assertIn("GetUint64Property(", hmd)
+        self.assertIn("HMD activation sees the DisplayRedirect override before display initialization", hmd)
+
 
 if __name__ == "__main__":
     unittest.main()

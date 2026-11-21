@@ -232,8 +232,16 @@ private:
                 continue;
             }
 
+            // Keep a sensor-sample cursor while draining the socket. This lets
+            // angular velocity use adjacent Android samples even when Windows
+            // delivered a short burst to the driver worker.
+            Quaternion velocityBase = Snapshot();
             Quaternion latest{};
             bool haveLatest = DecodePacket(buffer.data(), received, &latest);
+            if (haveLatest) {
+                EstimateAngularVelocity(velocityBase, latest);
+                velocityBase = latest;
+            }
             uint64_t drainedPackets = 0;
             // If the worker was descheduled, discard older queued poses and
             // publish only the freshest one. Tracking is state, not a reliable
@@ -246,6 +254,8 @@ private:
                 if (received == SOCKET_ERROR) break;
                 Quaternion candidate{};
                 if (DecodePacket(buffer.data(), received, &candidate)) {
+                    EstimateAngularVelocity(velocityBase, candidate);
+                    velocityBase = candidate;
                     latest = candidate;
                     haveLatest = true;
                 }
@@ -254,7 +264,6 @@ private:
 
             if (!haveLatest) continue;
             std::lock_guard<std::mutex> lock(m_mutex);
-            EstimateAngularVelocity(m_pose, latest);
             m_pose = latest;
             m_drainedPacketCount += drainedPackets;
         }

@@ -211,8 +211,9 @@ func (s *HostService) Start(config HostConfig) error {
 		s.mu.Unlock()
 		return fmt.Errorf("start UDP pose listener: %w", err)
 	}
-	// Keep pose buffering bounded. The pose loop coalesces any queued datagrams
-	// to the newest sample rather than replaying old orientations after a pause.
+	// Keep pose buffering bounded. The pose loop preserves small receive bursts
+	// for accurate sensor-rate velocity estimation and collapses only unusually
+	// large stale backlogs before they reach the local SteamVR driver socket.
 	_ = udpPose.SetReadBuffer(16 * 1024)
 
 	// The SteamVR server driver runs in vrserver.exe, not in this Host process.
@@ -501,8 +502,9 @@ type receivedPoseDatagram struct {
 }
 
 // readLatestPoseBatch blocks for one datagram, then drains packets already
-// queued by the OS. Pose is latest-state data, so the caller can forward only
-// the last valid sample instead of replaying old orientations after a pause.
+// queued by the OS. Small batches preserve every sample so the driver can
+// estimate angular velocity from the phone's native sensor cadence. Only a
+// very large backlog is collapsed to its newest sample.
 func readLatestPoseBatch(conn *net.UDPConn, buffer []byte, timeout time.Duration) ([]receivedPoseDatagram, uint64, error) {
 	if err := conn.SetReadDeadline(time.Now().Add(timeout)); err != nil {
 		return nil, 0, err
@@ -559,10 +561,23 @@ func readLatestPoseBatch(conn *net.UDPConn, buffer []byte, timeout time.Duration
 	return batch, invalidPackets, nil
 }
 
+const maxPoseBatchForward = 32
+
+// poseBatchToForward preserves short bursts (normally one or two datagrams)
+// and collapses only a long stale backlog. The driver consumes all forwarded
+// samples for angular-velocity estimation and publishes the newest orientation.
+func poseBatchToForward(batch []receivedPoseDatagram) []receivedPoseDatagram {
+	if len(batch) > maxPoseBatchForward {
+		return batch[len(batch)-1:]
+	}
+	return batch
+}
+
 func (s *HostService) poseLoop(ctx context.Context, conn *net.UDPConn) {
 	defer s.wg.Done()
-	// Keep the socket buffer bounded. Any packets already queued are drained
-	// immediately and coalesced to the newest valid pose below.
+	// Keep the socket buffer bounded. Short receive bursts are forwarded in
+	// order so the driver can retain the sensor cadence; only very large stale
+	// backlogs are collapsed to the newest valid pose.
 	_ = conn.SetReadBuffer(16 * 1024)
 	bridge, bridgeErr := net.DialUDP("udp4", nil, &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: steamVRPoseBridgePort})
 	if bridgeErr != nil {
@@ -580,8 +595,11 @@ func (s *HostService) poseLoop(ctx context.Context, conn *net.UDPConn) {
 	var statsSequenceGaps uint64
 	var statsInvalid uint64
 	var statsBridgeErrors uint64
-	var maxInterArrival time.Duration
+	var maxHostReadGap time.Duration
+	var maxSensorInterval time.Duration
+	var maxBatchSize int
 	var previousArrival time.Time
+	var previousSensorTimestamp int64
 	var previousSequence uint32
 	havePreviousSequence := false
 
@@ -602,14 +620,25 @@ func (s *HostService) poseLoop(ctx context.Context, conn *net.UDPConn) {
 			continue
 		}
 
+		if len(batch) > maxBatchSize {
+			maxBatchSize = len(batch)
+		}
 		for _, datagram := range batch {
 			statsReceived++
 			if !previousArrival.IsZero() {
-				if gap := datagram.receivedAt.Sub(previousArrival); gap > maxInterArrival {
-					maxInterArrival = gap
+				if gap := datagram.receivedAt.Sub(previousArrival); gap > maxHostReadGap {
+					maxHostReadGap = gap
 				}
 			}
 			previousArrival = datagram.receivedAt
+			if previousSensorTimestamp > 0 && datagram.pose.TimestampNs > previousSensorTimestamp {
+				if gap := time.Duration(datagram.pose.TimestampNs - previousSensorTimestamp); gap > maxSensorInterval {
+					maxSensorInterval = gap
+				}
+			}
+			if datagram.pose.TimestampNs > 0 {
+				previousSensorTimestamp = datagram.pose.TimestampNs
+			}
 			if havePreviousSequence {
 				sequenceDelta := datagram.pose.Sequence - previousSequence
 				if sequenceDelta > 1 && sequenceDelta < 0x80000000 {
@@ -621,14 +650,18 @@ func (s *HostService) poseLoop(ctx context.Context, conn *net.UDPConn) {
 		}
 
 		latest := batch[len(batch)-1]
-		statsCoalesced += uint64(len(batch) - 1)
+		forwardBatch := poseBatchToForward(batch)
+		statsCoalesced += uint64(len(batch) - len(forwardBatch))
 		if bridge != nil {
-			// Forward one freshest packet per receive batch. The native driver
-			// also drains its loopback queue, providing a second latest-only gate.
-			if _, writeErr := bridge.Write(latest.payload); writeErr != nil {
-				statsBridgeErrors++
-			} else {
-				statsForwarded++
+			// Preserve every sample in a short burst. The native receiver drains
+			// queued samples itself, estimates angular velocity across all of them,
+			// and publishes only the latest orientation to SteamVR.
+			for _, datagram := range forwardBatch {
+				if _, writeErr := bridge.Write(datagram.payload); writeErr != nil {
+					statsBridgeErrors++
+				} else {
+					statsForwarded++
+				}
 			}
 		}
 
@@ -648,9 +681,10 @@ func (s *HostService) poseLoop(ctx context.Context, conn *net.UDPConn) {
 			seconds := time.Since(statsStarted).Seconds()
 			rxRate := float64(statsReceived) / seconds
 			forwardRate := float64(statsForwarded) / seconds
-			s.addLog(fmt.Sprintf("Pose pipeline: Host RX %.1f Hz, forwarded %.1f Hz, coalesced %d, sequence gaps %d, invalid %d, max inter-arrival %.1f ms, loopback write errors %d",
+			s.addLog(fmt.Sprintf("Pose pipeline: Host RX %.1f Hz, forwarded %.1f Hz, coalesced %d, sequence gaps %d, invalid %d, max Host read gap %.1f ms, max Android sensor interval %.1f ms, max batch %d, loopback write errors %d",
 				rxRate, forwardRate, statsCoalesced, statsSequenceGaps, statsInvalid,
-				float64(maxInterArrival)/float64(time.Millisecond), statsBridgeErrors))
+				float64(maxHostReadGap)/float64(time.Millisecond),
+				float64(maxSensorInterval)/float64(time.Millisecond), maxBatchSize, statsBridgeErrors))
 			statsStarted = time.Now()
 			statsReceived = 0
 			statsForwarded = 0
@@ -658,7 +692,9 @@ func (s *HostService) poseLoop(ctx context.Context, conn *net.UDPConn) {
 			statsSequenceGaps = 0
 			statsInvalid = 0
 			statsBridgeErrors = 0
-			maxInterArrival = 0
+			maxHostReadGap = 0
+			maxSensorInterval = 0
+			maxBatchSize = 0
 		}
 	}
 }

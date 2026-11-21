@@ -1,3 +1,13 @@
+## 0.4.14 - Pose burst forwarding and log repaint stability
+
+- Windows Host now forwards every sample in a short UDP receive burst instead of dropping all but the newest sample. Only a burst larger than 32 queued poses is collapsed to its newest sample, bounding stale-backlog replay while preserving native sensor cadence during normal scheduling jitter.
+- Host pose telemetry now distinguishes the maximum interval between Host read operations from the maximum Android sensor timestamp interval, and reports the largest receive-batch size. This separates phone sensor/send stalls from Windows receive-thread scheduling pauses; sequence gaps remain a separate packet-loss signal.
+- SteamVR's pose receiver now computes angular velocity across every valid sample drained from its loopback queue before publishing the newest orientation, retaining high-rate motion information even when packets arrive in short bursts.
+- Raised the Android IMU HandlerThread and dedicated pose-transmit thread to display scheduling priority, with a safe fallback to normal priority if the platform rejects the request.
+- Runtime Logs now updates the native EDIT control with redraw suppression and a full invalidation/erase/repaint, preventing stale glyphs from appearing stacked after scrolling or refresh. Mouse-wheel and vertical-scroll messages are routed to the log control rather than the custom dialog scroll handler.
+- Added regression coverage for preserving short pose bursts and collapsing only large stale backlogs.
+- Android versionCode increased to 30. Android Gradle packaging and native Windows MSVC/SteamVR runtime verification remain pending in environments with those toolchains.
+
 ## 0.4.13 - Pose latency, continuity and direct-display diagnostics
 
 - Android aligns every absolute sensor quaternion to the previous sample before calculating relative orientation, avoiding equivalent q/-q representation flips around large pitch rotations.

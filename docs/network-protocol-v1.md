@@ -83,7 +83,7 @@ Quaternion values are relative to the recentered headset pose. The Android clien
 
 ## Pose sender rate policy
 
-The Android client samples the IMU at the sensor-supported rate but sends only the newest pose at a maximum of 120 packets per second. Updates are conflated in an atomic latest-value slot; historical sensor samples are never queued. UDP pose delivery is best-effort and a transient UDP send error does not close the TCP pairing/heartbeat channel. The TCP control channel remains responsible for connection liveness. High-rate IMU events are processed off the Android UI thread and coalesced to the newest sample before the 120 Hz maximum UDP sender, so sensor bursts do not create an unbounded datagram queue. The effective rate is limited by the handset sensor and scheduler capabilities.
+The Android client requests IMU updates at a 5 ms period where supported and sends the newest available pose at up to 200 packets per second. Updates are conflated in an atomic latest-value slot; historical samples are not queued on Android. UDP pose delivery is best-effort and a transient UDP send error does not close the TCP pairing/heartbeat channel. The TCP control channel remains responsible for connection liveness. High-rate IMU callbacks run on a dedicated display-priority HandlerThread, while a separate display-priority sender emits the newest sample without blocking sensor callbacks. The Windows Host forwards all datagrams in short receive bursts (up to 32) so the SteamVR driver can estimate angular velocity using adjacent sensor timestamps; only unusually large stale backlogs are collapsed to the newest sample. The effective rate is limited by handset sensor capability, Android scheduling and Wi-Fi delivery.
 
 
 ## Legacy remote phone display settings

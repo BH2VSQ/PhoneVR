@@ -1,4 +1,4 @@
-# PhoneVR SteamVR Driver — 0.4.13
+# PhoneVR SteamVR Driver — 0.4.14
 
 Windows x64 OpenVR server driver foundation for the PhoneVR wireless HMD.
 

@@ -778,11 +778,24 @@ func nativeDialogWndProc(hwnd uintptr, message uint32, wParam, lParam uintptr) u
 		}
 	case wmVScroll:
 		if dialog != nil {
+			if dialog.kind == "logs" && dialog.controls[501] != 0 {
+				// The log EDIT owns its own vertical scrollbar. Forward the message
+				// instead of applying the custom card-dialog scroll offset (which is
+				// intentionally unused for the native text control).
+				pSendMessage.Call(dialog.controls[501], uintptr(message), wParam, 0)
+				return 0
+			}
 			app.scrollDialog(dialog, int(wParam&0xffff), int((wParam>>16)&0xffff))
 		}
 		return 0
 	case wmMouseWheel:
 		if dialog != nil {
+			if dialog.kind == "logs" && dialog.controls[501] != 0 {
+				// WM_MOUSEWHEEL is often delivered to the focused top-level window;
+				// relay it to the read-only EDIT so scrolling repaints its own client.
+				pSendMessage.Call(dialog.controls[501], uintptr(message), wParam, 0)
+				return 0
+			}
 			delta := int(int16((wParam >> 16) & 0xffff))
 			app.scrollDialogBy(dialog, -delta/120*48)
 		}
@@ -1300,7 +1313,7 @@ func (app *nativeUI) createDialogControls(d *nativeDialog) {
 		addButton(idClose, app.text("关闭", "Close"))
 
 	case "logs":
-		edit := app.createControl(d.hwnd, "EDIT", "", wsChild|wsVisible|wsBorder|wsVScroll|esMultiline|esReadOnly|esWantReturn, 0, 0, 10, 10, 501)
+		edit := app.createControl(d.hwnd, "EDIT", "", wsChild|wsVisible|wsBorder|wsVScroll|wsClipSiblings|esMultiline|esReadOnly|esWantReturn|esAutoVScroll|esNoHideSel, 0, 0, 10, 10, 501)
 		d.controls[501] = edit
 		addButton(idLogsRefresh, app.text("刷新", "Refresh"))
 		addButton(idClose, app.text("关闭", "Close"))
@@ -1997,9 +2010,28 @@ func (app *nativeUI) refreshPresetList(d *nativeDialog) {
 	}
 }
 func (app *nativeUI) refreshLogDialog(d *nativeDialog) {
+	if d == nil || d.controls[501] == 0 {
+		return
+	}
 	snapshot := app.service.Snapshot()
 	text := strings.Join(snapshot.Logs, "\r\n")
-	setNativeText(d.controls[501], text)
+	setNativeEditTextAndRedraw(d.controls[501], text)
+}
+
+func setNativeEditTextAndRedraw(hwnd uintptr, text string) {
+	if hwnd == 0 {
+		return
+	}
+	// Avoid the classic EDIT control painting new glyphs over stale glyphs
+	// after a scroll/refresh. Suppress intermediate redraw, replace the text,
+	// then force a full child-window erase and repaint.
+	pSendMessage.Call(hwnd, 0x000B, 0, 0) // WM_SETREDRAW(FALSE)
+	setNativeText(hwnd, text)
+	pSendMessage.Call(hwnd, 0x000B, 1, 0)                                // WM_SETREDRAW(TRUE)
+	pSendMessage.Call(hwnd, 0x00B1, ^uintptr(0), ^uintptr(0))            // EM_SETSEL: caret at end
+	pSendMessage.Call(hwnd, 0x00B7, 0, 0)                                // EM_SCROLLCARET
+	pRedrawWindow.Call(hwnd, 0, 0, uintptr(0x0001|0x0004|0x0400|0x0100)) // INVALIDATE | ERASE | FRAME | UPDATENOW
+	pUpdateWindow.Call(hwnd)
 }
 func (app *nativeUI) persistNativePresets(d *nativeDialog) { _ = app.syncPhoneOpticalPresets(d) }
 func (app *nativeUI) confirmMessage(message, title string) bool {

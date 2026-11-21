@@ -6,6 +6,7 @@ import android.net.wifi.WifiManager
 import android.os.BatteryManager
 import android.os.Handler
 import android.os.Looper
+import android.os.Process
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.BufferedReader
@@ -40,7 +41,19 @@ class NetworkClient(
     private val mainHandler = Handler(Looper.getMainLooper())
     private val discoveryExecutor = Executors.newSingleThreadExecutor()
     private val sessionExecutor = Executors.newSingleThreadExecutor()
-    private val poseExecutor = Executors.newSingleThreadExecutor()
+    // Head tracking is latency-sensitive but lightweight. Give the dedicated
+    // sender display-thread scheduling priority so UI/GC work is less likely to
+    // leave hundreds of milliseconds of stale UDP samples queued.
+    private val poseExecutor = Executors.newSingleThreadExecutor { task ->
+        Thread({
+            try {
+                Process.setThreadPriority(Process.THREAD_PRIORITY_DISPLAY)
+            } catch (_: RuntimeException) {
+                // Continue with the default priority if the platform denies it.
+            }
+            task.run()
+        }, "PhoneVR-Pose-TX")
+    }
     private val running = AtomicBoolean(false)
     private val sessionGeneration = AtomicLong(0L)
     private val latestPose = AtomicReference<HeadPose?>(null)
@@ -575,7 +588,7 @@ class NetworkClient(
         const val DEFAULT_POSE_PORT = 48102
         const val DISCOVERY_PORT = 48100
         private const val PROTOCOL_VERSION = 1
-        private const val CLIENT_VERSION = "PhoneVRStream-0.4.13"
+        private const val CLIENT_VERSION = "PhoneVRStream-0.4.14"
         private const val DISCOVERY_REQUEST = "PHONEVR_DISCOVER_V1"
         private const val DISCOVERY_RESPONSE_PREFIX = "PHONEVR_HOST_V1 "
         private const val DISCOVERY_WINDOW_MS = 1800L

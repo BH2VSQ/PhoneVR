@@ -321,6 +321,30 @@ func TestReadLatestPoseBatchCoalescesQueuedDatagrams(t *testing.T) {
 	}
 }
 
+func TestPoseBatchForwardPolicyPreservesShortBurstsAndBoundsLongBacklogs(t *testing.T) {
+	makeBatch := func(count int) []receivedPoseDatagram {
+		batch := make([]receivedPoseDatagram, count)
+		for i := range batch {
+			batch[i].pose.Sequence = uint32(i + 1)
+		}
+		return batch
+	}
+
+	short := makeBatch(8)
+	if got := poseBatchToForward(short); len(got) != len(short) {
+		t.Fatalf("short burst forwards %d samples, want all %d", len(got), len(short))
+	}
+
+	long := makeBatch(maxPoseBatchForward + 20)
+	got := poseBatchToForward(long)
+	if len(got) != 1 {
+		t.Fatalf("long stale backlog forwards %d samples, want latest only", len(got))
+	}
+	if got[0].pose.Sequence != uint32(len(long)) {
+		t.Fatalf("long backlog forwarded sequence %d, want newest %d", got[0].pose.Sequence, len(long))
+	}
+}
+
 func TestNormalizeHostConfigKeepsEphemeralPorts(t *testing.T) {
 	config := normalizeHostConfig(HostConfig{ListenAddress: "127.0.0.1", DiscoveryPort: 0, ControlPort: 48101, PosePort: 48102})
 	if config.DiscoveryPort != 0 {

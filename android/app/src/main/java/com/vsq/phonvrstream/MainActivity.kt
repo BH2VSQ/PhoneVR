@@ -9,6 +9,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.Looper
+import android.os.Process
 import android.hardware.Sensor
 import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
@@ -178,7 +179,7 @@ class MainActivity : Activity(), SensorEventListener {
         )
 
         sensorManager = getSystemService(SENSOR_SERVICE) as SensorManager
-        sensorThread = HandlerThread("PhoneVR-IMU").apply { start() }
+        sensorThread = HandlerThread("PhoneVR-IMU", Process.THREAD_PRIORITY_DISPLAY).apply { start() }
         sensorHandler = Handler(sensorThread.looper)
         rotationSensor = sensorManager.getDefaultSensor(Sensor.TYPE_GAME_ROTATION_VECTOR)
             ?: sensorManager.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR)

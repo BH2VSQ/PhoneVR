@@ -1,3 +1,12 @@
+## 0.3.14
+
+- Added a dedicated light OpenGL pose-preview palette with a pale background, softer floor grid, and distinct high-contrast XYZ axes and gaze ray; dark mode preserves its original dark preview palette.
+- Added a light-mode headset material variant that raises only very dark mesh materials so frame, foam and lens details remain visible against the light background.
+- Fixed light-theme optical-editor and network-settings surfaces; viewport cards and their static labels now use the active theme surface brush instead of hard-coded dark fills.
+- Replaced the appearance dialog's text-labeled color controls with five color-only swatches. Left-click applies a swatch; right-click opens the Windows color picker and saves the customized swatch.
+- Removed the HEX input field, custom-color apply button and redundant instructional/subtitle text from Windows dialogs and the menu.
+- Added regression coverage for light-mode model-material contrast and responsive appearance-dialog swatch geometry.
+
 ## 0.3.13
 
 - Replaced the non-responsive native appearance dropdowns with explicit dark/light mode buttons and five directly clickable accent-color swatches.

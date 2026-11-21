@@ -1,6 +1,6 @@
 # PhoneVRStream
 
-Repository revision: **0.3.13**. Windows Host: **0.3.13**. Android client: **0.3.13**. Network protocol: **v1**.
+Repository revision: **0.3.14**. Windows Host: **0.3.14**. Android client: **0.3.14**. Network protocol: **v1**.
 
 PhoneVRStream is a two-part project for using an Android phone as a PC VR streaming HMD. Both applications live in one repository and use independent build/test pipelines.
 
@@ -19,7 +19,7 @@ PhoneVRStream/
 └── dist/                       # Local build output (git-ignored)
 ```
 
-## Windows Host 0.3.13
+## Windows Host 0.3.14
 
 The Windows Host has been migrated from an Edge/Chrome app-mode dashboard to a native Windows desktop application.
 
@@ -29,7 +29,7 @@ The Windows Host has been migrated from an Edge/Chrome app-mode dashboard to a n
 - The main window shows Host state, SteamVR state, HMD state, phone battery, the 3D HMD view and Yaw/Pitch/Roll. English labels are rendered as single-line text with end ellipsis and responsive positioning to prevent wrapping and overlap.
 - Native child windows provide Android-owned optical preset management, network settings, logs and appearance controls. The Host pulls the preset catalogue from Android when connected; the phone remains the authoritative persistent store.
 - The Optical Presets list supports double-click editing, save, apply, create, clone, rename and delete. The former phone display settings editor is integrated into the preset editor.
-- Light/dark themes and a custom HEX accent color are supported; child windows use an in-app Close action without a separate native caption close button.
+- Light/dark themes use separate pose-preview and headset-material palettes. Five color-only swatches support left-click to apply and right-click to open the Windows color picker; customized swatches are saved. Child windows use an in-app Close action without a separate native caption close button.
 - Chinese is the default UI language. English/Chinese switching is available and persists in the user's application data.
 - Window sizing is constrained to a 1.2:1 outer-window ratio. The default size is 1080 x 900.
 - The HMD is the only tracked device managed by PhoneVRStream. SlimeVR remains responsible for body tracking through SteamVR.

@@ -223,3 +223,25 @@ func normalizeModelVec(v modelVec3) modelVec3 {
 	return modelVec3{v.X * inv, v.Y * inv, v.Z * inv}
 }
 func float32Sqrt(v float32) float32 { return float32(math.Sqrt(float64(v))) }
+
+// nativeModelColorForMode slightly lifts the darkest headset materials in the
+// light preview so black foam and frame details remain distinguishable from
+// the bright viewport background without flattening the model's material hues.
+func nativeModelColorForMode(color [3]float32, mode string) [3]float32 {
+	if mode != "light" {
+		return color
+	}
+	luminance := 0.2126*color[0] + 0.7152*color[1] + 0.0722*color[2]
+	const minimumLuminance = float32(0.27)
+	if luminance >= minimumLuminance {
+		return color
+	}
+	lift := minimumLuminance - luminance
+	for i := range color {
+		color[i] += lift
+		if color[i] > 1 {
+			color[i] = 1
+		}
+	}
+	return color
+}

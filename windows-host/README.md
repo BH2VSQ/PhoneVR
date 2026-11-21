@@ -1,4 +1,4 @@
-# PhoneVR Host 0.3.13
+# PhoneVR Host 0.3.14
 
 Executable version is injected from the repository root `VERSION` file during builds.
 
@@ -26,7 +26,7 @@ The Android app's optical preset panel is a selector only. It no longer exposes 
 
 ### Appearance and child windows
 
-The appearance panel supports light/dark modes and a custom `#RRGGBB` accent color. The theme is saved in the user's application settings. Child windows use a client-drawn header, without a separate Windows caption close button; the in-app Close button remains available.
+The appearance panel supports light/dark modes with independent OpenGL preview backgrounds, grid/axis colors and headset material palettes. Five color-only swatches apply on left-click; right-click opens the Windows color picker to customize and save that swatch. The theme and custom swatches are saved in the user's application settings. Optical-editor and network-settings viewports follow the active palette. Child windows use a client-drawn header, without a separate Windows caption close button; the in-app Close button remains available.
 
 Network Settings provides the listener address and discovery/control/pose ports, including service start/stop/restart. Runtime Logs provides the Host event log. Dialog content supports vertical scrolling and mouse-wheel navigation, with action buttons in a fixed footer.
 

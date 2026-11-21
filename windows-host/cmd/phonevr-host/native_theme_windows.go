@@ -7,7 +7,6 @@ import (
 	"math"
 	"runtime"
 	"strconv"
-	"strings"
 	"syscall"
 	"unsafe"
 )
@@ -123,7 +122,7 @@ func (app *nativeUI) applyDarkControl(hwnd uintptr) {
 }
 
 func (app *nativeUI) rebuildThemeBrushes() {
-	for _, brush := range []uintptr{app.background, app.dialogBackground, app.editBackground, app.buttonBackground} {
+	for _, brush := range []uintptr{app.background, app.dialogBackground, app.editBackground, app.buttonBackground, app.surfaceBackground} {
 		if brush != 0 {
 			pDeleteObject.Call(brush)
 		}
@@ -133,6 +132,7 @@ func (app *nativeUI) rebuildThemeBrushes() {
 	app.dialogBackground, _, _ = pCreateSolidBrush.Call(p.Panel)
 	app.editBackground, _, _ = pCreateSolidBrush.Call(p.Input)
 	app.buttonBackground, _, _ = pCreateSolidBrush.Call(p.Surface)
+	app.surfaceBackground, _, _ = pCreateSolidBrush.Call(p.Surface)
 }
 
 type nativeDrawItem struct {
@@ -156,7 +156,7 @@ func (app *nativeUI) drawDialogButton(lParam uintptr) uintptr {
 	runtime.KeepAlive(&item)
 	id := int(item.CtlID)
 	p := app.palette()
-	primary := id == idApply || id == idPresetApply || id == idThemeApply || id == idNetworkApply || id == idNetworkStart
+	primary := id == idApply || id == idPresetApply || id == idNetworkApply || id == idNetworkStart
 	if id == idThemeModeDark && app.themeConfig.Mode == "dark" || id == idThemeModeLight && app.themeConfig.Mode == "light" {
 		primary = true
 	}
@@ -165,22 +165,11 @@ func (app *nativeUI) drawDialogButton(lParam uintptr) uintptr {
 	if primary {
 		fill, border, foreground = p.Accent, p.Accent, p.AccentText
 	}
-	if accentHex := nativeThemePaletteHex(id); accentHex != "" {
-		if accent, err := parseNativeHexColor(accentHex); err == nil {
-			fill, foreground = accent, nativeAccentForeground(accent)
-			border = p.Border
-			if strings.EqualFold(accentHex, app.themeConfig.AccentHex) {
-				border = p.Text
-			}
-		}
-	}
 	if danger {
 		fill, border, foreground = p.DangerBg, p.DangerLine, p.DangerText
 	}
-	if item.ItemState&0x0001 != 0 {
-		if !primary && nativeThemePaletteHex(id) == "" && !danger {
-			fill = p.Panel
-		}
+	if item.ItemState&0x0001 != 0 && !primary && !danger {
+		fill = p.Panel
 	}
 	drawNativeRoundRect(item.HDC, item.ItemRect, fill, border, 7)
 	label := getNativeText(item.HwndItem)
@@ -189,12 +178,12 @@ func (app *nativeUI) drawDialogButton(lParam uintptr) uintptr {
 	return 1
 }
 
-func (app *nativeUI) controlColor(hdc uintptr, message uint32) uintptr {
+func (app *nativeUI) controlColor(hdc uintptr, message uint32, child uintptr) uintptr {
 	p := app.palette()
 	pSetTextColor.Call(hdc, p.Text)
 	switch message {
 	case 0x0133, 0x0134: // EDIT / LISTBOX
-		pSetBkMode.Call(hdc, 2) // OPAQUE: use the active theme's input brush.
+		pSetBkMode.Call(hdc, 2)
 		pSetBkColor.Call(hdc, p.Input)
 		return app.editBackground
 	case 0x0135: // BUTTON
@@ -203,6 +192,14 @@ func (app *nativeUI) controlColor(hdc uintptr, message uint32) uintptr {
 		return app.buttonBackground
 	default:
 		pSetBkMode.Call(hdc, transparent)
+		if message == 0x0138 && child != 0 { // STATIC
+			parent, _, _ := pGetParent.Call(child)
+			for _, dialog := range app.dialogs {
+				if dialog.viewport == parent && dialog.viewport != 0 {
+					return app.surfaceBackground
+				}
+			}
+		}
 		return app.dialogBackground
 	}
 }
@@ -304,17 +301,15 @@ func (app *nativeUI) paintMainMenu(hdc uintptr) {
 	fillNativeRect(hdc, nativeRect{0, 0, int32(width), int32(height)}, p.Background)
 	drawNativeRoundRect(hdc, nativeRect{1, 1, int32(width - 1), int32(height - 1)}, p.Panel, p.Border, 14)
 	drawNativeText(hdc, app.text("PhoneVR 控制中心", "PhoneVR CONTROL"), nativeRect{20, 14, int32(width - 18), 46}, p.Text, app.fontTitle, dtVCenter|dtSingleLine|dtEndEllipsis|dtNoPrefix)
-	drawNativeText(hdc, app.text("快速操作与主机设置", "Quick actions and host settings"), nativeRect{20, 46, int32(width - 18), 68}, p.Muted, app.fontSmall, dtVCenter|dtSingleLine|dtEndEllipsis|dtNoPrefix)
-	drawNativeLine(hdc, 16, 70, width-16, 70, p.Border, 1)
+	drawNativeLine(hdc, 16, 56, width-16, 56, p.Border, 1)
 
 	for index, item := range app.mainMenuItems() {
-		y := 76 + index*48
+		y := 66 + index*48
 		r := nativeRect{14, int32(y), int32(width - 14), int32(y + 42)}
 		drawNativeRoundRect(hdc, r, p.Surface, p.Border, 9)
 		drawNativeEllipse(hdc, nativeRect{26, int32(y + 13), 42, int32(y + 29)}, p.Accent, 0)
 		drawNativeText(hdc, app.text(item.Chinese, item.English), nativeRect{54, int32(y), int32(width - 28), int32(y + 42)}, p.Text, app.fontBody, dtVCenter|dtSingleLine|dtEndEllipsis|dtNoPrefix)
 	}
-	drawNativeText(hdc, app.text("点击空白区域可关闭菜单", "Click outside to dismiss"), nativeRect{16, int32(height - 31), int32(width - 16), int32(height - 8)}, rgb(105, 132, 157), app.fontSmall, dtCenter|dtVCenter|dtSingleLine|dtNoPrefix)
 }
 
 func (app *nativeUI) handleMainClick(x, y int) {

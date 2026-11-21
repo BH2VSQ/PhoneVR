@@ -12,32 +12,61 @@ import (
 )
 
 type NativeThemeConfig struct {
-	Mode      string `json:"mode"`
-	AccentHex string `json:"accentHex"`
+	Mode       string    `json:"mode"`
+	AccentHex  string    `json:"accentHex"`
+	PaletteHex [5]string `json:"paletteHex,omitempty"`
 }
 
 type nativePalette struct {
-	Background uintptr
-	Panel      uintptr
-	Surface    uintptr
-	Input      uintptr
-	Border     uintptr
-	Text       uintptr
-	Muted      uintptr
-	Accent     uintptr
-	AccentText uintptr
-	DangerBg   uintptr
-	DangerLine uintptr
-	DangerText uintptr
-	SteamBg    uintptr
-	SteamLine  uintptr
-	SteamText  uintptr
-	Good       uintptr
-	Warning    uintptr
+	Background     uintptr
+	Panel          uintptr
+	Surface        uintptr
+	Input          uintptr
+	Border         uintptr
+	Text           uintptr
+	Muted          uintptr
+	Accent         uintptr
+	AccentText     uintptr
+	DangerBg       uintptr
+	DangerLine     uintptr
+	DangerText     uintptr
+	SteamBg        uintptr
+	SteamLine      uintptr
+	SteamText      uintptr
+	Good           uintptr
+	Warning        uintptr
+	PoseBackground uintptr
+	PoseGrid       uintptr
+	PoseAxisX      uintptr
+	PoseAxisY      uintptr
+	PoseAxisZ      uintptr
+	PoseGaze       uintptr
+}
+
+var defaultNativePaletteHex = [5]string{
+	"#5BCEFA", "#F5A9B8", "#B39DDB", "#80CBC4", "#FFCC80",
 }
 
 func defaultNativeThemeConfig() NativeThemeConfig {
-	return NativeThemeConfig{Mode: "dark", AccentHex: "#5BCEFA"}
+	return NativeThemeConfig{Mode: "dark", AccentHex: "#5BCEFA", PaletteHex: defaultNativePaletteHex}
+}
+
+func normalizeNativeThemeConfig(config NativeThemeConfig) NativeThemeConfig {
+	if config.Mode != "light" {
+		config.Mode = "dark"
+	}
+	defaults := defaultNativeThemeConfig()
+	for i := range config.PaletteHex {
+		if _, err := parseNativeHexColor(config.PaletteHex[i]); err != nil {
+			config.PaletteHex[i] = defaults.PaletteHex[i]
+		}
+		config.PaletteHex[i] = strings.ToUpper(config.PaletteHex[i])
+	}
+	if _, err := parseNativeHexColor(config.AccentHex); err != nil {
+		config.AccentHex = defaults.AccentHex
+	}
+	config.AccentHex = strings.ToUpper(config.AccentHex)
+	return config
 }
 
 func nativeThemeConfigPath() (string, error) {
@@ -58,20 +87,14 @@ func loadNativeThemeConfig() NativeThemeConfig {
 	if err != nil {
 		return config
 	}
-	_ = json.Unmarshal(data, &config)
-	if config.Mode != "light" {
-		config.Mode = "dark"
+	if err := json.Unmarshal(data, &config); err != nil {
+		return defaultNativeThemeConfig()
 	}
-	if _, err := parseNativeHexColor(config.AccentHex); err != nil {
-		config.AccentHex = defaultNativeThemeConfig().AccentHex
-	}
-	return config
+	return normalizeNativeThemeConfig(config)
 }
 
 func saveNativeThemeConfig(config NativeThemeConfig) error {
-	if config.Mode != "light" {
-		config.Mode = "dark"
-	}
+	config = normalizeNativeThemeConfig(config)
 	if _, err := parseNativeHexColor(config.AccentHex); err != nil {
 		return fmt.Errorf("invalid accent color: %w", err)
 	}
@@ -117,6 +140,8 @@ func (app *nativeUI) palette() nativePalette {
 			DangerBg: rgb(255, 233, 236), DangerLine: rgb(230, 170, 180), DangerText: rgb(142, 45, 61),
 			SteamBg: rgb(237, 237, 249), SteamLine: rgb(193, 190, 228), SteamText: rgb(74, 69, 131),
 			Good: rgb(32, 151, 111), Warning: rgb(173, 116, 35),
+			PoseBackground: rgb(245, 249, 253), PoseGrid: rgb(194, 208, 221),
+			PoseAxisX: rgb(194, 54, 54), PoseAxisY: rgb(25, 137, 82), PoseAxisZ: rgb(43, 98, 190), PoseGaze: rgb(0, 133, 163),
 		}
 	}
 	return nativePalette{
@@ -126,6 +151,8 @@ func (app *nativeUI) palette() nativePalette {
 		DangerBg: rgb(64, 31, 39), DangerLine: rgb(111, 55, 67), DangerText: rgb(255, 190, 197),
 		SteamBg: rgb(21, 21, 42), SteamLine: rgb(60, 58, 98), SteamText: rgb(184, 182, 239),
 		Good: rgb(85, 217, 160), Warning: rgb(231, 183, 110),
+		PoseBackground: rgb(11, 19, 28), PoseGrid: rgb(27, 43, 59),
+		PoseAxisX: rgb(242, 89, 82), PoseAxisY: rgb(72, 220, 147), PoseAxisZ: rgb(82, 151, 255), PoseGaze: rgb(47, 220, 245),
 	}
 }
 

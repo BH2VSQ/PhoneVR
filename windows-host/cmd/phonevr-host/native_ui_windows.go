@@ -72,6 +72,7 @@ var (
 	pSetProcessDpiAwarenessContext = user32.NewProc("SetProcessDpiAwarenessContext")
 	pSetWindowTheme                = syscall.NewLazyDLL("uxtheme.dll").NewProc("SetWindowTheme")
 	pDwmSetWindowAttr              = syscall.NewLazyDLL("dwmapi.dll").NewProc("DwmSetWindowAttribute")
+	pChooseColor                   = syscall.NewLazyDLL("comdlg32.dll").NewProc("ChooseColorW")
 	pChoosePixelFormat             = gdi32.NewProc("ChoosePixelFormat")
 	pSetPixelFormat                = gdi32.NewProc("SetPixelFormat")
 	pSwapBuffers                   = gdi32.NewProc("SwapBuffers")
@@ -105,6 +106,7 @@ var (
 	pGLNewList                     = gl32.NewProc("glNewList")
 	pGLEndList                     = gl32.NewProc("glEndList")
 	pGLCallList                    = gl32.NewProc("glCallList")
+	pGLDeleteLists                 = gl32.NewProc("glDeleteLists")
 	pGLClearDepth                  = gl32.NewProc("glClearDepth")
 	pGLBlendFunc                   = gl32.NewProc("glBlendFunc")
 	pGLHint                        = gl32.NewProc("glHint")
@@ -127,6 +129,7 @@ const (
 	wmNcDestroy         = 0x0082
 	wmSizing            = 0x0214
 	wmLButtonUp         = 0x0202
+	wmRButtonUp         = 0x0205
 	wmDrawItem          = 0x002B
 	wmSetFont           = 0x0030
 	wsOverlapped        = 0x00000000
@@ -219,40 +222,33 @@ const (
 )
 
 const (
-	idCenter               = 100
-	idSettings             = 101 // Retained internally for the preset editor; no longer shown in the main menu.
-	idPresets              = 102
-	idNetwork              = 103
-	idLogs                 = 104
-	idLanguage             = 105
-	idMenu                 = 106
-	idAppearance           = 107
-	idProfile              = 200
-	idApply                = 201
-	idDialogCenter         = 202
-	idClose                = 203
-	idPresetList           = 300
-	idPresetName           = 301
-	idPresetSave           = 302
-	idPresetClone          = 303
-	idPresetRename         = 304
-	idPresetDelete         = 305
-	idPresetApply          = 306
-	idPresetEdit           = 307
-	idPresetNew            = 308
-	idThemeModeDark        = 600
-	idThemeAccent          = 601
-	idThemeApply           = 602
-	idThemePaletteSky      = 603
-	idThemeModeLight       = 604
-	idThemePalettePink     = 605
-	idThemePaletteLavender = 606
-	idThemePaletteMint     = 607
-	idThemePaletteAmber    = 608
-	idNetworkApply         = 400
-	idNetworkStop          = 401
-	idNetworkStart         = 402
-	idLogsRefresh          = 500
+	idCenter         = 100
+	idSettings       = 101 // Retained internally for the preset editor; no longer shown in the main menu.
+	idPresets        = 102
+	idNetwork        = 103
+	idLogs           = 104
+	idLanguage       = 105
+	idMenu           = 106
+	idAppearance     = 107
+	idProfile        = 200
+	idApply          = 201
+	idDialogCenter   = 202
+	idClose          = 203
+	idPresetList     = 300
+	idPresetName     = 301
+	idPresetSave     = 302
+	idPresetClone    = 303
+	idPresetRename   = 304
+	idPresetDelete   = 305
+	idPresetApply    = 306
+	idPresetEdit     = 307
+	idPresetNew      = 308
+	idThemeModeDark  = 600
+	idThemeModeLight = 604
+	idNetworkApply   = 400
+	idNetworkStop    = 401
+	idNetworkStart   = 402
+	idLogsRefresh    = 500
 )
 
 type nativePoint struct{ X, Y int32 }
@@ -355,6 +351,7 @@ type nativeUI struct {
 	glDC              uintptr
 	glRC              uintptr
 	modelList         uintptr
+	lightModelList    uintptr
 	model             *nativeHeadsetModel
 	pose              PoseFrameSnapshot
 	snapshot          HostSnapshot
@@ -379,6 +376,8 @@ type nativeUI struct {
 	dialogBackground  uintptr
 	editBackground    uintptr
 	buttonBackground  uintptr
+	surfaceBackground uintptr
+	customColors      [16]uint32
 	fontBody          uintptr
 	fontSmall         uintptr
 	fontValue         uintptr
@@ -418,7 +417,7 @@ func runNativeDesktopApp(service *HostService, config HostConfig) error {
 	activeNativeUI = app
 	defer func() {
 		activeNativeUI = nil
-		for _, object := range []uintptr{app.background, app.dialogBackground, app.editBackground, app.buttonBackground, app.fontBody, app.fontSmall, app.fontValue, app.fontTitle} {
+		for _, object := range []uintptr{app.background, app.dialogBackground, app.editBackground, app.buttonBackground, app.surfaceBackground, app.fontBody, app.fontSmall, app.fontValue, app.fontTitle} {
 			if object != 0 {
 				pDeleteObject.Call(object)
 			}
@@ -667,7 +666,7 @@ func nativeMainWndProc(hwnd uintptr, message uint32, wParam, lParam uintptr) uin
 		app.handleMainCommand(int(wParam & 0xffff))
 		return 0
 	case 0x0132, 0x0133, 0x0134, 0x0135, 0x0136, wmCtlColor:
-		return app.controlColor(wParam, message)
+		return app.controlColor(wParam, message, lParam)
 	case wmClose:
 		pDestroyWindow.Call(hwnd)
 		return 0
@@ -759,6 +758,16 @@ func nativeDialogWndProc(hwnd uintptr, message uint32, wParam, lParam uintptr) u
 		return 0
 	case wmEraseBkgnd:
 		return 1
+	case wmLButtonUp:
+		if dialog != nil && dialog.kind == "appearance" {
+			app.handleAppearancePointer(dialog, int(int16(lParam&0xffff)), int(int16((lParam>>16)&0xffff)), false)
+			return 0
+		}
+	case wmRButtonUp:
+		if dialog != nil && dialog.kind == "appearance" {
+			app.handleAppearancePointer(dialog, int(int16(lParam&0xffff)), int(int16((lParam>>16)&0xffff)), true)
+			return 0
+		}
 	case wmVScroll:
 		if dialog != nil {
 			app.scrollDialog(dialog, int(wParam&0xffff), int((wParam>>16)&0xffff))
@@ -785,7 +794,7 @@ func nativeDialogWndProc(hwnd uintptr, message uint32, wParam, lParam uintptr) u
 	case wmDrawItem:
 		return app.drawDialogButton(lParam)
 	case 0x0132, 0x0133, 0x0134, 0x0135, 0x0136, wmCtlColor:
-		return app.controlColor(wParam, message)
+		return app.controlColor(wParam, message, lParam)
 	case wmClose:
 		pDestroyWindow.Call(hwnd)
 		return 0
@@ -840,7 +849,7 @@ func nativeViewportWndProc(hwnd uintptr, message uint32, wParam, lParam uintptr)
 	switch message {
 	case 0x0132, 0x0133, 0x0134, 0x0135, 0x0136, wmCtlColor:
 		if app != nil {
-			return app.controlColor(wParam, message)
+			return app.controlColor(wParam, message, lParam)
 		}
 	case wmMouseWheel:
 		if app != nil {
@@ -860,7 +869,8 @@ func nativeViewportWndProc(hwnd uintptr, message uint32, wParam, lParam uintptr)
 		paintNativeBuffered(hdc, width, height, func(buffer uintptr) {
 			graphics := beginNativeGraphics(buffer)
 			activeNativeGraphics = graphics
-			drawNativeRoundRect(buffer, nativeRect{0, 0, int32(width), int32(height)}, rgb(12, 24, 36), rgb(35, 55, 75), 12)
+			p := app.palette()
+			drawNativeRoundRect(buffer, nativeRect{0, 0, int32(width), int32(height)}, p.Surface, p.Border, 12)
 			activeNativeGraphics = 0
 			if graphics != 0 {
 				pGdipDeleteGraphics.Call(graphics)
@@ -1228,24 +1238,10 @@ func (app *nativeUI) createDialogControls(d *nativeDialog) {
 		addButton(idClose, app.text("关闭", "Close"))
 
 	case "appearance":
-		// Use explicit owner-drawn buttons instead of native COMBOBOX controls.
-		// The previous combo boxes were created at a 10x10 placeholder size and
-		// then moved; on some Windows builds their popup list was not reliably
-		// interactive/visible. These buttons always deliver BN_CLICKED through
-		// the dialog WM_COMMAND path.
-		addLabel(d.hwnd, 0, app.text("界面模式", "INTERFACE MODE"))
-		addButton(idThemeModeDark, app.text("夜间模式", "Dark mode"))
-		addButton(idThemeModeLight, app.text("日间模式", "Light mode"))
-		addLabel(d.hwnd, 1, app.text("主题强调色（HEX）", "ACCENT COLOR (HEX)"))
-		addEdit(d.hwnd, idThemeAccent, app.themeConfig.AccentHex)
-		addLabel(d.hwnd, 2, app.text("快速配色", "COLOR PRESETS"))
-		addButton(idThemePaletteSky, app.text("天空蓝", "Sky"))
-		addButton(idThemePalettePink, app.text("樱花粉", "Pink"))
-		addButton(idThemePaletteLavender, app.text("薰衣草", "Lavender"))
-		addButton(idThemePaletteMint, app.text("薄荷绿", "Mint"))
-		addButton(idThemePaletteAmber, app.text("暖琥珀", "Amber"))
-		d.status = app.createControl(d.hwnd, "STATIC", app.text("直接点击模式或配色即可立即应用；也可输入自定义 #RRGGBB", "Click a mode or color to apply immediately, or enter a custom #RRGGBB"), wsChild|wsVisible, 0, 0, 10, 10, 0)
-		addButton(idThemeApply, app.text("应用自定义颜色", "Apply Custom Color"))
+		addButton(idThemeModeDark, app.text("夜间模式", "Dark"))
+		addButton(idThemeModeLight, app.text("日间模式", "Light"))
+		// Palette swatches are painted directly on the dialog. This avoids
+		// native button chrome and lets the parent receive right-click gestures.
 		addButton(idClose, app.text("关闭", "Close"))
 
 	case "network":
@@ -1358,17 +1354,8 @@ func (app *nativeUI) layoutDialog(d *nativeDialog) {
 		moveRect := func(hwnd uintptr, r NativeLayoutRect) {
 			move(hwnd, r.Left, r.Top, r.Width(), r.Height())
 		}
-		moveRect(d.labels[0], l.ModeLabel)
 		moveRect(d.controls[idThemeModeDark], l.ModeDark)
 		moveRect(d.controls[idThemeModeLight], l.ModeLight)
-		moveRect(d.labels[1], l.AccentLabel)
-		moveRect(d.controls[idThemeAccent], l.Accent)
-		moveRect(d.labels[2], l.PaletteLabel)
-		for i, id := range []int{idThemePaletteSky, idThemePalettePink, idThemePaletteLavender, idThemePaletteMint, idThemePaletteAmber} {
-			moveRect(d.controls[id], l.PaletteButtons[i])
-		}
-		moveRect(d.status, l.Hint)
-		moveRect(d.controls[idThemeApply], l.Apply)
 		moveRect(d.controls[idClose], l.Close)
 
 	case "network":
@@ -1520,27 +1507,21 @@ func (app *nativeUI) paintDialog(d *nativeDialog, hdc uintptr) {
 	}
 	p := app.palette()
 	fillNativeRect(hdc, nativeRect{0, 0, int32(w), int32(h)}, p.Background)
-	title, subtitle := "PhoneVR", ""
+	title := "PhoneVR"
 	switch d.kind {
 	case "settings":
 		title = app.text("编辑光学预设", "Edit Optical Preset")
-		subtitle = app.text("修改参数后保存到手机本地预设库", "Edit parameters and save them to the phone preset library")
 	case "presets":
 		title = app.text("光学预设", "Optical Presets")
-		subtitle = app.text("双击预设即可编辑；预设数据以手机本地存储为准", "Double-click a preset to edit; Android stores the authoritative preset list")
 	case "network":
 		title = app.text("网络设置", "Network Settings")
-		subtitle = app.text("配置主机监听地址与手机连接端口", "Configure host binding and phone connection ports")
 	case "logs":
 		title = app.text("运行日志", "Runtime Logs")
-		subtitle = app.text("查看主机连接、姿态数据与控制指令事件", "Inspect host, tracking and control events")
 	case "appearance":
 		title = app.text("外观与主题", "Appearance & Theme")
-		subtitle = app.text("切换日间/夜间模式，并自定义界面强调色", "Choose light or dark mode and customize the interface accent")
 	}
-	drawNativeText(hdc, title, nativeRect{22, 10, int32(w - 22), 42}, p.Text, app.fontTitle, dtVCenter|dtSingleLine|dtEndEllipsis|dtNoPrefix)
-	drawNativeText(hdc, subtitle, nativeRect{24, 42, int32(w - 22), 68}, p.Muted, app.fontSmall, dtVCenter|dtSingleLine|dtEndEllipsis|dtNoPrefix)
-	drawNativeLine(hdc, 18, 72, w-18, 72, p.Border, 1)
+	drawNativeText(hdc, title, nativeRect{22, 10, int32(w - 22), 48}, p.Text, app.fontTitle, dtVCenter|dtSingleLine|dtEndEllipsis|dtNoPrefix)
+	drawNativeLine(hdc, 18, 64, w-18, 64, p.Border, 1)
 	drawNativeRoundRect(hdc, nativeRect{12, int32(h - 92), int32(w - 12), int32(h - 10)}, p.Panel, p.Border, 12)
 	if d.kind == "presets" {
 		l := ComputeNativePresetDialogLayout(w, h)
@@ -1550,6 +1531,18 @@ func (app *nativeUI) paintDialog(d *nativeDialog, hdc uintptr) {
 	if d.kind == "appearance" {
 		l := ComputeNativeAppearanceDialogLayout(w, h)
 		drawNativeRoundRect(hdc, nativeRect{int32(l.Panel.Left), int32(l.Panel.Top), int32(l.Panel.Right), int32(l.Panel.Bottom)}, p.Surface, p.Border, 12)
+		drawNativeText(hdc, app.text("界面模式", "MODE"), nativeRect{int32(l.ModeLabel.Left), int32(l.ModeLabel.Top), int32(l.ModeLabel.Right), int32(l.ModeLabel.Bottom)}, p.Text, app.fontBody, dtVCenter|dtSingleLine|dtNoPrefix)
+		for index, rect := range l.PaletteButtons {
+			color, err := parseNativeHexColor(app.themeConfig.PaletteHex[index])
+			if err != nil {
+				color = p.Accent
+			}
+			border := p.Border
+			if strings.EqualFold(app.themeConfig.AccentHex, app.themeConfig.PaletteHex[index]) {
+				border = p.Text
+			}
+			drawNativeRoundRect(hdc, nativeRect{int32(rect.Left), int32(rect.Top), int32(rect.Right), int32(rect.Bottom)}, color, border, 12)
+		}
 	}
 }
 
@@ -1694,18 +1687,9 @@ func (app *nativeUI) handleDialogCommand(d *nativeDialog, id int) {
 	case "appearance":
 		switch id {
 		case idThemeModeDark:
-			// A mode change must not be blocked by an unfinished/invalid HEX edit.
-			setNativeText(d.controls[idThemeAccent], app.themeConfig.AccentHex)
 			app.applyThemeValues(d, "dark", app.themeConfig.AccentHex)
 		case idThemeModeLight:
-			setNativeText(d.controls[idThemeAccent], app.themeConfig.AccentHex)
 			app.applyThemeValues(d, "light", app.themeConfig.AccentHex)
-		case idThemePaletteSky, idThemePalettePink, idThemePaletteLavender, idThemePaletteMint, idThemePaletteAmber:
-			accent := nativeThemePaletteHex(id)
-			setNativeText(d.controls[idThemeAccent], accent)
-			app.applyThemeValues(d, app.themeConfig.Mode, accent)
-		case idThemeApply:
-			app.applyThemeFromDialog(d)
 		case idClose:
 			pDestroyWindow.Call(d.hwnd)
 		}
@@ -1741,60 +1725,122 @@ func (app *nativeUI) handleDialogCommand(d *nativeDialog, id int) {
 	}
 }
 
-// applyThemeFromDialog applies a user-entered HEX accent while preserving the
-// currently active mode. Mode buttons and preset swatches call applyThemeValues
-// directly, so no combo-box notification or hidden dropdown state is involved.
-func (app *nativeUI) applyThemeFromDialog(d *nativeDialog) {
-	if d == nil {
-		return
-	}
-	app.applyThemeValues(d, app.themeConfig.Mode, getNativeText(d.controls[idThemeAccent]))
-}
-
 func (app *nativeUI) applyThemeValues(d *nativeDialog, mode, accent string) {
-	if d == nil {
-		return
-	}
 	if mode != "light" {
 		mode = "dark"
 	}
 	accent = strings.ToUpper(strings.TrimSpace(accent))
 	if _, err := parseNativeHexColor(accent); err != nil {
-		setNativeText(d.status, app.text("颜色格式无效，请使用 #RRGGBB", "Invalid color. Use #RRGGBB"))
 		return
 	}
-	config := NativeThemeConfig{Mode: mode, AccentHex: accent}
+	config := app.themeConfig
+	config.Mode = mode
+	config.AccentHex = accent
+	config = normalizeNativeThemeConfig(config)
 	if err := saveNativeThemeConfig(config); err != nil {
-		setNativeText(d.status, err.Error())
+		app.messageBox(err.Error(), "PhoneVR")
 		return
 	}
 	app.themeConfig = config
 	app.rebuildThemeBrushes()
 	app.redrawThemedWindows()
-	setNativeText(d.status, app.text("主题已应用并保存", "Theme applied and saved"))
-	if d.hwnd != 0 {
+	if d != nil && d.hwnd != 0 {
 		pInvalidateRect.Call(d.hwnd, 0, 1)
 		pUpdateWindow.Call(d.hwnd)
 	}
 }
 
-// nativeThemePaletteHex maps every visible color swatch button to a concrete
-// accent value. Keeping this mapping in one place prevents label/action drift.
-func nativeThemePaletteHex(id int) string {
-	switch id {
-	case idThemePaletteSky:
-		return "#5BCEFA"
-	case idThemePalettePink:
-		return "#F5A9B8"
-	case idThemePaletteLavender:
-		return "#B39DDB"
-	case idThemePaletteMint:
-		return "#80CBC4"
-	case idThemePaletteAmber:
-		return "#FFCC80"
-	default:
-		return ""
+func (app *nativeUI) applyThemePalette(d *nativeDialog, index int) {
+	if index < 0 || index >= len(app.themeConfig.PaletteHex) {
+		return
 	}
+	app.applyThemeValues(d, app.themeConfig.Mode, app.themeConfig.PaletteHex[index])
+}
+
+func nativeColorRefToHex(color uintptr) string {
+	return fmt.Sprintf("#%02X%02X%02X", uint8(color&0xff), uint8((color>>8)&0xff), uint8((color>>16)&0xff))
+}
+
+func chooseNativeColor(owner uintptr, initial uintptr, custom *[16]uint32) (uintptr, bool) {
+	type chooseColorDialog struct {
+		Size      uint32
+		Owner     uintptr
+		Instance  uintptr
+		RGBResult uint32
+		Custom    uintptr
+		Flags     uint32
+		CustData  uintptr
+		Hook      uintptr
+		Template  uintptr
+	}
+	if custom == nil {
+		return 0, false
+	}
+	chooser := chooseColorDialog{
+		Size: uint32(unsafe.Sizeof(chooseColorDialog{})), Owner: owner,
+		RGBResult: uint32(initial), Custom: uintptr(unsafe.Pointer(&custom[0])),
+		Flags: 0x00000001 | 0x00000002 | 0x00000100, // RGBINIT | FULL_OPEN | ANYCOLOR
+	}
+	result, _, _ := pChooseColor.Call(uintptr(unsafe.Pointer(&chooser)))
+	runtime.KeepAlive(&chooser)
+	runtime.KeepAlive(custom)
+	if result == 0 {
+		return 0, false
+	}
+	return uintptr(chooser.RGBResult), true
+}
+
+func (app *nativeUI) customizeThemePalette(d *nativeDialog, index int) {
+	if index < 0 || index >= len(app.themeConfig.PaletteHex) {
+		return
+	}
+	initial, err := parseNativeHexColor(app.themeConfig.PaletteHex[index])
+	if err != nil {
+		initial = rgb(91, 206, 250)
+	}
+	selected, ok := chooseNativeColor(d.hwnd, initial, &app.customColors)
+	if !ok {
+		return
+	}
+	config := app.themeConfig
+	config.PaletteHex[index] = nativeColorRefToHex(selected)
+	config.AccentHex = config.PaletteHex[index]
+	if err := saveNativeThemeConfig(config); err != nil {
+		app.messageBox(err.Error(), "PhoneVR")
+		return
+	}
+	app.themeConfig = normalizeNativeThemeConfig(config)
+	app.rebuildThemeBrushes()
+	app.redrawThemedWindows()
+	pInvalidateRect.Call(d.hwnd, 0, 1)
+	pUpdateWindow.Call(d.hwnd)
+}
+
+func (app *nativeUI) handleAppearancePointer(d *nativeDialog, x, y int, rightClick bool) {
+	if d == nil || d.kind != "appearance" {
+		return
+	}
+	layout := ComputeNativeAppearanceDialogLayout(clientSizeWidth(d.hwnd), clientSizeHeight(d.hwnd))
+	for index, rect := range layout.PaletteButtons {
+		if x >= rect.Left && x < rect.Right && y >= rect.Top && y < rect.Bottom {
+			if rightClick {
+				app.customizeThemePalette(d, index)
+			} else {
+				app.applyThemePalette(d, index)
+			}
+			return
+		}
+	}
+}
+
+func clientSizeWidth(hwnd uintptr) int {
+	width, _ := clientSize(hwnd)
+	return width
+}
+
+func clientSizeHeight(hwnd uintptr) int {
+	_, height := clientSize(hwnd)
+	return height
 }
 
 func (app *nativeUI) redrawThemedWindows() {
@@ -1950,11 +1996,12 @@ func (app *nativeUI) initOpenGL(hwnd uintptr) {
 	pGLLightfv.Call(glLight0, glPosition, uintptr(unsafe.Pointer(&position[0])))
 	pGLClearDepth.Call(uintptr(math.Float64bits(1)))
 	if app.model != nil {
-		app.modelList = app.compileModelList()
+		app.modelList = app.compileModelList("dark")
+		app.lightModelList = app.compileModelList("light")
 	}
 	pWGLMakeCurrent.Call(0, 0)
 }
-func (app *nativeUI) compileModelList() uintptr {
+func (app *nativeUI) compileModelList(mode string) uintptr {
 	list, _, _ := pGLGenLists.Call(1)
 	if list == 0 {
 		return 0
@@ -1962,7 +2009,8 @@ func (app *nativeUI) compileModelList() uintptr {
 	pGLNewList.Call(list, glCompile)
 	pGLBegin.Call(glTriangles)
 	for _, triangle := range app.model.Triangles {
-		pGLColor3f.Call(floatArg(triangle.C[0]), floatArg(triangle.C[1]), floatArg(triangle.C[2]))
+		color := nativeModelColorForMode(triangle.C, mode)
+		pGLColor3f.Call(floatArg(color[0]), floatArg(color[1]), floatArg(color[2]))
 		for i := 0; i < 3; i++ {
 			n := triangle.N[i]
 			pGLNormal3f.Call(floatArg(n.X), floatArg(n.Y), floatArg(n.Z))
@@ -1975,6 +2023,11 @@ func (app *nativeUI) compileModelList() uintptr {
 	return list
 }
 func floatArg(value float32) uintptr { return uintptr(math.Float32bits(value)) }
+
+func nativeGLColor(color uintptr) (float32, float32, float32) {
+	return float32(color&0xff) / 255, float32((color>>8)&0xff) / 255, float32((color>>16)&0xff) / 255
+}
+
 func (app *nativeUI) renderOpenGL(hwnd, hdc uintptr) {
 	if app.glDC == 0 || app.glRC == 0 {
 		return
@@ -1988,7 +2041,9 @@ func (app *nativeUI) renderOpenGL(hwnd, hdc uintptr) {
 		return
 	}
 	pGLViewport.Call(0, 0, uintptr(w), uintptr(h))
-	pGLClearColor.Call(floatArg(0.045), floatArg(0.075), floatArg(0.11), floatArg(1))
+	p := app.palette()
+	bgR, bgG, bgB := nativeGLColor(p.PoseBackground)
+	pGLClearColor.Call(floatArg(bgR), floatArg(bgG), floatArg(bgB), floatArg(1))
 	pGLClear.Call(glColorBufferBit | glDepthBufferBit)
 	pGLMatrixMode.Call(glProjection)
 	pGLLoadIdentity.Call()
@@ -2006,7 +2061,8 @@ func (app *nativeUI) renderOpenGL(hwnd, hdc uintptr) {
 	pGLRotatef.Call(floatArg(-22), 0, floatArg(1), 0)
 	// Fixed world grid is rendered before the HMD-local orientation transform.
 	pGLDisable.Call(glLighting)
-	pGLColor3f.Call(floatArg(0.10), floatArg(0.16), floatArg(0.22))
+	gridR, gridG, gridB := nativeGLColor(p.PoseGrid)
+	pGLColor3f.Call(floatArg(gridR), floatArg(gridG), floatArg(gridB))
 	pGLBegin.Call(glLines)
 	for i := -5; i <= 5; i++ {
 		v := float32(i) * 0.22
@@ -2021,24 +2077,32 @@ func (app *nativeUI) renderOpenGL(hwnd, hdc uintptr) {
 		pGLMultMatrixf.Call(uintptr(unsafe.Pointer(&matrix[0])))
 	}
 	pGLEnable.Call(glLighting)
-	if app.modelList != 0 {
-		pGLCallList.Call(app.modelList)
+	modelList := app.modelList
+	if app.themeConfig.Mode == "light" && app.lightModelList != 0 {
+		modelList = app.lightModelList
+	}
+	if modelList != 0 {
+		pGLCallList.Call(modelList)
 	}
 	pGLDisable.Call(glLighting)
 	pGLLineWidth.Call(floatArg(2.4))
 	pGLBegin.Call(glLines)
-	// Headset-local axes: red +X, green +Y, blue +Z.
-	pGLColor3f.Call(floatArg(0.95), floatArg(0.35), floatArg(0.32))
+	// Headset-local axes use contrasting colors in both appearance modes.
+	axisXR, axisXG, axisXB := nativeGLColor(p.PoseAxisX)
+	axisYR, axisYG, axisYB := nativeGLColor(p.PoseAxisY)
+	axisZR, axisZG, axisZB := nativeGLColor(p.PoseAxisZ)
+	gazeR, gazeG, gazeB := nativeGLColor(p.PoseGaze)
+	pGLColor3f.Call(floatArg(axisXR), floatArg(axisXG), floatArg(axisXB))
 	pGLVertex3f.Call(0, 0, 0)
 	pGLVertex3f.Call(floatArg(0.75), 0, 0)
-	pGLColor3f.Call(floatArg(0.28), floatArg(0.92), floatArg(0.58))
+	pGLColor3f.Call(floatArg(axisYR), floatArg(axisYG), floatArg(axisYB))
 	pGLVertex3f.Call(0, 0, 0)
 	pGLVertex3f.Call(0, floatArg(0.75), 0)
-	pGLColor3f.Call(floatArg(0.32), floatArg(0.60), floatArg(1))
+	pGLColor3f.Call(floatArg(axisZR), floatArg(axisZG), floatArg(axisZB))
 	pGLVertex3f.Call(0, 0, 0)
 	pGLVertex3f.Call(0, 0, floatArg(0.75))
 	// Gaze ray projects from the eye/lens centre through the front (-Z).
-	pGLColor3f.Call(floatArg(0.18), floatArg(0.88), floatArg(1))
+	pGLColor3f.Call(floatArg(gazeR), floatArg(gazeG), floatArg(gazeB))
 	pGLVertex3f.Call(0, 0, floatArg(0.26))
 	pGLVertex3f.Call(0, 0, floatArg(-1.35))
 	pGLEnd.Call()
@@ -2049,6 +2113,17 @@ func (app *nativeUI) renderOpenGL(hwnd, hdc uintptr) {
 }
 func (app *nativeUI) destroyOpenGL() {
 	if app.glRC != 0 {
+		if app.glDC != 0 {
+			pWGLMakeCurrent.Call(app.glDC, app.glRC)
+			if app.modelList != 0 {
+				pGLDeleteLists.Call(app.modelList, 1)
+				app.modelList = 0
+			}
+			if app.lightModelList != 0 {
+				pGLDeleteLists.Call(app.lightModelList, 1)
+				app.lightModelList = 0
+			}
+		}
 		pWGLMakeCurrent.Call(0, 0)
 		pWGLDeleteContext.Call(app.glRC)
 		app.glRC = 0

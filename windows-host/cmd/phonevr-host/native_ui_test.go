@@ -147,17 +147,16 @@ func TestNativePresetDialogLayoutKeepsControlsInsideCards(t *testing.T) {
 	}
 }
 
-func TestNativeAppearanceDialogLayoutKeepsThemeControlsAndFooterSeparated(t *testing.T) {
+func TestNativeAppearanceDialogLayoutKeepsModeAndColorSwatchesInsidePanel(t *testing.T) {
 	for _, size := range [][2]int{{640, 500}, {660, 460}, {900, 640}} {
 		layout := ComputeNativeAppearanceDialogLayout(size[0], size[1])
 		if layout.Panel.Bottom >= layout.FooterPanel.Top {
 			t.Fatalf("appearance panel overlaps footer for %dx%d: panel=%+v footer=%+v", size[0], size[1], layout.Panel, layout.FooterPanel)
 		}
 		for name, rect := range map[string]NativeLayoutRect{
-			"dark mode": layout.ModeDark, "light mode": layout.ModeLight,
-			"accent": layout.Accent, "hint": layout.Hint,
+			"mode label": layout.ModeLabel, "dark mode": layout.ModeDark, "light mode": layout.ModeLight,
 		} {
-			if rect.Left < layout.Panel.Left || rect.Right > layout.Panel.Right || rect.Bottom > layout.Panel.Bottom {
+			if rect.Left < layout.Panel.Left || rect.Right > layout.Panel.Right || rect.Top < layout.Panel.Top || rect.Bottom > layout.Panel.Bottom {
 				t.Fatalf("%s control escapes appearance card for %dx%d: control=%+v panel=%+v", name, size[0], size[1], rect, layout.Panel)
 			}
 		}
@@ -169,11 +168,27 @@ func TestNativeAppearanceDialogLayoutKeepsThemeControlsAndFooterSeparated(t *tes
 				t.Fatalf("palette swatches overlap for %dx%d: %+v", size[0], size[1], layout.PaletteButtons)
 			}
 		}
-		if layout.ModeDark.Right > layout.ModeLight.Left || layout.ModeDark.Left != layout.ModeLight.Left-layout.ModeDark.Width()-8 {
+		if layout.ModeDark.Right > layout.ModeLight.Left || layout.ModeLight.Right != layout.Panel.Right-12 {
 			t.Fatalf("mode buttons are not aligned: %+v", layout)
 		}
-		if layout.Apply.Bottom > layout.FooterPanel.Bottom || layout.Close.Bottom > layout.FooterPanel.Bottom {
-			t.Fatalf("appearance action button escapes footer for %dx%d: %+v", size[0], size[1], layout)
+		if layout.Close.Bottom > layout.FooterPanel.Bottom || layout.Close.Top < layout.FooterPanel.Top {
+			t.Fatalf("appearance close button escapes footer for %dx%d: %+v", size[0], size[1], layout)
 		}
+	}
+}
+
+func TestLightThemeModelMaterialsRemainVisible(t *testing.T) {
+	darkMaterial := [3]float32{0.045, 0.055, 0.061}
+	lightMaterial := nativeModelColorForMode(darkMaterial, "light")
+	luminance := 0.2126*lightMaterial[0] + 0.7152*lightMaterial[1] + 0.0722*lightMaterial[2]
+	if luminance < 0.269 {
+		t.Fatalf("dark headset material luminance = %.3f, want >= 0.269", luminance)
+	}
+	if nativeModelColorForMode(darkMaterial, "dark") != darkMaterial {
+		t.Fatal("dark theme must preserve original headset materials")
+	}
+	brightMaterial := [3]float32{0.48, 0.50, 0.50}
+	if nativeModelColorForMode(brightMaterial, "light") != brightMaterial {
+		t.Fatal("light theme must preserve already-visible bright materials")
 	}
 }

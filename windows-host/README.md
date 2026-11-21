@@ -1,4 +1,4 @@
-# PhoneVR Host 0.4.1 hotfix
+# PhoneVR Host 0.4.2 hotfix
 
 Executable version is injected from the repository root `VERSION` file during builds.
 
@@ -20,6 +20,7 @@ The main menu provides:
 - Network Settings
 - Appearance & Theme
 - Runtime Logs
+- SteamVR Driver management
 - Center View and language switching
 
 ### Optical presets
@@ -99,3 +100,7 @@ Validated Android `PVSP` pose packets received on the existing UDP pose port are
 ## Video encoder capability discovery
 
 `internal/encoder` parses the installed FFmpeg encoder list and recognizes NVENC, AMF, QSV and software H.264/HEVC/AV1 candidates. Hardware selection is runtime/capability based and supports mixed-vendor systems. A listed FFmpeg encoder is a candidate only; actual device initialization and format validation are performed by the encoder session in the next streaming milestone.
+
+## SteamVR Driver Manager
+
+Open **SteamVR Driver** from the Host main menu. The manager can check the registered `phonevr` driver, download and install the latest `PhoneVR-SteamVR-Driver-Windows-x64.zip` GitHub Release asset, install a locally selected ZIP, and uninstall the registered driver. The package is validated before installation (`driver.vrdrivermanifest` must identify `phonevr` and `bin/win64/driver_phonevr.dll` must exist). Host registers/unregisters the package using the SteamVR installation's `bin/win64/vrpathreg.exe`. Files installed by Host are stored under `%LOCALAPPDATA%\PhoneVR\SteamVRDriver`; manually managed paths are never deleted automatically.

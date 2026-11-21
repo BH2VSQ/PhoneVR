@@ -30,6 +30,8 @@ var (
 	pShowWindow                    = user32.NewProc("ShowWindow")
 	pUpdateWindow                  = user32.NewProc("UpdateWindow")
 	pDestroyWindow                 = user32.NewProc("DestroyWindow")
+	pIsWindow                      = user32.NewProc("IsWindow")
+	pEnableWindow                  = user32.NewProc("EnableWindow")
 	pMoveWindow                    = user32.NewProc("MoveWindow")
 	pSetWindowText                 = user32.NewProc("SetWindowTextW")
 	pGetWindowText                 = user32.NewProc("GetWindowTextW")
@@ -230,6 +232,7 @@ const (
 	idLanguage       = 105
 	idMenu           = 106
 	idAppearance     = 107
+	idDriverManager  = 108
 	idProfile        = 200
 	idApply          = 201
 	idDialogCenter   = 202
@@ -245,6 +248,10 @@ const (
 	idPresetNew      = 308
 	idThemeModeDark  = 600
 	idThemeModeLight = 604
+	idDriverRefresh  = 710
+	idDriverRelease  = 711
+	idDriverLocal    = 712
+	idDriverRemove   = 713
 	idNetworkApply   = 400
 	idNetworkStop    = 401
 	idNetworkStart   = 402
@@ -985,6 +992,7 @@ func (app *nativeUI) mainMenuItems() []nativeMenuItem {
 		{ID: idNetwork, Chinese: "网络设置", English: "Network"},
 		{ID: idAppearance, Chinese: "外观与主题", English: "Appearance & Theme"},
 		{ID: idLogs, Chinese: "运行日志", English: "Logs"},
+		{ID: idDriverManager, Chinese: "SteamVR 驱动管理", English: "SteamVR Driver"},
 		{ID: idLanguage, Chinese: "切换为 English", English: "Switch to 中文"},
 	}
 }
@@ -1005,7 +1013,7 @@ func (app *nativeUI) toggleMainMenu() {
 
 	var mainRect nativeRect
 	pGetWindowRect.Call(app.mainHWnd, uintptr(unsafe.Pointer(&mainRect)))
-	const menuWidth, menuHeight = 292, 452
+	const menuWidth, menuHeight = 292, 500
 	x := int(mainRect.Right) - menuWidth - 14
 	y := int(mainRect.Top) + 54
 	screenWidth, _, _ := pGetSystemMetrics.Call(0)
@@ -1067,6 +1075,8 @@ func (app *nativeUI) handleMainCommand(id int) {
 		app.openDialog("network")
 	case idLogs:
 		app.openDialog("logs")
+	case idDriverManager:
+		app.openDialog("driver")
 	case idLanguage:
 		app.toggleLanguage()
 	}
@@ -1119,6 +1129,8 @@ func (app *nativeUI) openDialog(kind string) {
 		width, height, title = 980, 680, app.text("运行日志", "Runtime Logs")
 	case "appearance":
 		width, height, title = 660, 460, app.text("外观与主题", "Appearance & Theme")
+	case "driver":
+		width, height, title = 760, 500, app.text("SteamVR 驱动管理", "SteamVR Driver Manager")
 	}
 	instance, _, _ := pGetModuleHandle.Call(0)
 	class, _ := syscall.UTF16PtrFromString("PhoneVRNativeDialog")
@@ -1156,6 +1168,14 @@ func (app *nativeUI) openDialog(kind string) {
 	app.createDialogControls(dialog)
 	pShowWindow.Call(hwnd, swShow)
 	pUpdateWindow.Call(hwnd)
+	if kind == "driver" {
+		for _, d := range app.dialogs {
+			if d.kind == "driver" {
+				app.refreshDriverStatus(d)
+				break
+			}
+		}
+	}
 }
 
 func (app *nativeUI) createDialogControls(d *nativeDialog) {
@@ -1235,6 +1255,14 @@ func (app *nativeUI) createDialogControls(d *nativeDialog) {
 		addButton(idPresetRename, app.text("重命名", "Rename"))
 		addButton(idPresetDelete, app.text("删除预设", "Delete Preset"))
 		d.status = app.createControl(d.hwnd, "STATIC", "", wsChild|wsVisible, 0, 0, 10, 10, 0)
+		addButton(idClose, app.text("关闭", "Close"))
+
+	case "driver":
+		d.status = app.createControl(d.hwnd, "STATIC", app.text("正在检查 SteamVR 驱动...", "Checking SteamVR driver..."), wsChild|wsVisible, 0, 0, 10, 10, 0)
+		addButton(idDriverRefresh, app.text("检查状态", "Check Status"))
+		addButton(idDriverRelease, app.text("下载最新 Release 并安装", "Download Latest Release & Install"))
+		addButton(idDriverLocal, app.text("选择本地驱动 ZIP", "Choose Local Driver ZIP"))
+		addButton(idDriverRemove, app.text("卸载 PhoneVR 驱动", "Uninstall PhoneVR Driver"))
 		addButton(idClose, app.text("关闭", "Close"))
 
 	case "appearance":
@@ -1348,6 +1376,16 @@ func (app *nativeUI) layoutDialog(d *nativeDialog) {
 		moveRect(d.controls[idPresetDelete], l.Delete)
 		moveRect(d.status, l.Status)
 		moveRect(d.controls[idClose], l.Close)
+
+	case "driver":
+		margin := 24
+		move(d.status, margin, 94, w-2*margin, 110)
+		buttonW := (w - 2*margin - 14) / 2
+		move(d.controls[idDriverRefresh], margin, 230, buttonW, 42)
+		move(d.controls[idDriverRelease], margin+buttonW+14, 230, buttonW, 42)
+		move(d.controls[idDriverLocal], margin, 286, buttonW, 42)
+		move(d.controls[idDriverRemove], margin+buttonW+14, 286, buttonW, 42)
+		move(d.controls[idClose], w-margin-124, h-52, 124, 38)
 
 	case "appearance":
 		l := ComputeNativeAppearanceDialogLayout(w, h)
@@ -1684,6 +1722,31 @@ func (app *nativeUI) handleDialogCommand(d *nativeDialog, id int) {
 			pDestroyWindow.Call(d.hwnd)
 		}
 
+	case "driver":
+		switch id {
+		case idDriverRefresh:
+			app.refreshDriverStatus(d)
+		case idDriverRelease:
+			app.runDriverTask(d, app.text("正在从 GitHub Release 下载并安装...", "Downloading and installing driver from GitHub Release..."), installLatestPhoneVRDriver)
+		case idDriverLocal:
+			archive := choosePhoneVRDriverZip(d.hwnd)
+			if archive != "" {
+				app.runDriverTask(d, app.text("正在验证并安装驱动包...", "Validating and installing driver package..."), func() (string, error) {
+					path, err := installPhoneVRDriverArchive(archive)
+					if err != nil {
+						return "", err
+					}
+					return "PhoneVR 驱动已安装\n" + path, nil
+				})
+			}
+		case idDriverRemove:
+			if app.confirmMessage(app.text("确定卸载 PhoneVR SteamVR 驱动？\nSteamVR 需要重启后才会完全卸载。", "Uninstall the PhoneVR SteamVR driver?\nSteamVR must be restarted to fully unload it."), app.text("卸载驱动", "Uninstall Driver")) {
+				app.runDriverTask(d, app.text("正在从 SteamVR 卸载 PhoneVR 驱动...", "Unregistering PhoneVR driver from SteamVR..."), uninstallPhoneVRDriver)
+			}
+		case idClose:
+			pDestroyWindow.Call(d.hwnd)
+		}
+
 	case "appearance":
 		switch id {
 		case idThemeModeDark:
@@ -1944,6 +2007,13 @@ func (app *nativeUI) refreshLogDialog(d *nativeDialog) {
 	setNativeText(d.controls[501], text)
 }
 func (app *nativeUI) persistNativePresets(d *nativeDialog) { _ = app.syncPhoneOpticalPresets(d) }
+func (app *nativeUI) confirmMessage(message, title string) bool {
+	msg, _ := syscall.UTF16PtrFromString(message)
+	caption, _ := syscall.UTF16PtrFromString(title)
+	result, _, _ := pMessageBox.Call(app.mainHWnd, uintptr(unsafe.Pointer(msg)), uintptr(unsafe.Pointer(caption)), 0x00000004|0x00000030|0x00000100) // MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2
+	return result == 6                                                                                                                               // IDYES
+}
+
 func (app *nativeUI) messageBox(message, title string) {
 	msg, _ := syscall.UTF16PtrFromString(message)
 	caption, _ := syscall.UTF16PtrFromString(title)

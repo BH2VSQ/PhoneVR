@@ -61,7 +61,9 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add VERSION CHANGELOG.md README.md android/app/build.gradle.kts \
             android/app/src/main/java/com/vsq/phonvrstream/network/NetworkClient.kt \
-            windows-host/README.md windows-host/cmd/phonevr-host/main.go
+            windows-host/README.md windows-host/cmd/phonevr-host/main.go \
+            windows-host/cmd/phonevr-host/driver_manager_windows.go windows-host/cmd/phonevr-host/native_ui_windows.go \
+            windows-host/internal/drivermanager/*.go steamvr-driver/CMakeLists.txt steamvr-driver/README.md .github/workflows/release.yml
           git commit -m "chore(release): ${{ steps.version.outputs.tag }}"
           git tag -a "${{ steps.version.outputs.tag }}" -m "PhoneVRStream ${{ steps.version.outputs.version }}"
           git push origin "HEAD:${GITHUB_REF_NAME}"
@@ -163,12 +165,34 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  steamvr-driver-release:
+    name: Build SteamVR driver package
+    needs: prepare-release
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.prepare-release.outputs.tag }}
+      - name: Build SteamVR driver
+        shell: pwsh
+        run: .\scripts\build-steamvr-driver.ps1
+      - name: Upload SteamVR driver package artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: PhoneVR-SteamVR-Driver-Windows-x64-${{ needs.prepare-release.outputs.version }}
+          path: dist/steamvr-driver/**
+          if-no-files-found: error
+          retention-days: 7
+
   publish-release:
     name: Package and publish GitHub Release
     needs:
       - prepare-release
       - android-release
       - windows-release
+      - steamvr-driver-release
     runs-on: ubuntu-latest
     steps:
       - name: Download Android artifact
@@ -182,6 +206,12 @@ jobs:
         with:
           name: PhoneVRHost-Windows-x64-${{ needs.prepare-release.outputs.version }}
           path: release-staging/windows
+
+      - name: Download SteamVR driver artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: PhoneVR-SteamVR-Driver-Windows-x64-${{ needs.prepare-release.outputs.version }}
+          path: release-staging/steamvr-driver
 
       - name: Assemble release assets and checksums
         id: assets
@@ -214,13 +244,19 @@ jobs:
           Run PhoneVRHost-console.exe -headless for console diagnostics.
           EOF
           (cd release-assets && zip -qr "PhoneVRHost-Windows-x64-${version}.zip" "PhoneVRHost-Windows-x64-${version}")
-          (cd release-assets && sha256sum "PhoneVRStream-Android-${version}-release-unsigned.apk" "PhoneVRHost-Windows-x64-${version}.zip" > SHA256SUMS.txt)
+          (cd release-staging/steamvr-driver && zip -qr "${GITHUB_WORKSPACE}/release-assets/PhoneVR-SteamVR-Driver-Windows-x64.zip" .)
+          if [[ ! -s "release-assets/PhoneVR-SteamVR-Driver-Windows-x64.zip" ]]; then
+            echo "SteamVR driver ZIP is missing or empty." >&2
+            exit 1
+          fi
+          (cd release-assets && sha256sum "${android_asset}" "PhoneVRHost-Windows-x64-${version}.zip" "PhoneVR-SteamVR-Driver-Windows-x64.zip" > SHA256SUMS.txt)
           cat > release-notes.md <<EOF
           ## PhoneVRStream ${version}
 
           - Android versionName: ${version}
           - Android versionCode: ${{ needs.prepare-release.outputs.version_code }}
           - Windows Host: ${version}
+          - SteamVR Driver: PhoneVR-SteamVR-Driver-Windows-x64.zip
           - Network protocol: v1
 
           Android APK signing is enabled when the repository has all four secrets: `PHONEVR_RELEASE_KEYSTORE_BASE64`, `PHONEVR_RELEASE_STORE_PASSWORD`, `PHONEVR_RELEASE_KEY_ALIAS`, and `PHONEVR_RELEASE_KEY_PASSWORD`. Without them, the workflow publishes a clearly named unsigned APK that must be signed before installation.
@@ -242,5 +278,5 @@ jobs:
           else
             gh release create "$tag" --title "$title" --notes-file release-notes.md
           fi
-          gh release upload "$tag" release-assets/PhoneVRStream-Android-*-release-unsigned.apk \
-            release-assets/PhoneVRHost-Windows-x64-*.zip release-assets/SHA256SUMS.txt --clobber
+          gh release upload "$tag" release-assets/PhoneVRStream-Android-*-release*.apk \
+            release-assets/PhoneVRHost-Windows-x64-*.zip release-assets/PhoneVR-SteamVR-Driver-Windows-x64.zip release-assets/SHA256SUMS.txt --clobber

@@ -93,3 +93,12 @@
 ### Android CI follow-up
 - Fixed JVM unit-test JSON runtime by adding `org.json:json` as a test-only dependency, preventing the mockable Android SDK `org.json` stubs from returning null in `OpticalPresetTest`.
 
+
+## 0.4.2
+
+- Added a SteamVR Driver Manager window to PhoneVR Host.
+- Host can discover the latest PhoneVR Windows x64 driver ZIP from GitHub Releases, download it, validate the package, install it under the current user's LocalAppData directory, and register it with SteamVR through `vrpathreg.exe`.
+- Added local driver ZIP selection, install/update, registered driver status inspection, and in-app driver uninstallation.
+- Installation checks the `phonevr` manifest identity, avoids duplicate registration by replacing the existing PhoneVR entry, rolls back registration if an update fails, and only deletes files from the PhoneVR-managed driver directory.
+- Release workflow now builds and publishes `PhoneVR-SteamVR-Driver-Windows-x64.zip` as a dedicated GitHub Release asset.
+- Added ZIP traversal, package-integrity, and driver-manifest validation tests.

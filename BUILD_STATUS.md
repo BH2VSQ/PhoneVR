@@ -1,15 +1,39 @@
-# Build Status — PhoneVR 0.4.1
+# PhoneVR 0.4.2 Build Status
 
-## Android hotfix
+## Implemented
 
-Fixed `CodecCapabilityProbe.kt` compile errors from the 0.4.0 CI log:
+- Added a native **SteamVR Driver** manager entry to the Windows Host main menu.
+- Host can query the registered `phonevr` driver through SteamVR `vrpathreg.exe`.
+- Host can query the latest PhoneVR GitHub Release and download the fixed asset `PhoneVR-SteamVR-Driver-Windows-x64.zip`.
+- Host can select a local driver ZIP through the Windows file picker.
+- Before installation, the ZIP is checked for path traversal, symlinks, archive size, expanded size, the root `driver.vrdrivermanifest` (`name=phonevr`) and `bin/win64/driver_phonevr.dll`.
+- Host extracts the validated driver under `%LOCALAPPDATA%\PhoneVR\SteamVRDriver`, registers it with SteamVR, and replaces a previous `phonevr` registration. Failed updates attempt to restore the prior registration.
+- Host can unregister the PhoneVR driver. It deletes only files installed under its managed LocalAppData directory; paths installed manually elsewhere are only unregistered.
+- Release workflow builds the Windows x64 driver, packages it as `PhoneVR-SteamVR-Driver-Windows-x64.zip`, and uploads it as a GitHub Release asset.
 
-- `maxSupportedInstances` is read from `MediaCodecInfo.CodecCapabilities`, where Android defines it (API 23+).
-- `VideoCapabilities.getSupportedFrameRates()` returns `Range<Integer>`, so the upper bound is converted to `Double` for `VideoDecoderCapability.maxFrameRate`.
-- The probe source passes a Kotlin compiler check against API-shaped Android/JSON stubs. Full Gradle and APK validation still requires the Android SDK Platform 36 build environment.
+## Validation completed in this environment
 
-## SteamVR driver install
+- `go test ./...` — passed.
+- `go test -race ./...` — passed.
+- `go vet ./...` — passed.
+- Windows AMD64 GUI Host cross-build — passed.
+- Windows AMD64 Console Host cross-build — passed.
+- Windows AMD64 Host test-binary cross-compile — passed.
+- GitHub Actions workflow YAML parse and dependency checks — passed.
+- ZIP validation tests cover valid package extraction, incorrect manifest identity, missing DLL and path traversal rejection.
 
-The driver must be built and registered separately on Windows. `scripts/build-steamvr-driver.ps1` builds the DLL into `dist/steamvr-driver`; `tools/install-steamvr-driver.ps1 -DriverDirectory .\dist\steamvr-driver` registers it with SteamVR's `vrpathreg.exe`. Add `-Remove` to unregister it. SteamVR must be installed.
+## Not verified here
 
-The 0.4.x driver is still a foundation: `IVRVirtualDisplay::Present` does not yet open/copy the D3D11 backbuffer, encode frames, or send video to Android. It is not yet a working PC-to-phone streaming driver.
+- Native Windows file picker and Win32 dialog interaction were not exercised on a Windows desktop.
+- SteamVR `vrpathreg.exe` registration/unregistration was not run against a real SteamVR installation.
+- The C++ SteamVR DLL was not built in this Linux environment; the Release workflow now builds it on `windows-latest` and packages it for download.
+- The workflow has not been run against GitHub Releases from this local work copy. The new Release asset becomes available after these changes are pushed and a Release workflow run completes.
+- Actual SteamVR video capture/encoding/Android streaming remains out of scope for this driver-manager feature.
+
+## Release asset contract
+
+The Host queries `https://api.github.com/repos/BH2VSQ/PhoneVR/releases/latest` and expects the asset name exactly:
+
+`PhoneVR-SteamVR-Driver-Windows-x64.zip`
+
+The ZIP root must contain `driver.vrdrivermanifest` and `bin/win64/driver_phonevr.dll`.

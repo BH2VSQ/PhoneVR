@@ -1,6 +1,6 @@
 # PhoneVRStream
 
-Repository revision: **0.4.1**. Windows Host: **0.4.1**. Android client: **0.4.1**. Control protocol: **v1**; video packet protocol: **v1 foundation**.
+Repository revision: **0.4.2**. Windows Host: **0.4.2**. Android client: **0.4.2**. Control protocol: **v1**; video packet protocol: **v1 foundation**.
 
 PhoneVRStream is a multi-component project for using an Android phone as a PC VR streaming HMD. Both applications live in one repository and use independent build/test pipelines.
 
@@ -22,7 +22,7 @@ PhoneVRStream/
 └── dist/                       # Local build output (git-ignored)
 ```
 
-## Windows Host 0.4.1 hotfix
+## Windows Host 0.4.2 hotfix
 
 The Windows Host has been migrated from an Edge/Chrome app-mode dashboard to a native Windows desktop application.
 
@@ -41,7 +41,7 @@ The Windows Host has been migrated from an Edge/Chrome app-mode dashboard to a n
 
 The normal `PhoneVRHost.exe` is built with the Windows GUI subsystem and opens the native desktop application. `PhoneVRHost-console.exe -headless` runs the network service without a desktop window for diagnostics or server-only use.
 
-## Android client 0.4.1 hotfix
+## Android client 0.4.2 hotfix
 
 - Landscape immersive display with OpenGL ES 3.0 stereo rendering.
 - Locally stored optical preset selector with Daydream View v2.0 (2017) and Generic Cardboard built-in presets.
@@ -53,9 +53,11 @@ The normal `PhoneVRHost.exe` is built with the Windows GUI subsystem and opens t
 - `CodecCapabilityProbe` enumerates device MediaCodec decoders for H.264, HEVC and AV1, including hardware classification, supported size/frame-rate limits, profiles and color formats.
 
 
-## SteamVR driver 0.4.1 hotfix
+## SteamVR driver 0.4.2
 
-Driver registration is a separate Windows step after the DLL has been built. Run `\.\scripts\build-steamvr-driver.ps1`, then register it with `\.\tools\install-steamvr-driver.ps1 -DriverDirectory .\dist\steamvr-driver`. To unregister, add `-Remove`. The driver is a SteamVR user-mode server driver, not a Windows kernel/device-manager driver. The 0.4.x foundation does not yet send encoded video frames; its `IVRVirtualDisplay::Present` callback currently records frame metadata only.
+The Windows Host main menu now contains **SteamVR Driver** management. The user can check registration, download and install the Windows x64 driver ZIP from the latest GitHub Release, choose a local driver ZIP, or uninstall the registered PhoneVR driver. The Host validates the ZIP manifest and DLL, extracts it under `%LOCALAPPDATA%\PhoneVR\SteamVRDriver`, and calls SteamVR `vrpathreg.exe` to register or unregister it. Uninstall removes files only from the Host-managed directory; a manually installed driver in another directory is only unregistered. Restart SteamVR after uninstall.
+
+The driver is a SteamVR user-mode server driver, not a Windows kernel/device-manager driver. The 0.4.x foundation does not yet send encoded video frames; its `IVRVirtualDisplay::Present` callback currently records frame metadata only. The Release workflow now builds `PhoneVR-SteamVR-Driver-Windows-x64.zip` and publishes it as a dedicated GitHub Release asset.
 
 - `steamvr-driver/` is a Windows x64 C++ OpenVR driver built with CMake and the Valve OpenVR SDK pinned to commit `0924064316de3effbcd1acf1e309182a2deb1c05`.
 - Registers `PhoneVRHmd` as `TrackedDeviceClass_HMD` with an `IVRDisplayComponent`, and `PhoneVRDisplayRedirect` as `TrackedDeviceClass_DisplayRedirect` with an `IVRVirtualDisplay` component.
@@ -121,3 +123,14 @@ The PC and phone must be on the same LAN. Guest Wi-Fi or AP/client isolation may
 - `.github/workflows/ci.yml` builds Android, Windows Host and SteamVR driver jobs independently. `.github/workflows/steamvr-driver.yml` also provides a focused driver build workflow.
 - `.github/workflows/release.yml` is manually triggered from the Actions tab. Select `patch`, `minor` or `major`; it increments VERSION, Android versionName/versionCode, creates a version tag, builds the Android release APK and Windows Host package, then publishes a GitHub Release.
 - Android release signing is optional. Add `PHONEVR_RELEASE_KEYSTORE_BASE64`, `PHONEVR_RELEASE_STORE_PASSWORD`, `PHONEVR_RELEASE_KEY_ALIAS` and `PHONEVR_RELEASE_KEY_PASSWORD` as repository Actions secrets to publish a signed APK. Without all four secrets, the workflow publishes a clearly marked unsigned APK.
+
+## SteamVR driver management
+
+The Windows Host includes a **SteamVR Driver** entry in its main menu. It can:
+
+- Query whether the `phonevr` driver is registered with the installed SteamVR runtime.
+- Download the `PhoneVR-SteamVR-Driver-Windows-x64.zip` asset from the latest GitHub Release, validate the archive and manifest, extract it under `%LOCALAPPDATA%\\PhoneVR\\SteamVRDriver`, and register it with SteamVR.
+- Install the same package from a locally selected ZIP file.
+- Unregister the PhoneVR driver from SteamVR and remove files only when they are inside the Host-managed driver directory.
+
+The release workflow builds the SteamVR driver on Windows x64 and publishes the ZIP as a separate Release asset. SteamVR's own `vrpathreg.exe` is located from the SteamVR installation registry entry; it is never copied or bundled by PhoneVR. After uninstall, restart SteamVR to ensure the runtime unloads the removed driver. If the driver was manually installed outside PhoneVR's managed directory, Host unregisters it but deliberately leaves those user-managed files in place.

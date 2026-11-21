@@ -386,37 +386,39 @@ func (s *HostService) ProbeVideoEncoders(ffmpegPath string) {
 	}
 	done := s.videoEncoderProbeDone
 	s.mu.Unlock()
-	go func() {
-		defer close(done)
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		candidates, err := encoder.ProbeFFmpeg(ctx, ffmpegPath)
-		if err != nil {
-			s.mu.Lock()
-			s.videoEncoderError = err.Error()
-			s.videoEncoderReady = false
-			s.mu.Unlock()
-			s.addLog("Video encoder discovery unavailable: " + err.Error())
-			return
-		}
-		for _, candidate := range candidates {
-			s.addLog(fmt.Sprintf("Video encoder candidate (adapter/session unverified): %s | %s | %s", candidate.Name, candidate.Codec, candidate.Backend))
-		}
-		selected, probeErr := encoder.ProbeHardwareH264Encoder(ctx, ffmpegPath, videoFrameRate)
+	defer close(done)
+
+	// This probe is deliberately synchronous. main() invokes it before Start(),
+	// so the TCP pairing listener cannot accept a phone before the H.264
+	// hardware-encoder result has been committed to service state.
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	candidates, err := encoder.ProbeFFmpeg(ctx, ffmpegPath)
+	if err != nil {
 		s.mu.Lock()
-		s.videoEncoderReady = probeErr == nil
-		if probeErr != nil {
-			s.videoEncoderError = probeErr.Error()
-		} else {
-			s.videoEncoderError = ""
-		}
+		s.videoEncoderError = err.Error()
+		s.videoEncoderReady = false
 		s.mu.Unlock()
-		if probeErr != nil {
-			s.addLog("Live VR video disabled: " + probeErr.Error())
-			return
-		}
-		s.addLog("Live VR video hardware encoder validated: " + selected.Name + "/" + string(selected.Backend))
-	}()
+		s.addLog("Video encoder discovery unavailable: " + err.Error())
+		return
+	}
+	for _, candidate := range candidates {
+		s.addLog(fmt.Sprintf("Video encoder candidate (adapter/session unverified): %s | %s | %s", candidate.Name, candidate.Codec, candidate.Backend))
+	}
+	selected, probeErr := encoder.ProbeHardwareH264Encoder(ctx, ffmpegPath, videoFrameRate)
+	s.mu.Lock()
+	s.videoEncoderReady = probeErr == nil
+	if probeErr != nil {
+		s.videoEncoderError = probeErr.Error()
+	} else {
+		s.videoEncoderError = ""
+	}
+	s.mu.Unlock()
+	if probeErr != nil {
+		s.addLog("Live VR video disabled: " + probeErr.Error())
+		return
+	}
+	s.addLog("Live VR video hardware encoder validated: " + selected.Name + "/" + string(selected.Backend))
 }
 
 func (s *HostService) Stop() {

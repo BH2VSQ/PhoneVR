@@ -148,3 +148,8 @@ The Windows Host executable includes the compiled PhoneVR OpenVR driver. At star
 The in-app manager provides status refresh, **Install / Repair Bundled Driver**, and **Uninstall & Disable Auto Deploy**. Uninstall persists the user's opt-out choice, so a later Host launch does not reinstall the driver unexpectedly. Manual installation clears the opt-out marker. Only files under PhoneVR's own managed directory are deleted; manually registered drivers in other paths are only unregistered. Restart SteamVR after driver changes. No driver ZIP selector or separate Release driver ZIP is required.
 
 
+
+
+### 2026-11-22 video-output follow-up
+
+The current source includes a DisplayRedirect initialization-order and HMD property-override fix, plus synchronous Host H.264 hardware preflight before opening the pairing listener. See `docs/2026-11-22-displayredirect-startup-order.md` for the log evidence and device-side validation steps.

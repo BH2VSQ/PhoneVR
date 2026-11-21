@@ -135,3 +135,8 @@ Interpretation:
   actively rendering and inspect compositor routing / HMD property overrides.
 - `Present>0Hz` with `completed=0Hz`: only then inspect D3D11 shared-texture and
   `WaitForPresent` synchronization.
+
+
+## DisplayRedirect startup ordering follow-up (2026-11-22)
+
+The driver now pre-initializes the DisplayRedirect D3D11 device and registers the DisplayRedirect tracked device before registering the PhoneVR HMD. It also writes the virtual-display capability and graphics-adapter LUID to OpenVR's `k_ulDisplayRedirectContainer`, then logs the effective values read through the HMD's property container. This addresses the observed startup sequence where SteamVR queried the HMD display component before DisplayRedirect activation had finished. See `docs/2026-11-22-displayredirect-startup-order.md`.

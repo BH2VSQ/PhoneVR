@@ -442,8 +442,15 @@ public:
 
     vr::EVRInitError Activate(uint32_t objectId) override {
         m_objectId = objectId;
-        const auto container = vr::VRProperties()->TrackedDeviceToPropertyContainer(objectId);
         auto* properties = vr::VRProperties();
+        const auto container = properties->TrackedDeviceToPropertyContainer(objectId);
+        if (vr::VRDriverLog()) {
+            char line[160]{};
+            std::snprintf(line, sizeof(line),
+                          "PhoneVR: HMD Activate entered objectId=%u; checking DisplayRedirect override properties",
+                          objectId);
+            vr::VRDriverLog()->Log(line);
+        }
         properties->SetStringProperty(container, vr::Prop_TrackingSystemName_String, "phonevr");
         properties->SetStringProperty(container, vr::Prop_ModelNumber_String, "PhoneVR Wireless HMD");
         properties->SetStringProperty(container, vr::Prop_SerialNumber_String, "PHONEVR-HMD-001");
@@ -454,6 +461,26 @@ public:
         properties->SetFloatProperty(container, vr::Prop_UserIpdMeters_Float, 0.064f);
         properties->SetFloatProperty(container, vr::Prop_DisplayFrequency_Float,
                                      static_cast<float>(gDisplayRefreshRateHz));
+
+        // SteamVR resolves these through k_ulDisplayRedirectContainer before
+        // reading the HMD's effective properties. Log the effective values so
+        // startup ordering and the virtual-output route can be verified.
+        vr::ETrackedPropertyError virtualDisplayPropertyError = vr::TrackedProp_UnknownProperty;
+        vr::ETrackedPropertyError adapterPropertyError = vr::TrackedProp_UnknownProperty;
+        const bool hasVirtualDisplay = properties->GetBoolProperty(
+            container, vr::Prop_HasVirtualDisplayComponent_Bool, &virtualDisplayPropertyError);
+        const uint64_t effectiveAdapterLuid = properties->GetUint64Property(
+            container, vr::Prop_GraphicsAdapterLuid_Uint64, &adapterPropertyError);
+        if (vr::VRDriverLog()) {
+            char line[256]{};
+            std::snprintf(line, sizeof(line),
+                          "PhoneVR: HMD effective display properties objectId=%u virtualDisplay=%s(error=%d) adapterLuid=0x%016llX(error=%d)",
+                          objectId, hasVirtualDisplay ? "true" : "false",
+                          static_cast<int>(virtualDisplayPropertyError),
+                          static_cast<unsigned long long>(effectiveAdapterLuid),
+                          static_cast<int>(adapterPropertyError));
+            vr::VRDriverLog()->Log(line);
+        }
 
         const auto universeResult = properties->SetUint64Property(
             container, vr::Prop_CurrentUniverseId_Uint64,
@@ -1355,6 +1382,53 @@ float4 main(float4 position : SV_POSITION, float2 uv : TEXCOORD0) : SV_TARGET {
 
 class PhoneVRDisplayRedirect final : public vr::ITrackedDeviceServerDriver {
 public:
+    // Initialize the D3D11 device before registering the HMD. Activate() then
+    // only needs to publish the redirect properties and return the component.
+    bool Prepare() {
+        uint64_t adapterLuid = 0;
+        if (!m_display.Initialize(&adapterLuid)) {
+            if (vr::VRDriverLog())
+                vr::VRDriverLog()->Log("PhoneVR: DisplayRedirect D3D11 pre-initialization failed");
+            return false;
+        }
+        m_adapterLuid.store(adapterLuid, std::memory_order_release);
+        if (vr::VRDriverLog()) {
+            char line[192]{};
+            std::snprintf(line, sizeof(line),
+                          "PhoneVR: DisplayRedirect D3D11 pre-initialized adapterLuid=0x%016llX",
+                          static_cast<unsigned long long>(adapterLuid));
+            vr::VRDriverLog()->Log(line);
+        }
+        // The reserved override container is guaranteed to exist before the
+        // DisplayRedirect device activates. Try an early write as well, then
+        // retry immediately after TrackedDeviceAdded has registered the device.
+        PublishHmdOverrides("pre-registration");
+        return true;
+    }
+
+    bool PublishHmdOverrides(const char* phase) {
+        const uint64_t adapterLuid = m_adapterLuid.load(std::memory_order_acquire);
+        if (adapterLuid == 0) return false;
+        auto* properties = vr::VRProperties();
+        const auto virtualDisplayResult = properties->SetBoolProperty(
+            vr::k_ulDisplayRedirectContainer, vr::Prop_HasVirtualDisplayComponent_Bool, true);
+        const auto adapterResult = properties->SetUint64Property(
+            vr::k_ulDisplayRedirectContainer, vr::Prop_GraphicsAdapterLuid_Uint64, adapterLuid);
+        const bool success = virtualDisplayResult == vr::TrackedProp_Success &&
+                             adapterResult == vr::TrackedProp_Success;
+        if (vr::VRDriverLog()) {
+            char line[288]{};
+            std::snprintf(line, sizeof(line),
+                          "PhoneVR: DisplayRedirect HMD override publish phase=%s adapterLuid=0x%016llX results hasVirtualDisplay=%d adapterLuid=%d success=%s",
+                          phase ? phase : "unknown",
+                          static_cast<unsigned long long>(adapterLuid),
+                          static_cast<int>(virtualDisplayResult),
+                          static_cast<int>(adapterResult), success ? "yes" : "no");
+            vr::VRDriverLog()->Log(line);
+        }
+        return success;
+    }
+
     vr::EVRInitError Activate(uint32_t objectId) override {
         uint64_t adapterLuid = 0;
         if (!m_display.Initialize(&adapterLuid)) {
@@ -1362,6 +1436,7 @@ public:
             return vr::VRInitError_Driver_Unknown;
         }
         const auto container = vr::VRProperties()->TrackedDeviceToPropertyContainer(objectId);
+        m_adapterLuid.store(adapterLuid, std::memory_order_release);
         auto* properties = vr::VRProperties();
         const auto trackingSystemResult = properties->SetStringProperty(container, vr::Prop_TrackingSystemName_String, "phonevr");
         const auto modelResult = properties->SetStringProperty(container, vr::Prop_ModelNumber_String, "PhoneVR Wireless Display Redirect");
@@ -1369,11 +1444,17 @@ public:
         const auto typeResult = properties->SetStringProperty(container, vr::Prop_RegisteredDeviceType_String, "phonevr/phonevr_display_redirect");
         const auto virtualDisplayResult = properties->SetBoolProperty(container, vr::Prop_HasVirtualDisplayComponent_Bool, true);
         const auto adapterResult = properties->SetUint64Property(container, vr::Prop_GraphicsAdapterLuid_Uint64, adapterLuid);
+
+        // Publish the HMD-facing route again from Activate as a final fallback.
+        // The provider also attempts this after TrackedDeviceAdded and before
+        // registering the HMD, so the override can be visible to early HMD probes.
+        PublishHmdOverrides("displayredirect-activate");
+
         m_active.store(true, std::memory_order_release);
         if (vr::VRDriverLog()) {
-            char line[512]{};
+            char line[640]{};
             std::snprintf(line, sizeof(line),
-                          "PhoneVR: DisplayRedirect Activate succeeded objectId=%u adapterLuid=0x%016llX property-results tracking=%d model=%d serial=%d type=%d hasVirtualDisplay=%d adapterLuid=%d",
+                          "PhoneVR: DisplayRedirect Activate succeeded objectId=%u adapterLuid=0x%016llX device-property-results tracking=%d model=%d serial=%d type=%d hasVirtualDisplay=%d adapterLuid=%d",
                           objectId, static_cast<unsigned long long>(adapterLuid),
                           static_cast<int>(trackingSystemResult), static_cast<int>(modelResult),
                           static_cast<int>(serialResult), static_cast<int>(typeResult),
@@ -1420,6 +1501,7 @@ public:
     }
 private:
     VirtualDisplayComponent m_display;
+    std::atomic<uint64_t> m_adapterLuid{0};
     std::atomic<bool> m_active{false};
     std::atomic<bool> m_loggedGetComponent{false};
     std::atomic<uint64_t> m_componentQueries{0};
@@ -1433,16 +1515,34 @@ public:
         if (vr::VRDriverLog()) vr::VRDriverLog()->Log("PhoneVR: virtual display refresh fixed at 72 Hz");
         if (!m_statusReporter.Start() && vr::VRDriverLog())
             vr::VRDriverLog()->Log("PhoneVR: failed to start loopback status reporter on UDP 48105");
-        m_hmd = new PhoneVRHmd();
         m_redirect = new PhoneVRDisplayRedirect();
+        m_hmd = new PhoneVRHmd();
         auto* host = vr::VRServerDriverHost();
-        if (!host || !host->TrackedDeviceAdded("PHONEVR-HMD-001", vr::TrackedDeviceClass_HMD, m_hmd)) {
+        if (!host || !m_redirect->Prepare()) {
             Cleanup(); return vr::VRInitError_Driver_Unknown;
         }
+
+        // Register the redirect first. Its GPU resource setup is already done,
+        // so SteamVR can activate it and publish the HMD override container
+        // before the HMD's display component is queried.
         if (!host->TrackedDeviceAdded("PHONEVR-DISPLAY-001", vr::TrackedDeviceClass_DisplayRedirect, m_redirect)) {
             Cleanup(); return vr::VRInitError_Driver_Unknown;
         }
-        if (vr::VRDriverLog()) vr::VRDriverLog()->Log("PhoneVR 0.4.19 DisplayRedirect diagnostics SteamVR driver initialized");
+        // TrackedDeviceAdded creates the DisplayRedirect registration and lets
+        // the runtime prepare its reserved HMD override container. Republish
+        // after registration, then add the HMD so its first activation/query
+        // sees the virtual-output capability and selected GPU LUID.
+        const bool overridePublished = m_redirect->PublishHmdOverrides("after-registration");
+        if (vr::VRDriverLog()) {
+            vr::VRDriverLog()->Log(overridePublished
+                ? "PhoneVR: DisplayRedirect registered and HMD override properties published before HMD registration"
+                : "PhoneVR: DisplayRedirect registered before HMD; override publication will be retried during Activate");
+        }
+
+        if (!host->TrackedDeviceAdded("PHONEVR-HMD-001", vr::TrackedDeviceClass_HMD, m_hmd)) {
+            Cleanup(); return vr::VRInitError_Driver_Unknown;
+        }
+        if (vr::VRDriverLog()) vr::VRDriverLog()->Log("PhoneVR 0.4.19 DisplayRedirect order-fix diagnostics SteamVR driver initialized");
         return vr::VRInitError_None;
     }
     void Cleanup() override {

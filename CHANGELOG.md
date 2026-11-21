@@ -1,3 +1,11 @@
+## 0.4.19 - DisplayRedirect startup-order and HMD override follow-up
+
+- Pre-initialize the DisplayRedirect D3D11 capture device before registering tracked devices, then register DisplayRedirect before the PhoneVR HMD.
+- Publish the HMD-facing `Prop_HasVirtualDisplayComponent_Bool` and `Prop_GraphicsAdapterLuid_Uint64` override values during pre-initialization, immediately after DisplayRedirect registration and again during activation. Each attempt logs its phase and OpenVR property result codes.
+- Read back the effective virtual-display flag and graphics-adapter LUID from the HMD property container during HMD activation, making the compositor routing prerequisites observable.
+- Keep encoder preflight synchronous before opening Host pairing listeners and log that startup stage explicitly.
+- Go tests, race tests, `go vet`, Windows/amd64 Host cross-build, and 41 Python regression tests pass. Native MSVC SteamVR driver build and target runtime verification remain pending.
+
 ## 0.4.19 - SteamVR DisplayRedirect diagnostic refresh
 
 - Added one-time `GetComponent` request logging for the HMD and DisplayRedirect devices, including requested and expected OpenVR interface versions.
@@ -264,3 +272,12 @@
 - Align Android's control handshake timeout with the Host's bounded encoder-preflight wait.
 - Log Android-advertised H.264 decoder names and their exact resolution, frame-rate, hardware and target-profile capabilities when negotiation fails.
 - Add Android Logcat diagnostics for the MediaCodec H.264 decoder inventory, useful for vendor codec stacks such as LineageOS on Redmi K40.
+
+
+## 0.4.19 DisplayRedirect startup-order follow-up (2026-11-22)
+
+- Pre-initialize the SteamVR DisplayRedirect D3D11 device before adding tracked devices.
+- Register `PHONEVR-DISPLAY-001` before `PHONEVR-HMD-001` so the virtual-output device is available before the HMD display component is queried.
+- Publish `Prop_HasVirtualDisplayComponent_Bool` and `Prop_GraphicsAdapterLuid_Uint64` into OpenVR's `k_ulDisplayRedirectContainer` override container and read the effective values back from the HMD during activation.
+- Make Host hardware H.264 preflight synchronous before the TCP pairing listener starts; the previous goroutine-based probe could still race with the first Android handshake.
+- Add regression checks for DisplayRedirect registration order, HMD property overrides, and synchronous encoder preflight.

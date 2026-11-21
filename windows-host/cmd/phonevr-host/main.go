@@ -22,6 +22,7 @@ func main() {
 	service := NewHostService(*headless)
 	// Start hardware encoder preflight before accepting Android clients. The
 	// control listener must never expose a pairing window with no probe channel.
+	service.addLog("Running H.264 encoder preflight before opening pairing listeners")
 	service.ProbeVideoEncoders(*ffmpegPath)
 	config := HostConfig{
 		ListenAddress: *listenAddress,

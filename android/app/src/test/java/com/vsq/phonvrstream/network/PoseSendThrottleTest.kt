@@ -35,4 +35,12 @@ class PoseSendThrottleTest {
     fun rejectsInvalidRate() {
         PoseSendThrottle(0)
     }
+
+    @Test
+    fun supportsTwoHundredHertzSensorRate() {
+        val throttle = PoseSendThrottle(200)
+        assertTrue(throttle.tryAcquire(1L, 1_000_000_000L))
+        assertFalse(throttle.tryAcquire(2L, 1_004_999_999L))
+        assertTrue(throttle.tryAcquire(2L, 1_005_000_000L))
+    }
 }

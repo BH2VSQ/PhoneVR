@@ -1,4 +1,4 @@
-# PhoneVR SteamVR Driver — 0.4.12
+# PhoneVR SteamVR Driver — 0.4.13
 
 Windows x64 OpenVR server driver foundation for the PhoneVR wireless HMD.
 
@@ -63,6 +63,24 @@ subsequent integration step.
 
 The driver exposes only the phone's 3DoF orientation. No room-scale position
 or 6DoF tracking is synthesized.
+
+
+## Direct display mode in SteamVR
+
+`PhoneVRHmd` exposes `IVRDisplayComponent` and returns `false` from
+`IsDisplayOnDesktop()`, which tells SteamVR that the HMD must not be treated as
+an extended desktop monitor. The separate `PhoneVRDisplayRedirect` continues
+to implement `IVRVirtualDisplay`, which is the OpenVR wireless-output path for
+obtaining the final compositor backbuffer. It should not be replaced with
+`IVRDriverDirectModeComponent`: that interface is for a driver's own display
+compositor and would bypass the final-composited-frame handoff PhoneVR needs.
+
+If SteamVR still reports that the HMD is running as a monitor, enable
+**SteamVR → Settings → Developer → Enable Direct Mode**, then restart SteamVR.
+This is a SteamVR runtime setting and can be unavailable when the graphics
+driver/runtime cannot take direct display ownership; PhoneVR does not silently
+rewrite the user's global `steamvr.vrsettings` file. The driver logs that it
+reports `IsDisplayOnDesktop=false` when the HMD activates.
 
 ## Chaperone / tracking universe
 

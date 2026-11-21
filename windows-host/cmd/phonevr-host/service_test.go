@@ -282,6 +282,45 @@ func TestHighRatePoseTrafficDoesNotBreakControlHeartbeat(t *testing.T) {
 	})
 }
 
+func TestReadLatestPoseBatchCoalescesQueuedDatagrams(t *testing.T) {
+	listener, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+
+	sender, err := net.DialUDP("udp4", nil, listener.LocalAddr().(*net.UDPAddr))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sender.Close()
+
+	for sequence := uint32(10); sequence <= 12; sequence++ {
+		packet := testPosePacket()
+		binary.BigEndian.PutUint32(packet[8:12], sequence)
+		if _, err := sender.Write(packet); err != nil {
+			t.Fatalf("send pose sequence %d: %v", sequence, err)
+		}
+	}
+
+	batch, invalid, err := readLatestPoseBatch(listener, make([]byte, 1500), time.Second)
+	if err != nil {
+		t.Fatalf("readLatestPoseBatch() error = %v", err)
+	}
+	if invalid != 0 {
+		t.Fatalf("unexpected invalid datagrams: %d", invalid)
+	}
+	if len(batch) != 3 {
+		t.Fatalf("expected 3 queued poses in one batch, got %d", len(batch))
+	}
+	if got := batch[len(batch)-1].pose.Sequence; got != 12 {
+		t.Fatalf("latest pose sequence = %d, want 12", got)
+	}
+	if got := binary.BigEndian.Uint32(batch[len(batch)-1].payload[8:12]); got != 12 {
+		t.Fatalf("forward payload sequence = %d, want 12", got)
+	}
+}
+
 func TestNormalizeHostConfigKeepsEphemeralPorts(t *testing.T) {
 	config := normalizeHostConfig(HostConfig{ListenAddress: "127.0.0.1", DiscoveryPort: 0, ControlPort: 48101, PosePort: 48102})
 	if config.DiscoveryPort != 0 {

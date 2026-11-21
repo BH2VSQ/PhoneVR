@@ -468,7 +468,7 @@ class NetworkClient(
         }
     }
 
-    /** Latest-sample-wins UDP sender, capped at 120 Hz when the device supports it. */
+    /** Latest-sample-wins UDP sender, paced to the 200 Hz IMU request rate. */
     private fun sendPoseLoop(
         generation: Long,
         socket: DatagramSocket,
@@ -575,7 +575,7 @@ class NetworkClient(
         const val DEFAULT_POSE_PORT = 48102
         const val DISCOVERY_PORT = 48100
         private const val PROTOCOL_VERSION = 1
-        private const val CLIENT_VERSION = "PhoneVRStream-0.4.12"
+        private const val CLIENT_VERSION = "PhoneVRStream-0.4.13"
         private const val DISCOVERY_REQUEST = "PHONEVR_DISCOVER_V1"
         private const val DISCOVERY_RESPONSE_PREFIX = "PHONEVR_HOST_V1 "
         private const val DISCOVERY_WINDOW_MS = 1800L
@@ -585,7 +585,7 @@ class NetworkClient(
         private const val CONTROL_READ_TIMEOUT_MS = 1000
         private const val HEARTBEAT_INTERVAL_NS = 2_000_000_000L
         private const val HEARTBEAT_TIMEOUT_NS = 10_000_000_000L
-        private const val MAX_POSE_SEND_HZ = 120
+        private const val MAX_POSE_SEND_HZ = 200
         private const val UDP_SEND_BUFFER_BYTES = 64 * 1024
         private const val POSE_ERROR_REPORT_INTERVAL_NS = 5_000_000_000L
         private const val POSE_IDLE_SLEEP_NS = 2_000_000L

@@ -211,10 +211,9 @@ func (s *HostService) Start(config HostConfig) error {
 		s.mu.Unlock()
 		return fmt.Errorf("start UDP pose listener: %w", err)
 	}
-	// A larger receive buffer absorbs short Wi-Fi scheduling bursts. UDP pose
-	// packets are still latest-state data, so this is a jitter cushion rather
-	// than a queue that the client must drain in sequence.
-	_ = udpPose.SetReadBuffer(256 * 1024)
+	// Keep pose buffering bounded. The pose loop coalesces any queued datagrams
+	// to the newest sample rather than replaying old orientations after a pause.
+	_ = udpPose.SetReadBuffer(16 * 1024)
 
 	// The SteamVR server driver runs in vrserver.exe, not in this Host process.
 	// A loopback-only heartbeat is the authoritative signal that the driver is
@@ -494,21 +493,100 @@ func (s *HostService) steamVRStatusLoop(ctx context.Context, conn *net.UDPConn) 
 	}
 }
 
+type receivedPoseDatagram struct {
+	pose       protocol.Pose
+	payload    []byte
+	remote     *net.UDPAddr
+	receivedAt time.Time
+}
+
+// readLatestPoseBatch blocks for one datagram, then drains packets already
+// queued by the OS. Pose is latest-state data, so the caller can forward only
+// the last valid sample instead of replaying old orientations after a pause.
+func readLatestPoseBatch(conn *net.UDPConn, buffer []byte, timeout time.Duration) ([]receivedPoseDatagram, uint64, error) {
+	if err := conn.SetReadDeadline(time.Now().Add(timeout)); err != nil {
+		return nil, 0, err
+	}
+
+	readOne := func() (receivedPoseDatagram, bool, error) {
+		n, remote, err := conn.ReadFromUDP(buffer)
+		if err != nil {
+			return receivedPoseDatagram{}, false, err
+		}
+		pose, decodeErr := protocol.DecodePosePacket(buffer[:n])
+		if decodeErr != nil {
+			return receivedPoseDatagram{}, false, nil
+		}
+		remoteCopy := &net.UDPAddr{IP: append(net.IP(nil), remote.IP...), Port: remote.Port, Zone: remote.Zone}
+		return receivedPoseDatagram{
+			pose: pose, payload: append([]byte(nil), buffer[:n]...),
+			remote: remoteCopy, receivedAt: time.Now(),
+		}, true, nil
+	}
+
+	batch := make([]receivedPoseDatagram, 0, 4)
+	var invalidPackets uint64
+	first, valid, err := readOne()
+	if err != nil {
+		return nil, 0, err
+	}
+	if valid {
+		batch = append(batch, first)
+	} else {
+		invalidPackets++
+	}
+
+	// A very short drain window reads datagrams that were already queued while
+	// allowing packets arriving a fraction later to join this latest-state
+	// batch. It avoids replaying a long backlog without adding a frame of delay.
+	if err := conn.SetReadDeadline(time.Now().Add(250 * time.Microsecond)); err != nil {
+		return batch, invalidPackets, err
+	}
+	for {
+		datagram, valid, readErr := readOne()
+		if readErr != nil {
+			if netErr, ok := readErr.(net.Error); ok && netErr.Timeout() {
+				break
+			}
+			return batch, invalidPackets, readErr
+		}
+		if valid {
+			batch = append(batch, datagram)
+		} else {
+			invalidPackets++
+		}
+	}
+	return batch, invalidPackets, nil
+}
+
 func (s *HostService) poseLoop(ctx context.Context, conn *net.UDPConn) {
 	defer s.wg.Done()
-	// SteamVR loads the native driver inside vrserver.exe, separate from this
-	// Go Host process. Forward the validated PVSP packet over loopback so the
-	// driver can consume the same HMD pose without changing the phone protocol.
+	// Keep the socket buffer bounded. Any packets already queued are drained
+	// immediately and coalesced to the newest valid pose below.
+	_ = conn.SetReadBuffer(16 * 1024)
 	bridge, bridgeErr := net.DialUDP("udp4", nil, &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: steamVRPoseBridgePort})
 	if bridgeErr != nil {
 		s.addLog("SteamVR local pose bridge unavailable: " + bridgeErr.Error())
 	} else {
+		_ = bridge.SetWriteBuffer(16 * 1024)
 		defer bridge.Close()
 	}
+
 	buffer := make([]byte, 1500)
+	statsStarted := time.Now()
+	var statsReceived uint64
+	var statsForwarded uint64
+	var statsCoalesced uint64
+	var statsSequenceGaps uint64
+	var statsInvalid uint64
+	var statsBridgeErrors uint64
+	var maxInterArrival time.Duration
+	var previousArrival time.Time
+	var previousSequence uint32
+	havePreviousSequence := false
+
 	for {
-		_ = conn.SetReadDeadline(time.Now().Add(time.Second))
-		n, remote, err := conn.ReadFromUDP(buffer)
+		batch, invalidPackets, err := readLatestPoseBatch(conn, buffer, time.Second)
 		if err != nil {
 			if ctx.Err() != nil {
 				return
@@ -519,27 +597,69 @@ func (s *HostService) poseLoop(ctx context.Context, conn *net.UDPConn) {
 			s.setError(fmt.Sprintf("UDP pose receive failed: %v", err))
 			continue
 		}
-		pose, err := protocol.DecodePosePacket(buffer[:n])
-		if err != nil {
-			s.addLog(fmt.Sprintf("Ignored invalid pose packet from %s: %v", remote, err))
+		statsInvalid += invalidPackets
+		if len(batch) == 0 {
 			continue
 		}
-		if bridge != nil {
-			// This is best-effort latest-pose IPC. Never block the phone receiver
-			// or queue stale tracking samples behind the SteamVR driver.
-			_, _ = bridge.Write(buffer[:n])
+
+		for _, datagram := range batch {
+			statsReceived++
+			if !previousArrival.IsZero() {
+				if gap := datagram.receivedAt.Sub(previousArrival); gap > maxInterArrival {
+					maxInterArrival = gap
+				}
+			}
+			previousArrival = datagram.receivedAt
+			if havePreviousSequence {
+				sequenceDelta := datagram.pose.Sequence - previousSequence
+				if sequenceDelta > 1 && sequenceDelta < 0x80000000 {
+					statsSequenceGaps += uint64(sequenceDelta - 1)
+				}
+			}
+			previousSequence = datagram.pose.Sequence
+			havePreviousSequence = true
 		}
-		yaw, pitch, roll := quaternionEuler(pose.X, pose.Y, pose.Z, pose.W)
+
+		latest := batch[len(batch)-1]
+		statsCoalesced += uint64(len(batch) - 1)
+		if bridge != nil {
+			// Forward one freshest packet per receive batch. The native driver
+			// also drains its loopback queue, providing a second latest-only gate.
+			if _, writeErr := bridge.Write(latest.payload); writeErr != nil {
+				statsBridgeErrors++
+			} else {
+				statsForwarded++
+			}
+		}
+
+		yaw, pitch, roll := quaternionEuler(latest.pose.X, latest.pose.Y, latest.pose.Z, latest.pose.W)
 		s.mu.Lock()
-		s.packets++
-		s.lastPacket = time.Now()
+		s.packets += uint64(len(batch))
+		s.lastPacket = latest.receivedAt
 		s.latestPose = &PoseSnapshot{
-			Sequence: pose.Sequence, TimestampNs: pose.TimestampNs,
-			X: pose.X, Y: pose.Y, Z: pose.Z, W: pose.W,
+			Sequence: latest.pose.Sequence, TimestampNs: latest.pose.TimestampNs,
+			X: latest.pose.X, Y: latest.pose.Y, Z: latest.pose.Z, W: latest.pose.W,
 			Yaw: yaw, Pitch: pitch, Roll: roll,
-			Source: remote.IP.String(), ReceivedAt: s.lastPacket.Format(time.RFC3339Nano),
+			Source: latest.remote.IP.String(), ReceivedAt: latest.receivedAt.Format(time.RFC3339Nano),
 		}
 		s.mu.Unlock()
+
+		if time.Since(statsStarted) >= 5*time.Second {
+			seconds := time.Since(statsStarted).Seconds()
+			rxRate := float64(statsReceived) / seconds
+			forwardRate := float64(statsForwarded) / seconds
+			s.addLog(fmt.Sprintf("Pose pipeline: Host RX %.1f Hz, forwarded %.1f Hz, coalesced %d, sequence gaps %d, invalid %d, max inter-arrival %.1f ms, loopback write errors %d",
+				rxRate, forwardRate, statsCoalesced, statsSequenceGaps, statsInvalid,
+				float64(maxInterArrival)/float64(time.Millisecond), statsBridgeErrors))
+			statsStarted = time.Now()
+			statsReceived = 0
+			statsForwarded = 0
+			statsCoalesced = 0
+			statsSequenceGaps = 0
+			statsInvalid = 0
+			statsBridgeErrors = 0
+			maxInterArrival = 0
+		}
 	}
 }
 

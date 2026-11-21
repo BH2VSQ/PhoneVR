@@ -64,6 +64,9 @@ uint32_t ReadBE32(const uint8_t* p) {
     return (static_cast<uint32_t>(p[0]) << 24) | (static_cast<uint32_t>(p[1]) << 16) |
            (static_cast<uint32_t>(p[2]) << 8) | static_cast<uint32_t>(p[3]);
 }
+uint64_t ReadBE64(const uint8_t* p) {
+    return (static_cast<uint64_t>(ReadBE32(p)) << 32) | static_cast<uint64_t>(ReadBE32(p + 4));
+}
 float ReadBEFloat(const uint8_t* p) {
     const uint32_t bits = ReadBE32(p);
     float value = 0.0f;
@@ -82,7 +85,9 @@ uint64_t MonotonicNowNs() {
 
 struct Quaternion {
     double x = 0.0, y = 0.0, z = 0.0, w = 1.0;
+    double angularVelocityX = 0.0, angularVelocityY = 0.0, angularVelocityZ = 0.0;
     uint32_t sequence = 0;
+    uint64_t sensorTimestampNs = 0;
     uint64_t receivedAtNs = 0;
     bool valid = false;
 };
@@ -95,6 +100,12 @@ public:
         if (WSAStartup(MAKEWORD(2, 2), &data) != 0) { m_running = false; return false; }
         m_socket = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
         if (m_socket == INVALID_SOCKET) { WSACleanup(); m_running = false; return false; }
+        // The receiver drains queued datagrams after each blocking receive and
+        // only publishes the newest valid sample. Keep the OS queue bounded so
+        // a short vrserver scheduling pause cannot turn into pose latency.
+        int receiveBufferBytes = 32 * 1024;
+        (void)setsockopt(m_socket, SOL_SOCKET, SO_RCVBUF,
+                         reinterpret_cast<const char*>(&receiveBufferBytes), sizeof(receiveBufferBytes));
         sockaddr_in address{};
         address.sin_family = AF_INET;
         address.sin_port = htons(kPoseBridgePort);
@@ -122,37 +133,130 @@ public:
         return m_pose;
     }
 
+    uint64_t TakeDrainedPacketCount() {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        const uint64_t count = m_drainedPacketCount;
+        m_drainedPacketCount = 0;
+        return count;
+    }
+
     ~PoseReceiver() { Stop(); }
 
 private:
+    static bool DecodePacket(const uint8_t* data, int length, Quaternion* output) {
+        if (!data || !output || length != static_cast<int>(kPosePacketSize) ||
+            std::memcmp(data, "PVSP", 4) != 0 || data[4] != 1) return false;
+        Quaternion next{};
+        next.x = ReadBEFloat(data + 20);
+        next.y = ReadBEFloat(data + 24);
+        next.z = ReadBEFloat(data + 28);
+        next.w = ReadBEFloat(data + 32);
+        if (!std::isfinite(next.x) || !std::isfinite(next.y) ||
+            !std::isfinite(next.z) || !std::isfinite(next.w)) return false;
+        const double norm = std::sqrt(next.x * next.x + next.y * next.y +
+                                      next.z * next.z + next.w * next.w);
+        if (norm < 0.5 || norm > 1.5) return false;
+        next.x /= norm; next.y /= norm; next.z /= norm; next.w /= norm;
+        next.sequence = ReadBE32(data + 8);
+        next.sensorTimestampNs = ReadBE64(data + 12);
+        next.receivedAtNs = MonotonicNowNs();
+        next.valid = true;
+        *output = next;
+        return true;
+    }
+
+    static void EstimateAngularVelocity(const Quaternion& previous, Quaternion& current) {
+        current.angularVelocityX = 0.0;
+        current.angularVelocityY = 0.0;
+        current.angularVelocityZ = 0.0;
+        if (!previous.valid || previous.sensorTimestampNs == 0 ||
+            current.sensorTimestampNs <= previous.sensorTimestampNs) return;
+
+        // q and -q are equivalent. Select the nearest representation before
+        // differentiating so a sign flip near a 180-degree pitch cannot create
+        // an artificial full-turn angular velocity.
+        const double dot = previous.x * current.x + previous.y * current.y +
+                           previous.z * current.z + previous.w * current.w;
+        if (dot < 0.0) {
+            current.x = -current.x; current.y = -current.y;
+            current.z = -current.z; current.w = -current.w;
+        }
+
+        // The Android monotonic timestamp is comparable between sensor samples
+        // on the same phone. Do not use Windows packet-processing intervals:
+        // a drained UDP burst would otherwise look like near-zero sample spacing.
+        const double dt = static_cast<double>(current.sensorTimestampNs - previous.sensorTimestampNs) / 1.0e9;
+        if (dt < 0.001 || dt > 0.100) return;
+
+        // World-space delta = current * inverse(previous).
+        const double bx = -previous.x, by = -previous.y, bz = -previous.z, bw = previous.w;
+        double dx = current.w * bx + current.x * bw + current.y * bz - current.z * by;
+        double dy = current.w * by - current.x * bz + current.y * bw + current.z * bx;
+        double dz = current.w * bz + current.x * by - current.y * bx + current.z * bw;
+        double dw = current.w * bw - current.x * bx - current.y * by - current.z * bz;
+        const double deltaNorm = std::sqrt(dx * dx + dy * dy + dz * dz + dw * dw);
+        if (deltaNorm < 1.0e-9) return;
+        dx /= deltaNorm; dy /= deltaNorm; dz /= deltaNorm; dw /= deltaNorm;
+        if (dw < 0.0) { dx = -dx; dy = -dy; dz = -dz; dw = -dw; }
+
+        const double sinHalf = std::sqrt(dx * dx + dy * dy + dz * dz);
+        if (sinHalf < 1.0e-7) return;
+        const double angle = 2.0 * std::atan2(sinHalf, std::clamp(dw, -1.0, 1.0));
+        const double scale = angle / (sinHalf * dt);
+        double vx = dx * scale, vy = dy * scale, vz = dz * scale;
+        const double speed = std::sqrt(vx * vx + vy * vy + vz * vz);
+        constexpr double maxAngularSpeed = 20.0; // rad/s; reject extreme sensor discontinuities.
+        if (speed > maxAngularSpeed) {
+            const double clampScale = maxAngularSpeed / speed;
+            vx *= clampScale; vy *= clampScale; vz *= clampScale;
+        }
+
+        // Mild low-pass filtering removes Wi-Fi arrival jitter without adding
+        // a long trailing response. SteamVR then performs time-based prediction.
+        constexpr double alpha = 0.80;
+        current.angularVelocityX = previous.angularVelocityX * (1.0 - alpha) + vx * alpha;
+        current.angularVelocityY = previous.angularVelocityY * (1.0 - alpha) + vy * alpha;
+        current.angularVelocityZ = previous.angularVelocityZ * (1.0 - alpha) + vz * alpha;
+    }
+
     void Run() {
         // Capture the socket handle once. Stop() closes this underlying socket
         // to wake recv(), but does not race a write to the worker's handle copy.
         const SOCKET socket = m_socket;
         std::array<uint8_t, 1500> buffer{};
         while (m_running.load()) {
-            const int received = recv(socket, reinterpret_cast<char*>(buffer.data()),
-                                      static_cast<int>(buffer.size()), 0);
+            int received = recv(socket, reinterpret_cast<char*>(buffer.data()),
+                                static_cast<int>(buffer.size()), 0);
             if (received == SOCKET_ERROR) {
                 if (!m_running.load()) break;
                 continue;
             }
-            if (received != static_cast<int>(kPosePacketSize) ||
-                std::memcmp(buffer.data(), "PVSP", 4) != 0 || buffer[4] != 1) continue;
-            double x = ReadBEFloat(buffer.data() + 20);
-            double y = ReadBEFloat(buffer.data() + 24);
-            double z = ReadBEFloat(buffer.data() + 28);
-            double w = ReadBEFloat(buffer.data() + 32);
-            if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z) || !std::isfinite(w)) continue;
-            const double norm = std::sqrt(x*x + y*y + z*z + w*w);
-            if (norm < 0.5 || norm > 1.5) continue;
-            Quaternion next{};
-            next.x = x / norm; next.y = y / norm; next.z = z / norm; next.w = w / norm;
-            next.sequence = ReadBE32(buffer.data() + 8);
-            next.receivedAtNs = MonotonicNowNs();
-            next.valid = true;
+
+            Quaternion latest{};
+            bool haveLatest = DecodePacket(buffer.data(), received, &latest);
+            uint64_t drainedPackets = 0;
+            // If the worker was descheduled, discard older queued poses and
+            // publish only the freshest one. Tracking is state, not a reliable
+            // event stream; replaying stale samples increases perceived lag.
+            while (m_running.load()) {
+                u_long pendingBytes = 0;
+                if (ioctlsocket(socket, FIONREAD, &pendingBytes) == SOCKET_ERROR || pendingBytes == 0) break;
+                received = recv(socket, reinterpret_cast<char*>(buffer.data()),
+                                static_cast<int>(buffer.size()), 0);
+                if (received == SOCKET_ERROR) break;
+                Quaternion candidate{};
+                if (DecodePacket(buffer.data(), received, &candidate)) {
+                    latest = candidate;
+                    haveLatest = true;
+                }
+                ++drainedPackets;
+            }
+
+            if (!haveLatest) continue;
             std::lock_guard<std::mutex> lock(m_mutex);
-            m_pose = next;
+            EstimateAngularVelocity(m_pose, latest);
+            m_pose = latest;
+            m_drainedPacketCount += drainedPackets;
         }
     }
 
@@ -161,6 +265,7 @@ private:
     std::thread m_thread;
     mutable std::mutex m_mutex;
     Quaternion m_pose{};
+    uint64_t m_drainedPacketCount = 0;
 };
 
 constexpr uint16_t kStatusPort = 48105;
@@ -308,8 +413,10 @@ public:
         m_lastTrackingValid = false;
         if (auto* host = vr::VRServerDriverHost())
             host->TrackedDevicePoseUpdated(m_objectId, m_lastPose, sizeof(m_lastPose));
-        if (vr::VRDriverLog())
+        if (vr::VRDriverLog()) {
             vr::VRDriverLog()->Log("PhoneVR: HMD activation published; tracking awaits fresh IMU samples");
+            vr::VRDriverLog()->Log("PhoneVR: HMD reports IsDisplayOnDesktop=false; enable SteamVR Settings > Developer > Enable Direct Mode for headset display operation");
+        }
         return vr::VRInitError_None;
     }
     void Deactivate() override {
@@ -364,6 +471,23 @@ public:
         const uint64_t now = MonotonicNowNs();
         const uint64_t ageNs = now >= sample.receivedAtNs ? now - sample.receivedAtNs : 0;
         const bool trackingValid = ageNs <= kTrackingPoseTimeoutNs;
+        if (now - m_lastPoseDiagnosticsNs >= 5000000000ULL && vr::VRDriverLog()) {
+            const double angularSpeed = std::sqrt(
+                sample.angularVelocityX * sample.angularVelocityX +
+                sample.angularVelocityY * sample.angularVelocityY +
+                sample.angularVelocityZ * sample.angularVelocityZ);
+            char message[192]{};
+            const double sinPitch = 2.0 * (sample.w * sample.y - sample.z * sample.x);
+            const double pitchDegrees = std::asin(std::clamp(sinPitch, -1.0, 1.0)) * 57.295779513;
+            const uint64_t drainedPackets = m_receiver.TakeDrainedPacketCount();
+            std::snprintf(message, sizeof(message),
+                          "PhoneVR: pose telemetry age=%.2f ms angular-speed=%.1f deg/s pitch=%.1f deg sequence=%u driver-drained=%llu",
+                          static_cast<double>(ageNs) / 1.0e6, angularSpeed * 57.295779513,
+                          pitchDegrees, sample.sequence,
+                          static_cast<unsigned long long>(drainedPackets));
+            vr::VRDriverLog()->Log(message);
+            m_lastPoseDiagnosticsNs = now;
+        }
         const bool trackingStateChanged = trackingValid != m_lastTrackingValid;
         if (trackingStateChanged && vr::VRDriverLog()) {
             char message[160]{};
@@ -375,10 +499,18 @@ public:
         }
 
         vr::DriverPose_t pose{};
-        pose.poseTimeOffset = 0.0;
+        // The packet's sensor clock belongs to Android and cannot be compared
+        // directly with the Windows clock. Use the driver's local receive age
+        // as a conservative lower bound and provide measured angular velocity
+        // so SteamVR can predict forward to display time.
+        const uint64_t predictionAgeNs = std::min<uint64_t>(ageNs, 50000000ULL);
+        pose.poseTimeOffset = -static_cast<double>(predictionAgeNs) / 1.0e9;
         pose.qWorldFromDriverRotation = {1.0, 0.0, 0.0, 0.0};
         pose.qDriverFromHeadRotation = {1.0, 0.0, 0.0, 0.0};
         pose.qRotation = {sample.w, sample.x, sample.y, sample.z};
+        pose.vecAngularVelocity[0] = sample.angularVelocityX;
+        pose.vecAngularVelocity[1] = sample.angularVelocityY;
+        pose.vecAngularVelocity[2] = sample.angularVelocityZ;
         pose.result = trackingValid ? vr::TrackingResult_Running_OK : vr::TrackingResult_Uninitialized;
         // The HMD has been activated by SteamVR and remains physically present.
         // Sensor timeout only affects pose validity; never set this false on a
@@ -403,6 +535,7 @@ private:
     HmdDisplay m_display;
     vr::DriverPose_t m_lastPose{};
     bool m_lastTrackingValid = false;
+    uint64_t m_lastPoseDiagnosticsNs = 0;
 };
 
 class VirtualDisplayComponent final : public vr::IVRVirtualDisplay {
@@ -783,7 +916,7 @@ public:
         if (!host->TrackedDeviceAdded("PHONEVR-DISPLAY-001", vr::TrackedDeviceClass_DisplayRedirect, m_redirect)) {
             Cleanup(); return vr::VRInitError_Driver_Unknown;
         }
-        if (vr::VRDriverLog()) vr::VRDriverLog()->Log("PhoneVR 0.4.12 SteamVR driver initialized");
+        if (vr::VRDriverLog()) vr::VRDriverLog()->Log("PhoneVR 0.4.13 SteamVR driver initialized");
         return vr::VRInitError_None;
     }
     void Cleanup() override {

@@ -1,3 +1,15 @@
+## 0.4.13 - Pose latency, continuity and direct-display diagnostics
+
+- Android aligns every absolute sensor quaternion to the previous sample before calculating relative orientation, avoiding equivalent q/-q representation flips around large pitch rotations.
+- Kept sensor collection on the dedicated IMU HandlerThread and increased the latest-sample UDP sender to up to 200 Hz, matching the requested 5 ms sensor period without queueing historical poses.
+- Windows Host now drains already-queued UDP pose datagrams in a short bounded window and forwards only the newest valid pose. The pose socket buffer is bounded; telemetry reports RX/forwarded frequency, coalesced packets, sequence gaps, invalid packets, maximum arrival interval and loopback write errors.
+- The SteamVR driver continues to drain its loopback socket to the newest pose and now derives angular velocity using differences between Android sensor monotonic timestamps rather than Windows packet-processing intervals. This prevents a queued burst from producing a false sample delta; driver-side drained packet counts are included in pose telemetry.
+- Increased angular-velocity filter responsiveness while retaining a speed clamp; populate `vecAngularVelocity` and a bounded negative `poseTimeOffset` so SteamVR can predict toward display time.
+- Added periodic SteamVR telemetry for sample age, angular speed, pitch and sequence to correlate rare gray flashes at high head angles with tracking freshness and motion.
+- Documented the SteamVR **Settings → Developer → Enable Direct Mode** runtime switch. PhoneVR's HMD reports `IsDisplayOnDesktop=false`; `IVRVirtualDisplay` remains the wireless final-compositor-backbuffer handoff and is not replaced with a driver-owned compositor.
+- Added regression tests for quaternion continuity, 200 Hz pose pacing, Host UDP batch coalescing, sensor-clock angular velocity, OpenVR prediction fields and Direct Mode configuration.
+- Android versionCode increased to 29. Android Gradle packaging and native Windows MSVC/SteamVR runtime verification remain pending in environments with those toolchains.
+
 ## 0.4.12 - HMD connection stability and Android control sync
 
 - Decoupled OpenVR device presence from IMU packet freshness. An activated HMD now remains `deviceIsConnected = true`; stale or missing samples only mark its pose untracked instead of making SteamVR remove and rediscover the device.

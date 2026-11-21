@@ -124,10 +124,15 @@ private:
 
 struct VirtualDisplayTimingSnapshot {
     uint64_t presentCalls = 0;
+    uint64_t invalidPresentInfo = 0;
     uint64_t waitCalls = 0;
+    uint64_t vsyncCalls = 0;
+    uint64_t vsyncValidCalls = 0;
+    uint64_t vsyncFailedCalls = 0;
     uint64_t completedFrames = 0;
     uint64_t maxPresentNs = 0;
     uint64_t maxWaitNs = 0;
+    uint64_t maxVsyncNs = 0;
 };
 
 struct Quaternion {
@@ -359,6 +364,8 @@ constexpr uint8_t kStatusPresentCallbackSeen = 1 << 5;
 constexpr uint8_t kStatusCaptureBridgeReady = 1 << 6;
 constexpr uint8_t kStatusFirstRawFrameSent = 1 << 7;
 constexpr uint8_t kStatus2CaptureResourcesReady = 1 << 0;
+constexpr uint8_t kStatus2VsyncCallbackSeen = 1 << 1;
+constexpr uint8_t kStatus2VirtualDisplayComponentQueried = 1 << 2;
 
 class SteamVRStatusReporter {
 public:
@@ -416,7 +423,12 @@ public:
     void GetWindowBounds(int32_t* x, int32_t* y, uint32_t* width, uint32_t* height) override {
         *x = 0; *y = 0; *width = kEyeWidth * 2; *height = kEyeHeight;
     }
-    bool IsDisplayOnDesktop() override { return false; }
+    // PhoneVR currently uses OpenVR's IVRVirtualDisplay / DisplayRedirect path.
+    // This path receives the final compositor backbuffer through the extended-display
+    // presentation route (as in ValveSoftware/virtual_display). PhoneVR does not yet
+    // implement IVRDriverDirectModeComponent, so claiming direct mode here prevents
+    // SteamVR from using a presentation path this driver actually implements.
+    bool IsDisplayOnDesktop() override { return true; }
     bool IsDisplayRealDisplay() override { return false; }
     void GetRecommendedRenderTargetSize(uint32_t* width, uint32_t* height) override {
         *width = kEyeWidth * 2; *height = kEyeHeight;
@@ -517,7 +529,7 @@ public:
                           "PhoneVR: pose publisher priority=ABOVE_NORMAL, keepalive=10ms; virtual display refresh=%.1fHz",
                           gDisplayRefreshRateHz);
             vr::VRDriverLog()->Log(refreshLine);
-            vr::VRDriverLog()->Log("PhoneVR: HMD reports IsDisplayOnDesktop=false; enable SteamVR Settings > Developer > Enable Direct Mode for headset display operation");
+            vr::VRDriverLog()->Log("PhoneVR: HMD uses the extended-display presentation path for IVRVirtualDisplay redirection; keep SteamVR Direct Mode disabled until IVRDriverDirectModeComponent is implemented");
         }
         return vr::VRInitError_None;
     }
@@ -761,6 +773,16 @@ public:
             return false;
         }
         *adapterLuid = m_adapterLuid;
+        // GetTimeSinceLastVsync must be valid before the first Present callback.
+        // Waiting for WaitForPresent() to seed this clock creates a bootstrap cycle:
+        // SteamVR may wait for valid display timing before scheduling the first Present.
+        m_vsyncOriginTimeSeconds = NowSeconds();
+        m_lastVsyncTimeSeconds = m_vsyncOriginTimeSeconds;
+        m_vsyncOriginFrameCounter = 0;
+        m_frameCounter = 0;
+        m_vsyncClockInitialized = true;
+        if (vr::VRDriverLog())
+            vr::VRDriverLog()->Log("PhoneVR: virtual VSync clock initialized before first Present; initial timing queries are valid");
         ID3D11Multithread* multithread = nullptr;
         if (SUCCEEDED(m_context->QueryInterface(__uuidof(ID3D11Multithread), reinterpret_cast<void**>(&multithread))) && multithread) {
             multithread->SetMultithreadProtected(TRUE);
@@ -785,6 +807,8 @@ public:
         m_presentCallbackSeen.store(true, std::memory_order_release);
         std::lock_guard<std::mutex> lock(m_mutex);
         if (!info || infoSize < sizeof(vr::PresentInfo_t) || !info->backbufferTextureHandle) {
+            m_invalidPresentInfoCount.fetch_add(1, std::memory_order_relaxed);
+            LogInvalidPresentInfoOnce(info, infoSize);
             return;
         }
         if (!m_device || !m_context) return;
@@ -907,32 +931,50 @@ public:
     }
 
     bool GetTimeSinceLastVsync(float* seconds, uint64_t* frameCounter) override {
-        if (!seconds || !frameCounter) return false;
+        ScopedCallbackTiming timing(m_vsyncCalls, m_maxVsyncDurationNs);
+        const bool firstVsyncQuery = !m_vsyncCallbackSeen.exchange(true, std::memory_order_acq_rel);
+        if (firstVsyncQuery && vr::VRDriverLog())
+            vr::VRDriverLog()->Log("PhoneVR: SteamVR started querying IVRVirtualDisplay VSync timing");
+        if (!seconds || !frameCounter) {
+            m_vsyncFailedCalls.fetch_add(1, std::memory_order_relaxed);
+            return false;
+        }
         std::lock_guard<std::mutex> lock(m_mutex);
-        if (m_frameCounter == 0 || m_vsyncOriginTimeSeconds <= 0.0) return false;
+        if (!m_vsyncClockInitialized || m_vsyncOriginTimeSeconds <= 0.0) {
+            m_vsyncFailedCalls.fetch_add(1, std::memory_order_relaxed);
+            return false;
+        }
         const double elapsed = std::max(0.0, NowSeconds() - m_vsyncOriginTimeSeconds);
-        const uint64_t elapsedVsyncs = static_cast<uint64_t>(elapsed / DisplayFrameIntervalSeconds());
+        const double interval = DisplayFrameIntervalSeconds();
+        const uint64_t elapsedVsyncs = static_cast<uint64_t>(elapsed / interval);
         const double lastVsyncOffset = elapsed -
-            static_cast<double>(elapsedVsyncs) * DisplayFrameIntervalSeconds();
+            static_cast<double>(elapsedVsyncs) * interval;
         const uint64_t virtualFrame = m_vsyncOriginFrameCounter + elapsedVsyncs;
         m_frameCounter = std::max(m_frameCounter, virtualFrame);
         *seconds = static_cast<float>(lastVsyncOffset);
         *frameCounter = m_frameCounter;
+        m_vsyncValidCalls.fetch_add(1, std::memory_order_relaxed);
         return true;
     }
 
     uint64_t PresentCounter() const { return m_completedFrameCounter.load(std::memory_order_relaxed); }
     bool PresentCallbackSeen() const { return m_presentCallbackSeen.load(std::memory_order_acquire); }
+    bool VsyncCallbackSeen() const { return m_vsyncCallbackSeen.load(std::memory_order_acquire); }
     bool CaptureBridgeReady() const { return m_captureBridgeReady.load(std::memory_order_acquire); }
     bool FirstRawFrameSent() const { return m_firstRawFrameSent.load(std::memory_order_acquire); }
     bool CaptureResourcesReady() const { return m_captureResourcesReady.load(std::memory_order_acquire); }
     VirtualDisplayTimingSnapshot TakeTimingSnapshot() {
         VirtualDisplayTimingSnapshot snapshot{};
         snapshot.presentCalls = m_presentCalls.exchange(0, std::memory_order_relaxed);
+        snapshot.invalidPresentInfo = m_invalidPresentInfoCount.exchange(0, std::memory_order_relaxed);
         snapshot.waitCalls = m_waitCalls.exchange(0, std::memory_order_relaxed);
         snapshot.completedFrames = m_timingCompletedFrames.exchange(0, std::memory_order_relaxed);
+        snapshot.vsyncCalls = m_vsyncCalls.exchange(0, std::memory_order_relaxed);
+        snapshot.vsyncValidCalls = m_vsyncValidCalls.exchange(0, std::memory_order_relaxed);
+        snapshot.vsyncFailedCalls = m_vsyncFailedCalls.exchange(0, std::memory_order_relaxed);
         snapshot.maxPresentNs = m_maxPresentDurationNs.exchange(0, std::memory_order_relaxed);
         snapshot.maxWaitNs = m_maxWaitDurationNs.exchange(0, std::memory_order_relaxed);
+        snapshot.maxVsyncNs = m_maxVsyncDurationNs.exchange(0, std::memory_order_relaxed);
         return snapshot;
     }
 
@@ -949,6 +991,16 @@ private:
             std::snprintf(line, sizeof(line), "PhoneVR: %s failed (HRESULT 0x%08X)", operation, static_cast<unsigned>(hr));
             vr::VRDriverLog()->Log(line);
         }
+    }
+    void LogInvalidPresentInfoOnce(const vr::PresentInfo_t* info, uint32_t infoSize) {
+        if (m_loggedInvalidPresentInfo.exchange(true, std::memory_order_acq_rel) || !vr::VRDriverLog()) return;
+        char line[192]{};
+        std::snprintf(line, sizeof(line),
+                      "PhoneVR: IVRVirtualDisplay::Present received invalid arguments (info=%s size=%u expected=%u texture=%s)",
+                      info ? "non-null" : "null", infoSize,
+                      static_cast<unsigned>(sizeof(vr::PresentInfo_t)),
+                      info && info->backbufferTextureHandle ? "non-null" : "null");
+        vr::VRDriverLog()->Log(line);
     }
     static void LogD3DFailureOnce(const char* operation, HRESULT hr, bool& logged) {
         if (logged) return;
@@ -1401,11 +1453,13 @@ float4 main(float4 position : SV_POSITION, float2 uv : TEXCOORD0) : SV_TARGET {
         m_adapterLuid = 0;
         m_lastVsyncTimeSeconds = 0.0;
         m_vsyncOriginTimeSeconds = 0.0;
+        m_vsyncClockInitialized = false;
         m_lastFrameId = 0;
         m_frameCounter = 0;
         m_vsyncOriginFrameCounter = 0;
         m_completedFrameCounter.store(0, std::memory_order_relaxed);
         m_presentCallbackSeen.store(false, std::memory_order_relaxed);
+        m_vsyncCallbackSeen.store(false, std::memory_order_relaxed);
         m_firstRawFrameSent.store(false, std::memory_order_relaxed);
         m_captureBridgeReady.store(false, std::memory_order_relaxed);
         m_captureResourcesReady.store(false, std::memory_order_relaxed);
@@ -1438,10 +1492,18 @@ float4 main(float4 position : SV_POSITION, float2 uv : TEXCOORD0) : SV_TARGET {
     std::atomic<bool> m_presentCallbackSeen{false};
     std::atomic<bool> m_firstRawFrameSent{false};
     std::atomic<uint64_t> m_presentCalls{0};
+    std::atomic<uint64_t> m_invalidPresentInfoCount{0};
+    std::atomic<bool> m_loggedInvalidPresentInfo{false};
     std::atomic<uint64_t> m_waitCalls{0};
+    std::atomic<uint64_t> m_vsyncCalls{0};
+    std::atomic<uint64_t> m_vsyncValidCalls{0};
+    std::atomic<uint64_t> m_vsyncFailedCalls{0};
     std::atomic<uint64_t> m_timingCompletedFrames{0};
     std::atomic<uint64_t> m_maxPresentDurationNs{0};
     std::atomic<uint64_t> m_maxWaitDurationNs{0};
+    std::atomic<uint64_t> m_maxVsyncDurationNs{0};
+    std::atomic<bool> m_vsyncCallbackSeen{false};
+    bool m_vsyncClockInitialized = false;
     std::mutex m_captureResourcesMutex;
     std::mutex m_captureQueueMutex;
     std::condition_variable m_captureCv;
@@ -1476,6 +1538,7 @@ float4 main(float4 position : SV_POSITION, float2 uv : TEXCOORD0) : SV_TARGET {
 class PhoneVRDisplayRedirect final : public vr::ITrackedDeviceServerDriver {
 public:
     vr::EVRInitError Activate(uint32_t objectId) override {
+        m_componentQuerySeen.store(false, std::memory_order_release);
         uint64_t adapterLuid = 0;
         if (!m_display.Initialize(&adapterLuid)) {
             if (vr::VRDriverLog()) vr::VRDriverLog()->Log("PhoneVR: virtual display capture initialization failed; display redirect is inactive");
@@ -1488,21 +1551,42 @@ public:
         properties->SetStringProperty(container, vr::Prop_ModelNumber_String, "PhoneVR Wireless Display Redirect");
         properties->SetStringProperty(container, vr::Prop_SerialNumber_String, "PHONEVR-DISPLAY-001");
         properties->SetStringProperty(container, vr::Prop_RegisteredDeviceType_String, "phonevr/phonevr_display_redirect");
-        properties->SetBoolProperty(container, vr::Prop_HasVirtualDisplayComponent_Bool, true);
-        properties->SetUint64Property(container, vr::Prop_GraphicsAdapterLuid_Uint64, adapterLuid);
+        // Prop_HasVirtualDisplayComponent_Bool is an HMD property inferred from
+        // the HMD's own GetComponent(). The redirect accessory is identified by
+        // TrackedDeviceClass_DisplayRedirect + redirectsDisplay in the manifest.
+        const auto luidResult = properties->SetUint64Property(container, vr::Prop_GraphicsAdapterLuid_Uint64, adapterLuid);
+        if (vr::VRDriverLog()) {
+            char line[192]{};
+            std::snprintf(line, sizeof(line),
+                          "PhoneVR: DisplayRedirect activated; graphics LUID property result=%d; IVRVirtualDisplay=%s",
+                          static_cast<int>(luidResult), vr::IVRVirtualDisplay_Version);
+            vr::VRDriverLog()->Log(line);
+        }
         return vr::VRInitError_None;
     }
     void Deactivate() override { m_active = false; m_display.Shutdown(); }
     void EnterStandby() override {}
     bool IsActive() const { return m_active; }
+    bool VirtualDisplayComponentQueried() const { return m_componentQuerySeen.load(std::memory_order_acquire); }
     uint64_t PresentCounter() const { return m_display.PresentCounter(); }
     bool PresentCallbackSeen() const { return m_display.PresentCallbackSeen(); }
+    bool VsyncCallbackSeen() const { return m_display.VsyncCallbackSeen(); }
     bool CaptureBridgeReady() const { return m_display.CaptureBridgeReady(); }
     bool FirstRawFrameSent() const { return m_display.FirstRawFrameSent(); }
     bool CaptureResourcesReady() const { return m_display.CaptureResourcesReady(); }
     VirtualDisplayTimingSnapshot TakeTimingSnapshot() { return m_display.TakeTimingSnapshot(); }
     void* GetComponent(const char* nameAndVersion) override {
-        if (nameAndVersion && std::strcmp(nameAndVersion, vr::IVRVirtualDisplay_Version) == 0) return &m_display;
+        if (!nameAndVersion) return nullptr;
+        if (_stricmp(nameAndVersion, vr::IVRVirtualDisplay_Version) == 0) {
+            if (!m_componentQuerySeen.exchange(true, std::memory_order_acq_rel) && vr::VRDriverLog()) {
+                char line[192]{};
+                std::snprintf(line, sizeof(line),
+                              "PhoneVR: SteamVR queried and received %s from PHONEVR-DISPLAY-001",
+                              vr::IVRVirtualDisplay_Version);
+                vr::VRDriverLog()->Log(line);
+            }
+            return static_cast<vr::IVRVirtualDisplay*>(&m_display);
+        }
         return nullptr;
     }
     void DebugRequest(const char*, char* response, uint32_t size) override { if (response && size) response[0] = '\0'; }
@@ -1519,13 +1603,14 @@ public:
 private:
     VirtualDisplayComponent m_display;
     bool m_active = false;
+    std::atomic<bool> m_componentQuerySeen{false};
 };
 
 class PhoneVRProvider final : public vr::IServerTrackedDeviceProvider {
 public:
     vr::EVRInitError Init(vr::IVRDriverContext* context) override {
         VR_INIT_SERVER_DRIVER_CONTEXT(context);
-        if (vr::VRDriverLog()) vr::VRDriverLog()->Log("PhoneVR: virtual display refresh fixed at 72 Hz");
+        if (vr::VRDriverLog()) vr::VRDriverLog()->Log("PhoneVR: IVRVirtualDisplay DisplayRedirect path selected; Extended Display Mode required; virtual VSync clock is seeded at activation; fixed refresh=72Hz");
         if (!m_statusReporter.Start() && vr::VRDriverLog())
             vr::VRDriverLog()->Log("PhoneVR: failed to start loopback status reporter on UDP 48105");
         m_hmd = new PhoneVRHmd();
@@ -1537,7 +1622,7 @@ public:
         if (!host->TrackedDeviceAdded("PHONEVR-DISPLAY-001", vr::TrackedDeviceClass_DisplayRedirect, m_redirect)) {
             Cleanup(); return vr::VRInitError_Driver_Unknown;
         }
-        if (vr::VRDriverLog()) vr::VRDriverLog()->Log("PhoneVR 0.4.21 SteamVR driver initialized");
+        if (vr::VRDriverLog()) vr::VRDriverLog()->Log("PhoneVR 0.4.22 SteamVR driver initialized");
         return vr::VRInitError_None;
     }
     void Cleanup() override {
@@ -1557,11 +1642,15 @@ public:
             const auto timing = m_redirect->TakeTimingSnapshot();
             char line[384]{};
             std::snprintf(line, sizeof(line),
-                          "PhoneVR: virtual display Present=%.1fHz WaitForPresent=%.1fHz completed=%.1fHz max-Present=%.2fms max-WaitForPresent=%.2fms refresh=%.1fHz",
-                          timing.presentCalls / intervalSeconds, timing.waitCalls / intervalSeconds,
-                          timing.completedFrames / intervalSeconds,
-                          timing.maxPresentNs / 1.0e6, timing.maxWaitNs / 1.0e6,
-                          gDisplayRefreshRateHz);
+                          "PhoneVR: virtual display componentQueried=%s VSyncQuery=%.1fHz valid=%.1fHz failed=%llu Present=%.1fHz invalidPresent=%llu WaitForPresent=%.1fHz completed=%.1fHz max-VSync=%.2fms max-Present=%.2fms max-WaitForPresent=%.2fms refresh=%.1fHz",
+                          (m_redirect && m_redirect->VirtualDisplayComponentQueried()) ? "yes" : "no",
+                          timing.vsyncCalls / intervalSeconds, timing.vsyncValidCalls / intervalSeconds,
+                          static_cast<unsigned long long>(timing.vsyncFailedCalls),
+                          timing.presentCalls / intervalSeconds,
+                          static_cast<unsigned long long>(timing.invalidPresentInfo),
+                          timing.waitCalls / intervalSeconds, timing.completedFrames / intervalSeconds,
+                          timing.maxVsyncNs / 1.0e6, timing.maxPresentNs / 1.0e6,
+                          timing.maxWaitNs / 1.0e6, gDisplayRefreshRateHz);
             if (vr::VRDriverLog()) vr::VRDriverLog()->Log(line);
         }
         uint8_t flags = kStatusDriverLoaded;
@@ -1575,6 +1664,8 @@ public:
         if (m_redirect && m_redirect->FirstRawFrameSent()) flags |= kStatusFirstRawFrameSent;
         uint8_t flags2 = 0;
         if (m_redirect && m_redirect->CaptureResourcesReady()) flags2 |= kStatus2CaptureResourcesReady;
+        if (m_redirect && m_redirect->VsyncCallbackSeen()) flags2 |= kStatus2VsyncCallbackSeen;
+        if (m_redirect && m_redirect->VirtualDisplayComponentQueried()) flags2 |= kStatus2VirtualDisplayComponentQueried;
         m_statusReporter.Send(flags, flags2, presented);
     }
     bool ShouldBlockStandbyMode() override { return false; }

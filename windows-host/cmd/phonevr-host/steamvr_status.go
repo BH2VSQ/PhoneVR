@@ -14,8 +14,10 @@ const (
 )
 
 const (
-	steamVRHeartbeatPacketSize              = 16
-	steamVRFlag2CaptureResourcesReady uint8 = 1 << 0
+	steamVRHeartbeatPacketSize                       = 16
+	steamVRFlag2CaptureResourcesReady          uint8 = 1 << 0
+	steamVRFlag2VsyncCallbackSeen              uint8 = 1 << 1
+	steamVRFlag2VirtualDisplayComponentQueried uint8 = 1 << 2
 )
 
 type steamVRDriverHeartbeat struct {

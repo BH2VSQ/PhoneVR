@@ -1,3 +1,14 @@
+## 0.4.22 - Virtual display Present bootstrap and mode correction
+
+- Corrected the HMD's `IVRDisplayComponent::IsDisplayOnDesktop()` result to `true` for the current `IVRVirtualDisplay` / `TrackedDeviceClass_DisplayRedirect` architecture. Valve's `virtual_display` sample requires Extended Display Mode; Direct Mode must remain disabled until PhoneVR implements `IVRDriverDirectModeComponent`.
+- Added a `VirtualDisplayComponentQueried` heartbeat flag so Host can distinguish SteamVR component discovery, VSync timing queries and actual `Present` callbacks.
+- Extended the Host SteamVR status text to identify whether SteamVR has not queried `IVRVirtualDisplay_002`, has loaded it but not requested VSync, or has started VSync but has not submitted a frame.
+- Added a first-VSync-query log and one-time diagnostics/counters for invalid `IVRVirtualDisplay::Present` arguments.
+- Removed a duplicate C++ `VirtualDisplayComponentQueried()` accessor introduced during diagnostic wiring.
+- Corrected the previous Direct Mode guidance in the project documentation; this build uses Extended Display Mode for the VirtualDisplay redirect path.
+- Kept Android control acknowledgements on a dedicated writer executor so remote actions such as `center_view` do not perform socket I/O on the UI thread.
+- Android versionCode increased to 38. Native MSVC compilation and SteamVR runtime confirmation that `Present` is called remain pending on Windows hardware.
+
 ## 0.4.21 - Video capture bridge and Android receive diagnostics
 
 - Deferred USB tether/RNDIS streaming; the supported connection paths remain Auto and Wi-Fi while the Wi-Fi video pipeline is stabilized.

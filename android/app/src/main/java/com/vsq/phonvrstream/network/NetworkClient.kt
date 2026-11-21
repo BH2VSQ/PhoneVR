@@ -46,6 +46,9 @@ class NetworkClient(
     private val mainHandler = Handler(Looper.getMainLooper())
     private val discoveryExecutor = Executors.newSingleThreadExecutor()
     private val sessionExecutor = Executors.newSingleThreadExecutor()
+    // UI transactions must never write TCP acknowledgements on the Android main
+    // thread. Keep those replies on a dedicated serialized background executor.
+    private val controlReplyExecutor = Executors.newSingleThreadExecutor()
     // Head tracking is latency-sensitive but lightweight. Give the dedicated
     // sender display-thread scheduling priority so UI/GC work is less likely to
     // leave hundreds of milliseconds of stale UDP samples queued.
@@ -433,6 +436,7 @@ class NetworkClient(
         stopVideoReceiverAsync()
         discoveryExecutor.shutdownNow()
         sessionExecutor.shutdownNow()
+        controlReplyExecutor.shutdownNow()
         poseExecutor.shutdownNow()
         videoLifecycleExecutor.shutdown()
     }
@@ -599,8 +603,8 @@ class NetworkClient(
                             try {
                                 val applied = applyRemoteOpticalPresets(presets)
                                 if (isSessionActive(generation)) {
-                                    writeControlMessage(
-                                        writer,
+                                    writeControlMessageAsync(
+                                        generation, writer,
                                         JSONObject().put("type", "optical_presets_ack")
                                             .put("requestId", requestId).put("status", "applied")
                                             .put("presets", applied),
@@ -610,8 +614,8 @@ class NetworkClient(
                             } catch (error: Throwable) {
                                 if (isSessionActive(generation)) {
                                     try {
-                                        writeControlMessage(
-                                            writer,
+                                        writeControlMessageAsync(
+                                            generation, writer,
                                             JSONObject().put("type", "optical_presets_ack")
                                                 .put("requestId", requestId).put("status", "rejected")
                                                 .put("message", error.message ?: error.javaClass.simpleName),
@@ -629,8 +633,8 @@ class NetworkClient(
                                 val applied = applyRemoteOpticalPreset(presetId)
                                     ?: error("手机中不存在该光学预设：$presetId")
                                 if (isSessionActive(generation)) {
-                                    writeControlMessage(
-                                        writer,
+                                    writeControlMessageAsync(
+                                        generation, writer,
                                         JSONObject().put("type", "display_settings_ack")
                                             .put("requestId", requestId).put("status", "applied")
                                             .put("settings", applied),
@@ -640,8 +644,8 @@ class NetworkClient(
                             } catch (error: Throwable) {
                                 if (isSessionActive(generation)) {
                                     try {
-                                        writeControlMessage(
-                                            writer,
+                                        writeControlMessageAsync(
+                                            generation, writer,
                                             JSONObject().put("type", "display_settings_ack")
                                                 .put("requestId", requestId).put("status", "rejected")
                                                 .put("message", error.message ?: error.javaClass.simpleName),
@@ -661,8 +665,8 @@ class NetworkClient(
                             try {
                                 val applied = applyRemoteDisplaySettings(settingsJson)
                                 if (isSessionActive(generation)) {
-                                    writeControlMessage(
-                                        writer,
+                                    writeControlMessageAsync(
+                                        generation, writer,
                                         JSONObject()
                                             .put("type", "display_settings_ack")
                                             .put("requestId", requestId)
@@ -674,8 +678,8 @@ class NetworkClient(
                             } catch (error: Throwable) {
                                 if (isSessionActive(generation)) {
                                     try {
-                                        writeControlMessage(
-                                            writer,
+                                        writeControlMessageAsync(
+                                            generation, writer,
                                             JSONObject()
                                                 .put("type", "display_settings_ack")
                                                 .put("requestId", requestId)
@@ -697,8 +701,8 @@ class NetworkClient(
                                 }
                                 applyRemoteDeviceAction(action)
                                 if (isSessionActive(generation)) {
-                                    writeControlMessage(
-                                        writer,
+                                    writeControlMessageAsync(
+                                        generation, writer,
                                         JSONObject().put("type", "device_action_ack")
                                             .put("requestId", requestId).put("status", "applied"),
                                     )
@@ -706,8 +710,8 @@ class NetworkClient(
                             } catch (error: Throwable) {
                                 if (isSessionActive(generation)) {
                                     try {
-                                        writeControlMessage(
-                                            writer,
+                                        writeControlMessageAsync(
+                                            generation, writer,
                                             JSONObject().put("type", "device_action_ack")
                                                 .put("requestId", requestId).put("status", "rejected")
                                                 .put("message", error.message ?: error.javaClass.simpleName),
@@ -797,6 +801,21 @@ class NetworkClient(
         }
     }
 
+    private fun writeControlMessageAsync(generation: Long, writer: BufferedWriter, message: JSONObject) {
+        try {
+            controlReplyExecutor.execute {
+                if (!isSessionActive(generation)) return@execute
+                try {
+                    writeControlMessage(writer, message)
+                } catch (error: Exception) {
+                    postStatus("控制响应发送失败：${error.message ?: error.javaClass.simpleName}", true)
+                }
+            }
+        } catch (_: java.util.concurrent.RejectedExecutionException) {
+            // The Activity is shutting down; the response is no longer useful.
+        }
+    }
+
     private fun sleepBeforeRetry(durationMs: Long, generation: Long) {
         var remaining = durationMs
         while (remaining > 0L && isSessionActive(generation)) {
@@ -835,7 +854,7 @@ class NetworkClient(
         const val DEFAULT_VIDEO_FPS = 60
         const val DISCOVERY_PORT = 48100
         private const val PROTOCOL_VERSION = 1
-        private const val CLIENT_VERSION = "PhoneVRStream-0.4.21"
+        private const val CLIENT_VERSION = "PhoneVRStream-0.4.22"
         private const val DISCOVERY_REQUEST = "PHONEVR_DISCOVER_V1"
         private const val DISCOVERY_RESPONSE_PREFIX = "PHONEVR_HOST_V1 "
         private const val DISCOVERY_WINDOW_MS = 1800L

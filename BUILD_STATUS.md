@@ -17,3 +17,13 @@
 
 - Go tests, Race, Vet and Windows AMD64 Host cross-compilation are run in this environment.
 - Native MSVC D3D11 driver compilation, Windows SteamVR compositor integration, hardware H.264 encoder initialization, Android Gradle APK packaging, MediaCodec playback and Wi-Fi end-to-end streaming require the target Windows PC and Android handset.
+
+
+## 0.4.22 virtual-display Present bootstrap and mode correction
+
+- The 0.4.21 driver told SteamVR `IsDisplayOnDesktop=false` while implementing only `IVRVirtualDisplay` and not `IVRDriverDirectModeComponent`. Valve's virtual_display sample uses Extended Display Mode. The HMD now reports `IsDisplayOnDesktop=true`; Direct Mode must remain disabled for this implementation.
+- The Host heartbeat now exposes whether SteamVR queried `IVRVirtualDisplay_002`, whether VSync timing was queried, and whether Present was called. This separates driver component discovery from compositor submission.
+- `GetTimeSinceLastVsync` is seeded at activation so initial timing queries are valid before the first Present.
+- Added diagnostics for invalid Present arguments and duplicate `VirtualDisplayComponentQueried` method cleanup.
+- Fixed Android control acknowledgements to leave the UI thread (including remote actions such as `center_view`) to avoid `NetworkOnMainThreadException`.
+- Requires Windows MSVC/SteamVR runtime validation; do not claim Present or live video is fixed until Host reports Present calls and the first raw frame.

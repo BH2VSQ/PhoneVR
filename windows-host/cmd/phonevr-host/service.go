@@ -87,36 +87,38 @@ type PoseSnapshot struct {
 }
 
 type HostSnapshot struct {
-	Running                      bool             `json:"running"`
-	ServerName                   string           `json:"serverName"`
-	ListenAddress                string           `json:"listenAddress"`
-	LocalIPv4                    []string         `json:"localIPv4"`
-	DiscoveryPort                int              `json:"discoveryPort"`
-	ControlPort                  int              `json:"controlPort"`
-	PosePort                     int              `json:"posePort"`
-	ConnectedDevices             []DeviceSnapshot `json:"connectedDevices"`
-	LatestPose                   *PoseSnapshot    `json:"latestPose,omitempty"`
-	PacketsReceived              uint64           `json:"packetsReceived"`
-	LastPacketAt                 string           `json:"lastPacketAt,omitempty"`
-	Uptime                       string           `json:"uptime,omitempty"`
-	LastError                    string           `json:"lastError,omitempty"`
-	SteamVRConnected             bool             `json:"steamVRConnected"`
-	SteamVRDriverLoaded          bool             `json:"steamVRDriverLoaded"`
-	SteamVRHMDActive             bool             `json:"steamVRHmdActive"`
-	SteamVRPoseValid             bool             `json:"steamVRPoseValid"`
-	SteamVRDisplayActive         bool             `json:"steamVRDisplayActive"`
-	SteamVRHasPresentedFrame     bool             `json:"steamVRHasPresentedFrame"`
-	SteamVRPresentCallbackSeen   bool             `json:"steamVRPresentCallbackSeen"`
-	SteamVRCaptureBridgeReady    bool             `json:"steamVRCaptureBridgeReady"`
-	SteamVRRawFrameSent          bool             `json:"steamVRRawFrameSent"`
-	SteamVRCaptureResourcesReady bool             `json:"steamVRcaptureResourcesReady"`
-	VideoEncoderReady            bool             `json:"videoEncoderReady"`
-	VideoEncoderError            string           `json:"videoEncoderError,omitempty"`
-	VideoEncodedFrames           uint64           `json:"videoEncodedFrames"`
-	VideoUDPPackets              uint64           `json:"videoUdpPackets"`
-	SteamVRFrameCounter          uint64           `json:"steamVRFrameCounter"`
-	SteamVRHeartbeatAgeMS        int64            `json:"steamVRHeartbeatAgeMs,omitempty"`
-	Logs                         []string         `json:"logs"`
+	Running                               bool             `json:"running"`
+	ServerName                            string           `json:"serverName"`
+	ListenAddress                         string           `json:"listenAddress"`
+	LocalIPv4                             []string         `json:"localIPv4"`
+	DiscoveryPort                         int              `json:"discoveryPort"`
+	ControlPort                           int              `json:"controlPort"`
+	PosePort                              int              `json:"posePort"`
+	ConnectedDevices                      []DeviceSnapshot `json:"connectedDevices"`
+	LatestPose                            *PoseSnapshot    `json:"latestPose,omitempty"`
+	PacketsReceived                       uint64           `json:"packetsReceived"`
+	LastPacketAt                          string           `json:"lastPacketAt,omitempty"`
+	Uptime                                string           `json:"uptime,omitempty"`
+	LastError                             string           `json:"lastError,omitempty"`
+	SteamVRConnected                      bool             `json:"steamVRConnected"`
+	SteamVRDriverLoaded                   bool             `json:"steamVRDriverLoaded"`
+	SteamVRHMDActive                      bool             `json:"steamVRHmdActive"`
+	SteamVRPoseValid                      bool             `json:"steamVRPoseValid"`
+	SteamVRDisplayActive                  bool             `json:"steamVRDisplayActive"`
+	SteamVRHasPresentedFrame              bool             `json:"steamVRHasPresentedFrame"`
+	SteamVRPresentCallbackSeen            bool             `json:"steamVRPresentCallbackSeen"`
+	SteamVRVsyncCallbackSeen              bool             `json:"steamVRVsyncCallbackSeen"`
+	SteamVRVirtualDisplayComponentQueried bool             `json:"steamVRVirtualDisplayComponentQueried"`
+	SteamVRCaptureBridgeReady             bool             `json:"steamVRCaptureBridgeReady"`
+	SteamVRRawFrameSent                   bool             `json:"steamVRRawFrameSent"`
+	SteamVRCaptureResourcesReady          bool             `json:"steamVRcaptureResourcesReady"`
+	VideoEncoderReady                     bool             `json:"videoEncoderReady"`
+	VideoEncoderError                     string           `json:"videoEncoderError,omitempty"`
+	VideoEncodedFrames                    uint64           `json:"videoEncodedFrames"`
+	VideoUDPPackets                       uint64           `json:"videoUdpPackets"`
+	SteamVRFrameCounter                   uint64           `json:"steamVRFrameCounter"`
+	SteamVRHeartbeatAgeMS                 int64            `json:"steamVRHeartbeatAgeMs,omitempty"`
+	Logs                                  []string         `json:"logs"`
 }
 
 type PoseFrameSnapshot struct {
@@ -518,6 +520,8 @@ func (s *HostService) Snapshot() HostSnapshot {
 			snapshot.SteamVRDisplayActive = s.steamVRFlags&steamVRFlagDisplayActive != 0
 			snapshot.SteamVRHasPresentedFrame = s.steamVRFlags&steamVRFlagPresentedFrame != 0
 			snapshot.SteamVRPresentCallbackSeen = s.steamVRFlags&steamVRFlagPresentCallbackSeen != 0
+			snapshot.SteamVRVsyncCallbackSeen = s.steamVRFlags2&steamVRFlag2VsyncCallbackSeen != 0
+			snapshot.SteamVRVirtualDisplayComponentQueried = s.steamVRFlags2&steamVRFlag2VirtualDisplayComponentQueried != 0
 			snapshot.SteamVRCaptureBridgeReady = s.steamVRFlags&steamVRFlagCaptureBridgeReady != 0
 			snapshot.SteamVRRawFrameSent = s.steamVRFlags&steamVRFlagFirstRawFrameSent != 0
 			snapshot.SteamVRCaptureResourcesReady = s.steamVRFlags2&steamVRFlag2CaptureResourcesReady != 0

@@ -139,7 +139,7 @@ func TestSteamVRDriverHeartbeatUpdatesConnectionState(t *testing.T) {
 	copy(packet[:4], "PVST")
 	packet[4] = 1
 	packet[5] = steamVRFlagDriverLoaded | steamVRFlagHMDActive | steamVRFlagPoseValid | steamVRFlagDisplayActive | steamVRFlagPresentedFrame | steamVRFlagPresentCallbackSeen | steamVRFlagCaptureBridgeReady | steamVRFlagFirstRawFrameSent
-	packet[6] = steamVRFlag2CaptureResourcesReady
+	packet[6] = steamVRFlag2CaptureResourcesReady | steamVRFlag2VsyncCallbackSeen | steamVRFlag2VirtualDisplayComponentQueried
 	binary.BigEndian.PutUint64(packet[8:], 123456)
 	if _, err := sender.Write(packet); err != nil {
 		t.Fatalf("send SteamVR heartbeat: %v", err)
@@ -147,7 +147,7 @@ func TestSteamVRDriverHeartbeatUpdatesConnectionState(t *testing.T) {
 	waitUntil(t, time.Second, func() bool { return service.Snapshot().SteamVRConnected })
 	snapshot := service.Snapshot()
 	if !snapshot.SteamVRDriverLoaded || !snapshot.SteamVRHMDActive || !snapshot.SteamVRPoseValid ||
-		!snapshot.SteamVRDisplayActive || !snapshot.SteamVRHasPresentedFrame || snapshot.SteamVRFrameCounter != 123456 {
+		!snapshot.SteamVRDisplayActive || !snapshot.SteamVRHasPresentedFrame || !snapshot.SteamVRVsyncCallbackSeen || !snapshot.SteamVRVirtualDisplayComponentQueried || snapshot.SteamVRFrameCounter != 123456 {
 		t.Fatalf("SteamVR status was not decoded correctly: %+v", snapshot)
 	}
 

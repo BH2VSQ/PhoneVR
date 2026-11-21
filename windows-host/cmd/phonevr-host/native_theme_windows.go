@@ -235,7 +235,13 @@ func (app *nativeUI) paintMain(hdc uintptr) {
 		case !app.snapshot.SteamVRDisplayActive:
 			steamText = app.text("SteamVR · 显示设备未激活", "STEAMVR · DISPLAY INACTIVE")
 		case !app.snapshot.SteamVRPresentCallbackSeen:
-			steamText = app.text("SteamVR · 尚未调用虚拟显示 Present", "STEAMVR · NO VIRTUAL PRESENT")
+			if !app.snapshot.SteamVRVirtualDisplayComponentQueried {
+				steamText = app.text("SteamVR 尚未查询 IVRVirtualDisplay · 检查扩展显示模式/驱动注册", "STEAMVR HAS NOT QUERIED IVRVirtualDisplay · CHECK EXTENDED DISPLAY MODE / DRIVER REGISTRATION")
+			} else if app.snapshot.SteamVRVsyncCallbackSeen {
+				steamText = app.text("虚拟显示组件已加载且 VSync 正常 · 等待 Present", "VIRTUAL DISPLAY COMPONENT AND VSYNC READY · WAITING PRESENT")
+			} else {
+				steamText = app.text("虚拟显示组件已加载 · 等待 VSync 调用", "VIRTUAL DISPLAY COMPONENT LOADED · WAITING VSYNC QUERY")
+			}
 		case !app.snapshot.SteamVRHasPresentedFrame:
 			steamText = app.text("SteamVR · Present 已调用，等待 GPU 同步", "STEAMVR · WAITING GPU SYNC")
 		case !app.snapshot.VideoEncoderReady:

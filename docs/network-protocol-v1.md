@@ -11,6 +11,20 @@ Any incompatible change must increment the protocol version and update both impl
 | 48101 | TCP | Bidirectional | Pairing, session setup, heartbeat |
 | 48102 | UDP | Android -> Host | 3DoF head pose |
 
+The following ports are internal Windows loopback channels and are not part of
+the Android LAN protocol:
+
+| Port | Transport | Direction | Purpose |
+|---|---|---|---|
+| 48103 | UDP loopback | Host -> SteamVR driver | Forward validated `PVSP` head pose to `vrserver.exe` |
+| 48105 | UDP loopback | SteamVR driver -> Host | Versioned `PVST` runtime/driver/HMD/display heartbeat |
+
+`PVST` is exactly 16 bytes: ASCII magic `PVST` (4 bytes), version `1` (1 byte),
+flags (1 byte), two reserved zero bytes and a big-endian `uint64` completed
+virtual-display frame counter. Flags report driver loaded, HMD active, pose
+valid, display redirect active and at least one completed backbuffer readback.
+Host accepts this packet only from loopback and expires the state after 2.5 s.
+
 ## Discovery
 
 Android broadcasts the UTF-8 text `PHONEVR_DISCOVER_V1` to UDP port `48100`.

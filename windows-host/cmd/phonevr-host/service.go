@@ -26,6 +26,7 @@ const (
 	discoveryPortDefault = 48100
 	controlPortDefault   = 48101
 	posePortDefault      = 48102
+	steamVRStatusPort    = 48105
 	discoveryQuery       = "PHONEVR_DISCOVER_V1"
 	discoveryPrefix      = "PHONEVR_HOST_V1 "
 	maxLogEntries        = 250
@@ -70,20 +71,28 @@ type PoseSnapshot struct {
 }
 
 type HostSnapshot struct {
-	Running          bool             `json:"running"`
-	ServerName       string           `json:"serverName"`
-	ListenAddress    string           `json:"listenAddress"`
-	LocalIPv4        []string         `json:"localIPv4"`
-	DiscoveryPort    int              `json:"discoveryPort"`
-	ControlPort      int              `json:"controlPort"`
-	PosePort         int              `json:"posePort"`
-	ConnectedDevices []DeviceSnapshot `json:"connectedDevices"`
-	LatestPose       *PoseSnapshot    `json:"latestPose,omitempty"`
-	PacketsReceived  uint64           `json:"packetsReceived"`
-	LastPacketAt     string           `json:"lastPacketAt,omitempty"`
-	Uptime           string           `json:"uptime,omitempty"`
-	LastError        string           `json:"lastError,omitempty"`
-	Logs             []string         `json:"logs"`
+	Running                  bool             `json:"running"`
+	ServerName               string           `json:"serverName"`
+	ListenAddress            string           `json:"listenAddress"`
+	LocalIPv4                []string         `json:"localIPv4"`
+	DiscoveryPort            int              `json:"discoveryPort"`
+	ControlPort              int              `json:"controlPort"`
+	PosePort                 int              `json:"posePort"`
+	ConnectedDevices         []DeviceSnapshot `json:"connectedDevices"`
+	LatestPose               *PoseSnapshot    `json:"latestPose,omitempty"`
+	PacketsReceived          uint64           `json:"packetsReceived"`
+	LastPacketAt             string           `json:"lastPacketAt,omitempty"`
+	Uptime                   string           `json:"uptime,omitempty"`
+	LastError                string           `json:"lastError,omitempty"`
+	SteamVRConnected         bool             `json:"steamVRConnected"`
+	SteamVRDriverLoaded      bool             `json:"steamVRDriverLoaded"`
+	SteamVRHMDActive         bool             `json:"steamVRHmdActive"`
+	SteamVRPoseValid         bool             `json:"steamVRPoseValid"`
+	SteamVRDisplayActive     bool             `json:"steamVRDisplayActive"`
+	SteamVRHasPresentedFrame bool             `json:"steamVRHasPresentedFrame"`
+	SteamVRFrameCounter      uint64           `json:"steamVRFrameCounter"`
+	SteamVRHeartbeatAgeMS    int64            `json:"steamVRHeartbeatAgeMs,omitempty"`
+	Logs                     []string         `json:"logs"`
 }
 
 type PoseFrameSnapshot struct {
@@ -136,24 +145,28 @@ type activeDevice struct {
 }
 
 type HostService struct {
-	lifecycleMu sync.Mutex
-	mu          sync.RWMutex
-	config      HostConfig
-	serverName  string
-	startedAt   time.Time
-	listener    net.Listener
-	discovery   *net.UDPConn
-	pose        *net.UDPConn
-	cancel      context.CancelFunc
-	wg          sync.WaitGroup
-	devices     map[string]activeDevice
-	connections map[net.Conn]struct{}
-	latestPose  *PoseSnapshot
-	packets     uint64
-	lastPacket  time.Time
-	lastError   string
-	logs        []string
-	consoleLogs bool
+	lifecycleMu         sync.Mutex
+	mu                  sync.RWMutex
+	config              HostConfig
+	serverName          string
+	startedAt           time.Time
+	listener            net.Listener
+	discovery           *net.UDPConn
+	pose                *net.UDPConn
+	steamVRStatus       *net.UDPConn
+	steamVRHeartbeatAt  time.Time
+	steamVRFlags        uint8
+	steamVRFrameCounter uint64
+	cancel              context.CancelFunc
+	wg                  sync.WaitGroup
+	devices             map[string]activeDevice
+	connections         map[net.Conn]struct{}
+	latestPose          *PoseSnapshot
+	packets             uint64
+	lastPacket          time.Time
+	lastError           string
+	logs                []string
+	consoleLogs         bool
 }
 
 func NewHostService(consoleLogs bool) *HostService {
@@ -203,6 +216,19 @@ func (s *HostService) Start(config HostConfig) error {
 	// than a queue that the client must drain in sequence.
 	_ = udpPose.SetReadBuffer(256 * 1024)
 
+	// The SteamVR server driver runs in vrserver.exe, not in this Host process.
+	// A loopback-only heartbeat is the authoritative signal that the driver is
+	// loaded and its RunFrame callback is still being serviced by the runtime.
+	udpSteamVRStatus, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: steamVRStatusPort})
+	if err != nil {
+		_ = tcpListener.Close()
+		_ = udpDiscovery.Close()
+		_ = udpPose.Close()
+		s.mu.Unlock()
+		return fmt.Errorf("start SteamVR status listener on 127.0.0.1:%d: %w", steamVRStatusPort, err)
+	}
+	_ = udpSteamVRStatus.SetReadBuffer(32 * 1024)
+
 	ctx, cancel := context.WithCancel(context.Background())
 	config.DiscoveryPort = udpDiscovery.LocalAddr().(*net.UDPAddr).Port
 	config.ControlPort = tcpListener.Addr().(*net.TCPAddr).Port
@@ -213,6 +239,10 @@ func (s *HostService) Start(config HostConfig) error {
 	s.listener = tcpListener
 	s.discovery = udpDiscovery
 	s.pose = udpPose
+	s.steamVRStatus = udpSteamVRStatus
+	s.steamVRHeartbeatAt = time.Time{}
+	s.steamVRFlags = 0
+	s.steamVRFrameCounter = 0
 	s.cancel = cancel
 	s.devices = make(map[string]activeDevice)
 	s.connections = make(map[net.Conn]struct{})
@@ -227,10 +257,11 @@ func (s *HostService) Start(config HostConfig) error {
 		s.addLog("LAN address: " + ip)
 	}
 
-	s.wg.Add(3)
+	s.wg.Add(4)
 	go s.acceptLoop(ctx, tcpListener)
 	go s.discoveryLoop(ctx, udpDiscovery, serverName, config.ControlPort)
 	go s.poseLoop(ctx, udpPose)
+	go s.steamVRStatusLoop(ctx, udpSteamVRStatus)
 	return nil
 }
 
@@ -288,6 +319,7 @@ func (s *HostService) Stop() {
 	listener := s.listener
 	discovery := s.discovery
 	pose := s.pose
+	steamVRStatus := s.steamVRStatus
 	connections := make([]net.Conn, 0, len(s.connections))
 	for conn := range s.connections {
 		connections = append(connections, conn)
@@ -295,6 +327,10 @@ func (s *HostService) Stop() {
 	s.listener = nil
 	s.discovery = nil
 	s.pose = nil
+	s.steamVRStatus = nil
+	s.steamVRHeartbeatAt = time.Time{}
+	s.steamVRFlags = 0
+	s.steamVRFrameCounter = 0
 	s.cancel = nil
 	s.devices = make(map[string]activeDevice)
 	s.connections = make(map[net.Conn]struct{})
@@ -308,6 +344,9 @@ func (s *HostService) Stop() {
 	_ = listener.Close()
 	_ = discovery.Close()
 	_ = pose.Close()
+	if steamVRStatus != nil {
+		_ = steamVRStatus.Close()
+	}
 	for _, conn := range connections {
 		_ = conn.Close()
 	}
@@ -324,6 +363,19 @@ func (s *HostService) Snapshot() HostSnapshot {
 		ControlPort: s.config.ControlPort, PosePort: s.config.PosePort,
 		LatestPose: s.latestPose, PacketsReceived: s.packets,
 		LastError: s.lastError,
+	}
+	if !s.steamVRHeartbeatAt.IsZero() {
+		age := time.Since(s.steamVRHeartbeatAt)
+		snapshot.SteamVRHeartbeatAgeMS = age.Milliseconds()
+		if age <= 2500*time.Millisecond {
+			snapshot.SteamVRConnected = s.steamVRFlags&steamVRFlagDriverLoaded != 0
+			snapshot.SteamVRDriverLoaded = s.steamVRFlags&steamVRFlagDriverLoaded != 0
+			snapshot.SteamVRHMDActive = s.steamVRFlags&steamVRFlagHMDActive != 0
+			snapshot.SteamVRPoseValid = s.steamVRFlags&steamVRFlagPoseValid != 0
+			snapshot.SteamVRDisplayActive = s.steamVRFlags&steamVRFlagDisplayActive != 0
+			snapshot.SteamVRHasPresentedFrame = s.steamVRFlags&steamVRFlagPresentedFrame != 0
+			snapshot.SteamVRFrameCounter = s.steamVRFrameCounter
+		}
 	}
 	for _, device := range s.devices {
 		snapshot.ConnectedDevices = append(snapshot.ConnectedDevices, device.Snapshot)
@@ -410,6 +462,37 @@ func (s *HostService) discoveryLoop(ctx context.Context, conn *net.UDPConn, serv
 }
 
 const steamVRPoseBridgePort = 48103
+
+func (s *HostService) steamVRStatusLoop(ctx context.Context, conn *net.UDPConn) {
+	defer s.wg.Done()
+	buffer := make([]byte, 64)
+	for {
+		_ = conn.SetReadDeadline(time.Now().Add(time.Second))
+		n, remote, err := conn.ReadFromUDP(buffer)
+		if err != nil {
+			if ctx.Err() != nil {
+				return
+			}
+			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+				continue
+			}
+			s.addLog(fmt.Sprintf("SteamVR status receive failed: %v", err))
+			continue
+		}
+		if !remote.IP.IsLoopback() {
+			continue
+		}
+		heartbeat, ok := decodeSteamVRDriverHeartbeat(buffer[:n])
+		if !ok {
+			continue
+		}
+		s.mu.Lock()
+		s.steamVRHeartbeatAt = time.Now()
+		s.steamVRFlags = heartbeat.Flags
+		s.steamVRFrameCounter = heartbeat.FrameCounter
+		s.mu.Unlock()
+	}
+}
 
 func (s *HostService) poseLoop(ctx context.Context, conn *net.UDPConn) {
 	defer s.wg.Done()

@@ -1,4 +1,4 @@
-# PhoneVR SteamVR Driver — 0.4.6
+# PhoneVR SteamVR Driver — 0.4.7
 
 Windows x64 OpenVR server driver foundation for the PhoneVR wireless HMD.
 
@@ -13,7 +13,9 @@ Windows x64 OpenVR server driver foundation for the PhoneVR wireless HMD.
 The HMD pose is published from the provider's non-blocking `RunFrame()` via
 `IVRServerDriverHost::TrackedDevicePoseUpdated`. The OpenVR header marks
 `ITrackedDeviceServerDriver::GetPose()` as unused. The UDP pose listener binds
-only to `127.0.0.1:48103`; it is not a LAN service.
+only to `127.0.0.1:48103`; it is not a LAN service. The provider also sends a
+250 ms loopback-only `PVST` health heartbeat to Host UDP `127.0.0.1:48105`.
+Host considers the driver connected only while these heartbeats are fresh.
 
 ## Build
 
@@ -44,11 +46,18 @@ The output is `dist/steamvr-driver`. The `tools/install-steamvr-driver.ps1` help
 
 ## Current implementation boundary
 
-`IVRVirtualDisplay::Present` currently records frame ID/timing only and returns
-without blocking. It does **not** yet open the D3D11 shared backbuffer handle,
-copy/convert the texture, submit it to NVENC/AMF/QSV, or send a video packet.
-The HMD projection/distortion values and eye geometry are initial SBS defaults;
-final optical-profile handoff from Android is a subsequent integration step.
+`IVRVirtualDisplay::Present` opens and caches SteamVR's D3D11 shared backbuffer,
+uses a bounded keyed-mutex acquire, and queues a full-frame copy to a staging
+texture. A 1x1 synchronization copy is queued after the full-frame copy;
+`WaitForPresent` maps only its small staging texture to fence earlier GPU work,
+while leaving the full image in the CPU-readable staging surface for the future
+encoder. `GetTimeSinceLastVsync` advances a 72 Hz virtual-vsync clock from the
+last supplied compositor timestamp and keeps its frame counter monotonic. This
+is the P0 capture/synchronization
+foundation only: it does **not** yet copy pixels into an encoder-owned buffer,
+submit to NVENC/AMF/QSV, or send video packets. The HMD projection/distortion
+values and eye geometry are initial SBS defaults; final optical-profile handoff
+from Android is a subsequent integration step.
 
 The driver exposes only the phone's 3DoF orientation. No room-scale position
 or 6DoF tracking is synthesized.

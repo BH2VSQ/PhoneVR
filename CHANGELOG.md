@@ -1,3 +1,11 @@
+## 0.4.7 - P0 SteamVR status and display-frame synchronization
+
+- Replaced the hard-coded SteamVR state with a live loopback driver heartbeat and explicit HMD, tracking, display and completed-frame states.
+- Added D3D11 shared-backbuffer opening, bounded keyed-mutex synchronization, full-frame staging copies, GPU-completion waiting and virtual-vsync frame timing.
+- Kept the future video stream port 48104 reserved and moved the internal driver heartbeat to loopback UDP 48105.
+- Added heartbeat validation, Host integration tests and stale-state expiry checks.
+- Bumped Android version metadata and synchronized repository release version to 0.4.7.
+
 ## 0.4.6 - Driver manager status readability
 
 - Replaced the SteamVR driver status label with a read-only multiline text control that automatically wraps long paths and supports text selection and copying.

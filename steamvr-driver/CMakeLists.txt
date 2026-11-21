@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(PhoneVRSteamVRDriver VERSION 0.4.6 LANGUAGES CXX)
+project(PhoneVRSteamVRDriver VERSION 0.4.7 LANGUAGES CXX)
 
 if(NOT WIN32)
   message(FATAL_ERROR "The first PhoneVR SteamVR driver target is Windows x64 only")
@@ -36,7 +36,7 @@ add_library(driver_phonevr SHARED src/driver.cpp)
 target_compile_features(driver_phonevr PRIVATE cxx_std_17)
 target_include_directories(driver_phonevr PRIVATE "${OPENVR_INCLUDE_DIR}")
 target_compile_definitions(driver_phonevr PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
-target_link_libraries(driver_phonevr PRIVATE ws2_32)
+target_link_libraries(driver_phonevr PRIVATE ws2_32 d3d11 dxgi)
 set_target_properties(driver_phonevr PROPERTIES
   OUTPUT_NAME "driver_phonevr"
   RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/package/bin/win64"

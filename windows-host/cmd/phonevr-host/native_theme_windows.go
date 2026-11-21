@@ -228,6 +228,20 @@ func (app *nativeUI) paintMain(hdc uintptr) {
 	}
 	drawNativePill(hdc, 14, 10, 122, 36, runLabel, app.snapshot.Running, !app.snapshot.Running, app.fontBody, p)
 	steamText := app.text("SteamVR 未连接", "STEAMVR DISCONNECTED")
+	if app.snapshot.SteamVRConnected {
+		switch {
+		case !app.snapshot.SteamVRHMDActive:
+			steamText = app.text("SteamVR 已连接 · HMD 未激活", "STEAMVR CONNECTED · HMD INACTIVE")
+		case !app.snapshot.SteamVRDisplayActive:
+			steamText = app.text("SteamVR 已连接 · 显示设备异常", "STEAMVR CONNECTED · DISPLAY ERROR")
+		case !app.snapshot.SteamVRHasPresentedFrame:
+			steamText = app.text("SteamVR 已连接 · 等待画面", "STEAMVR CONNECTED · WAITING FRAME")
+		case !app.snapshot.SteamVRPoseValid:
+			steamText = app.text("SteamVR 已连接 · 等待姿态", "STEAMVR CONNECTED · WAITING POSE")
+		default:
+			steamText = app.text("SteamVR 已连接 · 画面与姿态正常", "STEAMVR CONNECTED · DISPLAY + TRACKING OK")
+		}
+	}
 	// Fit the status into the free space between the left state pill and the
 	// right HMD/battery/menu group. This avoids both truncation and overlap
 	// on narrower desktop windows.

@@ -1,4 +1,4 @@
-# PhoneVR Host 0.4.6 bundled SteamVR driver
+# PhoneVR Host 0.4.7 bundled SteamVR driver
 
 Executable version is injected from the repository root `VERSION` file during builds.
 
@@ -92,12 +92,15 @@ Allow `PhoneVRHost.exe` through Windows Defender Firewall on Private networks wh
 | 48101 | TCP | Pairing, heartbeat and remote settings/actions |
 | 48102 | UDP | HMD head pose |
 | 48103 | UDP loopback | Host-to-SteamVR pose bridge |
+| 48105 | UDP loopback | SteamVR driver health / display-frame heartbeat |
 | 48104 | UDP | Reserved for video stream |
 
 
-## SteamVR local pose bridge
+## SteamVR local pose bridge and runtime status
 
 Validated Android `PVSP` pose packets received on the existing UDP pose port are forwarded unchanged to `127.0.0.1:48103`. This loopback-only bridge is consumed by the separate SteamVR OpenVR driver inside `vrserver.exe`; it is not exposed to the LAN.
+
+The OpenVR driver sends a versioned `PVST` heartbeat to `127.0.0.1:48105` every 250 ms. Host derives the top-bar SteamVR state from the driver's live heartbeat rather than a hard-coded label or the presence of `vrserver.exe`. The snapshot distinguishes driver loaded, HMD activated, fresh pose, display redirect active and at least one completed virtual-display frame. A heartbeat older than 2.5 seconds is treated as disconnected.
 
 ## Video encoder capability discovery
 

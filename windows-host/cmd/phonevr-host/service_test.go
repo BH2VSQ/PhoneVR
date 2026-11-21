@@ -102,6 +102,69 @@ func TestHostServiceLifecycleAndPairing(t *testing.T) {
 	}
 }
 
+func TestSteamVRDriverHeartbeatUpdatesConnectionState(t *testing.T) {
+	config := HostConfig{
+		ListenAddress: "127.0.0.1",
+		DiscoveryPort: reservePort(t, "udp4"),
+		ControlPort:   reservePort(t, "tcp4"),
+		PosePort:      reservePort(t, "udp4"),
+	}
+	service := NewHostService(false)
+	if err := service.Start(config); err != nil {
+		t.Skipf("Host listeners unavailable for heartbeat integration test: %v", err)
+	}
+	defer service.Stop()
+
+	sender, err := net.DialUDP("udp4", nil, &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: steamVRStatusPort})
+	if err != nil {
+		t.Fatalf("open SteamVR heartbeat sender: %v", err)
+	}
+	defer sender.Close()
+
+	packet := make([]byte, steamVRHeartbeatPacketSize)
+	copy(packet[:4], "PVST")
+	packet[4] = 1
+	packet[5] = steamVRFlagDriverLoaded | steamVRFlagHMDActive | steamVRFlagPoseValid | steamVRFlagDisplayActive | steamVRFlagPresentedFrame
+	binary.BigEndian.PutUint64(packet[8:], 123456)
+	if _, err := sender.Write(packet); err != nil {
+		t.Fatalf("send SteamVR heartbeat: %v", err)
+	}
+	waitUntil(t, time.Second, func() bool { return service.Snapshot().SteamVRConnected })
+	snapshot := service.Snapshot()
+	if !snapshot.SteamVRDriverLoaded || !snapshot.SteamVRHMDActive || !snapshot.SteamVRPoseValid ||
+		!snapshot.SteamVRDisplayActive || !snapshot.SteamVRHasPresentedFrame || snapshot.SteamVRFrameCounter != 123456 {
+		t.Fatalf("SteamVR status was not decoded correctly: %+v", snapshot)
+	}
+
+	service.mu.Lock()
+	service.steamVRHeartbeatAt = time.Now().Add(-3 * time.Second)
+	service.mu.Unlock()
+	if stale := service.Snapshot(); stale.SteamVRConnected || stale.SteamVRPoseValid || stale.SteamVRDisplayActive {
+		t.Fatalf("stale driver heartbeat should not remain connected: %+v", stale)
+	}
+}
+
+func TestDecodeSteamVRDriverHeartbeatRejectsInvalidPackets(t *testing.T) {
+	valid := make([]byte, steamVRHeartbeatPacketSize)
+	copy(valid[:4], "PVST")
+	valid[4] = 1
+	valid[5] = steamVRFlagDriverLoaded
+	binary.BigEndian.PutUint64(valid[8:], 99)
+	if heartbeat, ok := decodeSteamVRDriverHeartbeat(valid); !ok || heartbeat.Flags != steamVRFlagDriverLoaded || heartbeat.FrameCounter != 99 {
+		t.Fatalf("valid heartbeat decode = %+v, %v", heartbeat, ok)
+	}
+	for _, invalid := range [][]byte{nil, valid[:15], append(append([]byte(nil), valid...), 0)} {
+		if _, ok := decodeSteamVRDriverHeartbeat(invalid); ok {
+			t.Fatalf("invalid heartbeat unexpectedly accepted: %x", invalid)
+		}
+	}
+	invalidVersion := append([]byte(nil), valid...)
+	invalidVersion[4] = 2
+	if _, ok := decodeSteamVRDriverHeartbeat(invalidVersion); ok {
+		t.Fatal("unsupported heartbeat version was accepted")
+	}
+}
+
 func TestSteamVRPoseBridgeForwardsValidatedPhonePose(t *testing.T) {
 	bridge, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: steamVRPoseBridgePort})
 	if err != nil {

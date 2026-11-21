@@ -1,6 +1,6 @@
 # PhoneVRStream
 
-Repository revision: **0.4.6**. Windows Host: **0.4.6**. Android client: **0.4.6**. Control protocol: **v1**; video packet protocol: **v1 foundation**.
+Repository revision: **0.4.7**. Windows Host: **0.4.7**. Android client: **0.4.7**. Control protocol: **v1**; video packet protocol: **v1 foundation**.
 
 PhoneVRStream is a multi-component project for using an Android phone as a PC VR streaming HMD. Both applications live in one repository and use independent build/test pipelines.
 
@@ -22,7 +22,7 @@ PhoneVRStream/
 └── dist/                       # Local build output (git-ignored)
 ```
 
-## Windows Host 0.4.6 bundled SteamVR driver
+## Windows Host 0.4.7 bundled SteamVR driver
 
 The Windows Host has been migrated from an Edge/Chrome app-mode dashboard to a native Windows desktop application.
 
@@ -41,7 +41,7 @@ The Windows Host has been migrated from an Edge/Chrome app-mode dashboard to a n
 
 The normal `PhoneVRHost.exe` is built with the Windows GUI subsystem and opens the native desktop application. `PhoneVRHost-console.exe -headless` runs the network service without a desktop window for diagnostics or server-only use.
 
-## Android client 0.4.6
+## Android client 0.4.7
 
 - Landscape immersive display with OpenGL ES 3.0 stereo rendering.
 - Locally stored optical preset selector with Daydream View v2.0 (2017) and Generic Cardboard built-in presets.
@@ -53,18 +53,18 @@ The normal `PhoneVRHost.exe` is built with the Windows GUI subsystem and opens t
 - `CodecCapabilityProbe` enumerates device MediaCodec decoders for H.264, HEVC and AV1, including hardware classification, supported size/frame-rate limits, profiles and color formats.
 
 
-## SteamVR driver 0.4.6
+## SteamVR driver 0.4.7
 
 The PhoneVR Host contains its own Windows x64 OpenVR driver inside the Host executable. The normal build compiles `steamvr-driver/`, embeds the resulting manifest, DLL and resources into both Host executables, and no longer asks users to download or select a ZIP. On startup, the Host checks whether SteamVR is installed and whether the user has disabled automatic deployment. When enabled, it copies the embedded driver into a content-versioned directory under `%LOCALAPPDATA%\PhoneVR\SteamVRDriver` and registers it with SteamVR's own `vrpathreg.exe`.
 
 The main-menu **SteamVR Driver** manager checks status, installs or repairs the embedded driver, and uninstalls it. Uninstall writes a persistent opt-out marker so the next Host launch will not silently reinstall it; pressing Install / Repair clears that marker. Files in user-managed driver paths are unregistered but never deleted. Restart SteamVR after driver changes. This is a SteamVR user-mode server driver, not a Windows kernel/device-manager driver.
 
-The 0.4.x driver foundation still does not send encoded video frames; its `IVRVirtualDisplay::Present` callback records frame metadata only. D3D11 final-backbuffer capture and hardware encoder submission are not implemented yet.
+The 0.4.x driver captures the final SteamVR backbuffer through D3D11 shared textures and synchronizes completed frames. Video encoding and network transmission to Android remain unimplemented.
 
 - `steamvr-driver/` is a Windows x64 C++ OpenVR driver built with CMake and the Valve OpenVR SDK pinned to commit `0924064316de3effbcd1acf1e309182a2deb1c05`.
 - Registers `PhoneVRHmd` as `TrackedDeviceClass_HMD` with an `IVRDisplayComponent`, and `PhoneVRDisplayRedirect` as `TrackedDeviceClass_DisplayRedirect` with an `IVRVirtualDisplay` component.
 - Receives validated Android `PVSP` quaternion packets from the Go Host through loopback UDP port 48103. The driver reports 3DoF orientation only; it does not invent positional tracking.
-- The `IVRVirtualDisplay::Present` callback is currently a non-blocking foundation that records frame timing. D3D11 final-backbuffer capture and hardware encoder submission are not implemented yet.
+- The `IVRVirtualDisplay::Present` callback opens the D3D11 shared backbuffer and queues a full-frame staging copy with bounded keyed-mutex synchronization. A small synchronization texture is queued behind the full copy; `WaitForPresent` maps only that small texture to fence GPU completion without forcing a full-frame CPU readback. `GetTimeSinceLastVsync` supplies a monotonic 72 Hz virtual refresh clock. Completed frames and live SteamVR driver/HMD/pose/display state are reported to Host over loopback UDP 48105. Video encoding and hardware encoder submission are not implemented yet.
 - The normal `build-windows-host.ps1` build compiles and embeds the driver. `build-steamvr-driver.ps1` can still be run separately to produce a standalone development package under `dist/steamvr-driver`.
 
 ## Video pipeline foundation
@@ -73,9 +73,9 @@ The shared video datagram envelope is documented in `docs/video-streaming-protoc
 
 ## Current limitations
 
-- PC VR final-backbuffer capture and hardware video encoding are not implemented yet; the new virtual display driver currently provides the non-blocking present hook only.
+- PC VR final-backbuffer capture and GPU synchronization are implemented as P0; encoder-owned pixel buffering, hardware video encoding and Android transmission remain unimplemented.
 - Android MediaCodec remote-stream decode and decoded-texture presentation are not implemented yet; decoder capability discovery is now available.
-- SteamVR HMD and virtual-display driver foundation is present, but final-backbuffer capture/streaming is incomplete. SteamVR connection status is not yet driven by a full runtime health handshake.
+- SteamVR HMD and virtual-display driver capture foundation is present. Host SteamVR state now comes from a live loopback driver heartbeat; video encoding/streaming remains incomplete.
 - Daydream Controller Bluetooth pairing and SteamVR controller forwarding are not implemented yet.
 - The current Android network path carries HMD pose and control data, not VRChat video. Video packet v1 is specified and validated but not yet transmitted.
 - Daydream View 2017 support currently means optical profile/calibration compatibility with the physical viewer. It does not implement the discontinued Google Daydream Home/VR Services platform integration.
@@ -117,6 +117,7 @@ The Windows Host version is injected from the root VERSION file at build time. T
 | 48102 | UDP | HMD quaternion pose |
 | 48103 | UDP loopback only | Go Host -> SteamVR driver pose bridge |
 | 48104 | UDP | Reserved for encoded video stream |
+| 48105 | UDP loopback only | SteamVR driver -> Host runtime heartbeat |
 
 The PC and phone must be on the same LAN. Guest Wi-Fi or AP/client isolation may block discovery and direct connections.
 

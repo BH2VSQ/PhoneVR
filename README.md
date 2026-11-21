@@ -1,6 +1,6 @@
 # PhoneVRStream
 
-Repository revision: **0.4.0 foundation**. Windows Host: **0.4.0 foundation**. Android client: **0.4.0 foundation**. Control protocol: **v1**; video packet protocol: **v1 foundation**.
+Repository revision: **0.4.1**. Windows Host: **0.4.1**. Android client: **0.4.1**. Control protocol: **v1**; video packet protocol: **v1 foundation**.
 
 PhoneVRStream is a multi-component project for using an Android phone as a PC VR streaming HMD. Both applications live in one repository and use independent build/test pipelines.
 
@@ -22,7 +22,7 @@ PhoneVRStream/
 └── dist/                       # Local build output (git-ignored)
 ```
 
-## Windows Host 0.4.0 foundation
+## Windows Host 0.4.1 hotfix
 
 The Windows Host has been migrated from an Edge/Chrome app-mode dashboard to a native Windows desktop application.
 
@@ -41,7 +41,7 @@ The Windows Host has been migrated from an Edge/Chrome app-mode dashboard to a n
 
 The normal `PhoneVRHost.exe` is built with the Windows GUI subsystem and opens the native desktop application. `PhoneVRHost-console.exe -headless` runs the network service without a desktop window for diagnostics or server-only use.
 
-## Android client 0.4.0 foundation
+## Android client 0.4.1 hotfix
 
 - Landscape immersive display with OpenGL ES 3.0 stereo rendering.
 - Locally stored optical preset selector with Daydream View v2.0 (2017) and Generic Cardboard built-in presets.
@@ -53,7 +53,9 @@ The normal `PhoneVRHost.exe` is built with the Windows GUI subsystem and opens t
 - `CodecCapabilityProbe` enumerates device MediaCodec decoders for H.264, HEVC and AV1, including hardware classification, supported size/frame-rate limits, profiles and color formats.
 
 
-## SteamVR driver 0.4.0 foundation
+## SteamVR driver 0.4.1 hotfix
+
+Driver registration is a separate Windows step after the DLL has been built. Run `\.\scripts\build-steamvr-driver.ps1`, then register it with `\.\tools\install-steamvr-driver.ps1 -DriverDirectory .\dist\steamvr-driver`. To unregister, add `-Remove`. The driver is a SteamVR user-mode server driver, not a Windows kernel/device-manager driver. The 0.4.x foundation does not yet send encoded video frames; its `IVRVirtualDisplay::Present` callback currently records frame metadata only.
 
 - `steamvr-driver/` is a Windows x64 C++ OpenVR driver built with CMake and the Valve OpenVR SDK pinned to commit `0924064316de3effbcd1acf1e309182a2deb1c05`.
 - Registers `PhoneVRHmd` as `TrackedDeviceClass_HMD` with an `IVRDisplayComponent`, and `PhoneVRDisplayRedirect` as `TrackedDeviceClass_DisplayRedirect` with an `IVRVirtualDisplay` component.

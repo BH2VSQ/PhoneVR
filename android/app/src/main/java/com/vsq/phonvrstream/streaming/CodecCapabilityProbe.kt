@@ -52,7 +52,7 @@ object CodecCapabilityProbe {
                         !info.name.contains("software", ignoreCase = true)
                 }
                 val maxInstances = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                    runCatching { info.maxSupportedInstances }.getOrNull()
+                    runCatching { capability.maxSupportedInstances }.getOrNull()
                 } else null
                 result += VideoDecoderCapability(
                     name = info.name,
@@ -61,7 +61,7 @@ object CodecCapabilityProbe {
                     hardwareClassificationReliable = Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q,
                     maxWidth = widthRange.upper,
                     maxHeight = heightRange.upper,
-                    maxFrameRate = frameRateRange.upper,
+                    maxFrameRate = frameRateRange.upper.toDouble(),
                     maxInstances = maxInstances,
                     profileLevels = capability.profileLevels.take(32).map { "${it.profile}:${it.level}" },
                     colorFormats = capability.colorFormats.take(32).toList(),

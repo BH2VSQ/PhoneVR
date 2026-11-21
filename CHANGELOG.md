@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.1 - Android codec probe compile fix
+
+- Read `maxSupportedInstances` from `MediaCodecInfo.CodecCapabilities` (the API owner), not `MediaCodecInfo`.
+- Convert `VideoCapabilities.supportedFrameRates.upper` from `Int` to `Double` for the normalized capability model.
+- Keep the SteamVR driver install flow explicit: build the driver package, then register it with `vrpathreg.exe` using the provided PowerShell helper.
+
 ## 0.4.0 foundation - 2026-11-21
 
 - Added Windows x64 OpenVR SteamVR driver foundation: `PhoneVRHmd` (HMD) and `PhoneVRDisplayRedirect` (`IVRVirtualDisplay`).
@@ -45,6 +51,12 @@
 - Added Android preset JSON tests, Go preset normalization tests and protocol documentation for Android-owned optical presets.
 
 # Changelog
+
+## 0.4.1 - Android codec probe compile fix
+
+- Read `maxSupportedInstances` from `MediaCodecInfo.CodecCapabilities` (the API owner), not `MediaCodecInfo`.
+- Convert `VideoCapabilities.supportedFrameRates.upper` from `Int` to `Double` for the normalized capability model.
+- Keep the SteamVR driver install flow explicit: build the driver package, then register it with `vrpathreg.exe` using the provided PowerShell helper.
 
 ## 0.3.10
 - Rebuilt the Windows Host main menu as an independent, non-activating owned popup. Opening it never resizes or shifts the OpenGL pose preview; clicking outside or switching applications dismisses it without leaving stale menu state.

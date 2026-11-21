@@ -1,3 +1,12 @@
+## 0.4.15 - Host pose scheduling and log-view stability
+
+- Cached local IPv4 adapter enumeration at Host service startup. `Snapshot()` no longer calls `net.Interfaces()` while holding the shared service read lock, preventing slow VPN/virtual-adapter queries from blocking the high-rate pose receiver's state update lock.
+- Added a `max pose-state lock wait` telemetry field so future logs show whether Host pose publication is stalled waiting for service state synchronization.
+- Increased the native Host pose-preview timer from 30 Hz to a 60 Hz target while keeping status metadata refresh throttled to 500 ms.
+- Replaced the runtime log's classic EDIT control with Windows RichEdit 5.0 (`Msftedit.dll`) when available, retaining a standard EDIT fallback. Added a 1 MiB text limit, preserved selection and scroll position during refresh, and stopped forwarding a child scrollbar notification back into the log control.
+- Added regression coverage for cached network addresses and the log/pose scheduling changes.
+- Android versionCode increased to 31. Android Gradle packaging and native Windows MSVC/SteamVR runtime verification remain pending in environments with those toolchains.
+
 ## 0.4.14 - Pose burst forwarding and log repaint stability
 
 - Windows Host now forwards every sample in a short UDP receive burst instead of dropping all but the newest sample. Only a burst larger than 32 queued poses is collapsed to its newest sample, bounding stale-backlog replay while preserving native sensor cadence during normal scheduling jitter.

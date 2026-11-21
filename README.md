@@ -1,6 +1,6 @@
 # PhoneVRStream
 
-Repository revision: **0.4.14**. Windows Host: **0.4.14**. Android client: **0.4.14**. Control protocol: **v1**; video packet protocol: **v1 foundation**.
+Repository revision: **0.4.15**. Windows Host: **0.4.15**. Android client: **0.4.15**. Control protocol: **v1**; video packet protocol: **v1 foundation**.
 
 PhoneVRStream is a multi-component project for using an Android phone as a PC VR streaming HMD. Both applications live in one repository and use independent build/test pipelines.
 
@@ -22,7 +22,7 @@ PhoneVRStream/
 └── dist/                       # Local build output (git-ignored)
 ```
 
-## Windows Host 0.4.14 bundled SteamVR driver
+## Windows Host 0.4.15 bundled SteamVR driver
 
 The Windows Host has been migrated from an Edge/Chrome app-mode dashboard to a native Windows desktop application.
 
@@ -41,7 +41,7 @@ The Windows Host has been migrated from an Edge/Chrome app-mode dashboard to a n
 
 The normal `PhoneVRHost.exe` is built with the Windows GUI subsystem and opens the native desktop application. `PhoneVRHost-console.exe -headless` runs the network service without a desktop window for diagnostics or server-only use.
 
-## Android client 0.4.14
+## Android client 0.4.15
 
 - Landscape immersive display with OpenGL ES 3.0 stereo rendering.
 - Locally stored optical preset selector with Daydream View v2.0 (2017) and Generic Cardboard built-in presets.
@@ -53,7 +53,7 @@ The normal `PhoneVRHost.exe` is built with the Windows GUI subsystem and opens t
 - `CodecCapabilityProbe` enumerates device MediaCodec decoders for H.264, HEVC and AV1, including hardware classification, supported size/frame-rate limits, profiles and color formats.
 
 
-## SteamVR driver 0.4.14
+## SteamVR driver 0.4.15
 
 The PhoneVR Host contains its own Windows x64 OpenVR driver inside the Host executable. The normal build compiles `steamvr-driver/`, embeds the resulting manifest, DLL and resources into both Host executables, and no longer asks users to download or select a ZIP. On startup, the Host checks whether SteamVR is installed and whether the user has disabled automatic deployment. When enabled, it copies the embedded driver into a content-versioned directory under `%LOCALAPPDATA%\PhoneVR\SteamVRDriver` and registers it with SteamVR's own `vrpathreg.exe`.
 

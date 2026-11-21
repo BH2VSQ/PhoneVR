@@ -33,6 +33,7 @@ class PoseLatencyRegressionTests(unittest.TestCase):
         self.assertIn("max Host read gap %.1f ms", HOST_SERVICE)
         self.assertIn("max Android sensor interval %.1f ms", HOST_SERVICE)
         self.assertIn("max batch %d", HOST_SERVICE)
+        self.assertIn("max pose-state lock wait %.2f ms", HOST_SERVICE)
         self.assertIn("poseBatchToForward(batch)", HOST_SERVICE)
         self.assertIn("maxPoseBatchForward = 32", HOST_SERVICE)
         self.assertIn("SetReadBuffer(16 * 1024)", HOST_SERVICE)
@@ -53,12 +54,28 @@ class PoseLatencyRegressionTests(unittest.TestCase):
         self.assertIn("pose telemetry age=%.2f ms angular-speed=%.1f deg/s pitch=%.1f deg", DRIVER)
         self.assertIn("constexpr double alpha = 0.80", DRIVER)
 
-    def test_native_log_edit_forces_repaint_and_receives_scroll_messages(self):
-        self.assertIn("setNativeEditTextAndRedraw(d.controls[501], text)", HOST_UI)
+    def test_snapshot_never_enumerates_network_adapters_under_pose_mutex(self):
+        self.assertIn("localIPs := localIPv4Addresses()", HOST_SERVICE)
+        self.assertIn("s.localIPv4 = append([]string(nil), localIPs...)", HOST_SERVICE)
+        self.assertIn("LocalIPv4: append([]string(nil), s.localIPv4...)", HOST_SERVICE)
+        snapshot_body = HOST_SERVICE.split("func (s *HostService) Snapshot() HostSnapshot {", 1)[1].split("// PoseFrame", 1)[0]
+        self.assertNotIn("localIPv4Addresses()", snapshot_body)
+
+    def test_native_log_view_uses_rich_edit_and_preserves_scroll_state(self):
+        self.assertIn('logClass = "RICHEDIT50W"', HOST_UI)
+        self.assertIn("Msftedit.dll", HOST_UI)
+        self.assertIn("EM_EXLIMITTEXT", HOST_UI)
+        self.assertIn("embedded RichEdit/EDIT window processes its own scrollbar", HOST_UI)
+        self.assertIn("EM_GETFIRSTVISIBLELINE", HOST_UI)
+        self.assertIn("EM_GETSEL", HOST_UI)
+        self.assertIn("EM_LINESCROLL", HOST_UI)
         self.assertIn("WM_SETREDRAW(FALSE)", HOST_UI)
         self.assertIn("EM_SCROLLCARET", HOST_UI)
         self.assertIn("dialog.kind == \"logs\"", HOST_UI)
         self.assertIn("pSendMessage.Call(dialog.controls[501], uintptr(message), wParam, 0)", HOST_UI)
+
+    def test_host_pose_preview_runs_at_sixty_hz_target(self):
+        self.assertIn("pSetTimer.Call(hwnd, 1, 16, 0)", HOST_UI)
 
     def test_driver_requests_non_desktop_hmd_display_and_documents_runtime_toggle(self):
         self.assertIn("bool IsDisplayOnDesktop() override { return false; }", DRIVER)

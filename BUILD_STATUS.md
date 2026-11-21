@@ -1,28 +1,30 @@
-# PhoneVR 0.4.14 Build Status
+# PhoneVR 0.4.15 Build Status
 
-## 0.4.14 pose burst forwarding and log repaint stability
+## 0.4.15 Host pose scheduling and log-view stability
 
-- Host pose telemetry previously showed RX around 150–230 Hz but forwarded only 23–95 Hz with hundreds of coalesced datagrams. The previous Host policy forwarded exactly one sample per receive batch, dropping the remaining samples even when the burst contained only two or three nearby samples.
-- The Host now forwards every datagram in a short batch (up to 32 samples). Only unusually large stale backlogs are collapsed to the newest sample. The SteamVR receiver drains the loopback queue while estimating angular velocity across each valid sensor sample, then publishes the newest orientation to OpenVR.
-- Host telemetry now reports `max Host read gap`, `max Android sensor interval`, and `max batch` separately. `max Host read gap` measures time between Go receive operations and may include Windows thread scheduling delays or batched socket delivery; it is not a direct one-way network latency measurement. `max Android sensor interval` is calculated from Android monotonic sensor timestamps and identifies whether the phone's sensor/send stream itself paused.
-- Android's dedicated IMU HandlerThread and pose transmit worker request display scheduling priority. If Android disallows the priority change, both continue with the default priority.
-- Runtime Logs uses an explicit redraw-suppressed text replacement followed by a full erase/invalidate/repaint. Wheel and vertical-scroll messages are forwarded to the native EDIT control that owns the log scrollbar.
-- The Android sensor timestamp is still not directly comparable to the Windows monotonic clock. A true one-way phone-to-PC latency figure requires a clock-offset exchange protocol; this version reports the sensor-side inter-sample cadence and Host-side read scheduling separately.
+- The 0.4.14 log showed Host RX near 177–180 Hz but frequent batches of 100–220 datagrams, `max Host read gap` around 0.5–1.2 seconds, and matching bursts of coalesced samples. Android sensor timestamp intervals generally remained near 9.8 ms, indicating the phone sensor was mostly sampling continuously while the Host receive/update path was intermittently delayed.
+- The main UI polls `HostService.Snapshot()` every 500 ms. In 0.4.14, `Snapshot()` called `net.Interfaces()` and enumerated each adapter's addresses while holding `HostService.mu.RLock()`. The UDP pose receiver needs the same mutex's write lock to publish its latest state. On machines with multiple VPN/virtual adapters, that OS enumeration could hold the lock long enough to stall pose processing and create a large socket backlog.
+- 0.4.15 now enumerates local IPv4 addresses once during Host startup and caches a detached copy. `Snapshot()` only copies cached strings under the lock; it no longer calls network-interface APIs in the high-frequency UI/status path. Host logs now include `max pose-state lock wait` to show whether the receive loop is blocked while publishing the latest state.
+- Increased the native pose preview timer from 33 ms (~30 Hz) to 16 ms (~60 Hz). The status dashboard and metadata are still refreshed only every 500 ms.
+- Runtime Logs now uses the Windows RichEdit 5.0 control from `Msftedit.dll` when available, with a standard EDIT fallback. The log view has a 1 MiB text limit, preserves the user's text selection and scroll location during refresh, and no longer re-sends a child scrollbar notification back into the child control. A startup log entry confirms whether RichEdit 5.0 was enabled.
+- The pose telemetry keeps separate metrics for Host receive gaps, Android sensor sample intervals, receive-batch size, forwarding/coalescing and now state-lock wait. This avoids treating a large batch as a network packet-loss event when sequence gaps remain zero.
 
 ## Validation in this environment
 
 - Go Host unit/integration tests — passed
 - Go Race tests — passed
 - Go Vet and Windows AMD64 Go Vet — passed
-- Windows AMD64 test binary, console Host and GUI Host cross-builds — passed; these checks use the tracked embedded-driver placeholder, not a real native SteamVR DLL
-- Python release/source-regression tests — 20 passed
-- Android Kotlin/Gradle packaging — not verified in this environment; full Gradle build requires the Android toolchain and dependencies
-- Native MSVC SteamVR DLL compilation and actual SteamVR runtime / log-window visual test — requires the Windows target environment
+- Windows AMD64 test binary and GUI/console Host cross-builds — passed; these checks use the tracked embedded-driver placeholder, not a real native SteamVR DLL
+- Python release/source-regression tests — 22 passed
+- Android Kotlin sources unchanged in this revision; Android Gradle packaging not rerun
+- Native MSVC SteamVR DLL compilation, RichEdit visual test and actual SteamVR runtime validation require the Windows target environment
 
 ## Runtime checks still required
 
-- Compare `Host RX` and `forwarded`; during regular short batches they should now be close. `coalesced` should remain zero except when the Host resumes after a very large backlog.
-- Compare `max Host read gap` with `max Android sensor interval`. If sensor interval remains near 5–8 ms while Host read gap spikes, the phone is sampling regularly and the pause is after the sensor timestamp (Android UDP scheduling, Wi-Fi delivery, or Windows receive scheduling). If both spike together, investigate Android sensor/send scheduling.
-- Compare `vrserver.txt` pose telemetry and high-pitch gray flashes. Low sensor intervals and fresh driver samples point away from tracking transport and toward D3D11/compositor presentation.
-- Verify log text no longer overlaps during refresh, mouse-wheel scrolling, scrollbar paging, selection and copying on Windows.
-- D3D11 virtual-display runtime validation, video encoding, network transmission to Android and Android video display remain separate unfinished work.
+- Compare `Host RX` and `forwarded`; they should be close during normal traffic and `coalesced` should remain near zero outside large scheduling stalls.
+- Check `max pose-state lock wait`. It should remain close to zero after moving adapter enumeration out of `Snapshot()`.
+- Compare `max Host read gap`, `max Android sensor interval` and `max batch`. A low Android interval with a high Host read gap now points to OS receive scheduling or another Host-side stall, not slow sensor sampling.
+- Confirm the host's local pose preview feels smoother at the new 60 Hz target.
+- Verify RichEdit log scrolling, page-up/page-down, refresh, selection and copy on the Windows target. The startup log should say `Runtime Logs: RichEdit 5.0 enabled`.
+- If gray flashes remain while Host pose telemetry is fresh and state-lock wait is low, the next investigation should focus on the D3D11 virtual-display shared texture / SteamVR compositor path rather than the Host pose queue.
+- Video encoding, network transport to Android and Android video display remain unfinished work.

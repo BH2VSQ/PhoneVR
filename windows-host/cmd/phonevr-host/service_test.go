@@ -12,6 +12,20 @@ import (
 	"time"
 )
 
+func TestHostSnapshotUsesCachedNetworkAddresses(t *testing.T) {
+	service := NewHostService(false)
+	service.localIPv4 = []string{"192.168.10.20", "10.0.0.5"}
+
+	snapshot := service.Snapshot()
+	if len(snapshot.LocalIPv4) != 2 || snapshot.LocalIPv4[0] != "192.168.10.20" {
+		t.Fatalf("unexpected cached addresses: %#v", snapshot.LocalIPv4)
+	}
+	snapshot.LocalIPv4[0] = "mutated"
+	if service.localIPv4[0] != "192.168.10.20" {
+		t.Fatal("Snapshot() exposed the service's cached address backing array")
+	}
+}
+
 func TestHostServiceLifecycleAndPairing(t *testing.T) {
 	config := HostConfig{
 		ListenAddress: "127.0.0.1",
@@ -262,6 +276,7 @@ func TestHighRatePoseTrafficDoesNotBreakControlHeartbeat(t *testing.T) {
 	// Keep the independent TCP heartbeat healthy while UDP pose samples arrive
 	// in a burst that is much faster than normal 60 Hz tracking.
 	for i := 0; i < 20; i++ {
+		_ = service.Snapshot() // mirrors the native UI's periodic status poll
 		if err := encoder.Encode(controlMessage{Type: "ping"}); err != nil {
 			t.Fatalf("send heartbeat %d during UDP burst: %v", i, err)
 		}

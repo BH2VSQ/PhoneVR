@@ -149,6 +149,7 @@ type HostService struct {
 	mu                  sync.RWMutex
 	config              HostConfig
 	serverName          string
+	localIPv4           []string
 	startedAt           time.Time
 	listener            net.Listener
 	discovery           *net.UDPConn
@@ -181,14 +182,24 @@ func (s *HostService) Start(config HostConfig) error {
 	defer s.lifecycleMu.Unlock()
 
 	config = normalizeHostConfig(config)
+	s.mu.RLock()
+	alreadyRunning := s.listener != nil
+	s.mu.RUnlock()
+	if alreadyRunning {
+		return errors.New("PhoneVR Host is already running")
+	}
+	// Network-interface enumeration can block on virtual adapters and VPN
+	// providers. Resolve addresses once at service start, never in Snapshot(),
+	// because Snapshot is polled by the UI while the pose receiver needs s.mu.
+	localIPs := localIPv4Addresses()
+	serverName, hostErr := localHostName()
+	if hostErr != nil || strings.TrimSpace(serverName) == "" {
+		serverName = "PhoneVR Host"
+	}
 	s.mu.Lock()
 	if s.listener != nil {
 		s.mu.Unlock()
 		return errors.New("PhoneVR Host is already running")
-	}
-	serverName, hostErr := localHostName()
-	if hostErr != nil || strings.TrimSpace(serverName) == "" {
-		serverName = "PhoneVR Host"
 	}
 	s.config = config
 	s.serverName = serverName
@@ -235,6 +246,7 @@ func (s *HostService) Start(config HostConfig) error {
 	config.PosePort = udpPose.LocalAddr().(*net.UDPAddr).Port
 	s.config = config
 	s.serverName = serverName
+	s.localIPv4 = append([]string(nil), localIPs...)
 	s.startedAt = time.Now()
 	s.listener = tcpListener
 	s.discovery = udpDiscovery
@@ -253,7 +265,7 @@ func (s *HostService) Start(config HostConfig) error {
 	s.mu.Unlock()
 
 	s.addLog(fmt.Sprintf("Host started on %s | TCP %d | UDP discovery %d | UDP pose %d", config.ListenAddress, config.ControlPort, config.DiscoveryPort, config.PosePort))
-	for _, ip := range localIPv4Addresses() {
+	for _, ip := range localIPs {
 		s.addLog("LAN address: " + ip)
 	}
 
@@ -359,7 +371,7 @@ func (s *HostService) Snapshot() HostSnapshot {
 	running := s.listener != nil
 	snapshot := HostSnapshot{
 		Running: running, ServerName: s.serverName, ListenAddress: s.config.ListenAddress,
-		LocalIPv4: localIPv4Addresses(), DiscoveryPort: s.config.DiscoveryPort,
+		LocalIPv4: append([]string(nil), s.localIPv4...), DiscoveryPort: s.config.DiscoveryPort,
 		ControlPort: s.config.ControlPort, PosePort: s.config.PosePort,
 		LatestPose: s.latestPose, PacketsReceived: s.packets,
 		LastError: s.lastError,
@@ -598,6 +610,7 @@ func (s *HostService) poseLoop(ctx context.Context, conn *net.UDPConn) {
 	var maxHostReadGap time.Duration
 	var maxSensorInterval time.Duration
 	var maxBatchSize int
+	var maxPoseStateLockWait time.Duration
 	var previousArrival time.Time
 	var previousSensorTimestamp int64
 	var previousSequence uint32
@@ -666,7 +679,11 @@ func (s *HostService) poseLoop(ctx context.Context, conn *net.UDPConn) {
 		}
 
 		yaw, pitch, roll := quaternionEuler(latest.pose.X, latest.pose.Y, latest.pose.Z, latest.pose.W)
+		lockWaitStarted := time.Now()
 		s.mu.Lock()
+		if wait := time.Since(lockWaitStarted); wait > maxPoseStateLockWait {
+			maxPoseStateLockWait = wait
+		}
 		s.packets += uint64(len(batch))
 		s.lastPacket = latest.receivedAt
 		s.latestPose = &PoseSnapshot{
@@ -681,10 +698,11 @@ func (s *HostService) poseLoop(ctx context.Context, conn *net.UDPConn) {
 			seconds := time.Since(statsStarted).Seconds()
 			rxRate := float64(statsReceived) / seconds
 			forwardRate := float64(statsForwarded) / seconds
-			s.addLog(fmt.Sprintf("Pose pipeline: Host RX %.1f Hz, forwarded %.1f Hz, coalesced %d, sequence gaps %d, invalid %d, max Host read gap %.1f ms, max Android sensor interval %.1f ms, max batch %d, loopback write errors %d",
+			s.addLog(fmt.Sprintf("Pose pipeline: Host RX %.1f Hz, forwarded %.1f Hz, coalesced %d, sequence gaps %d, invalid %d, max Host read gap %.1f ms, max Android sensor interval %.1f ms, max batch %d, max pose-state lock wait %.2f ms, loopback write errors %d",
 				rxRate, forwardRate, statsCoalesced, statsSequenceGaps, statsInvalid,
 				float64(maxHostReadGap)/float64(time.Millisecond),
-				float64(maxSensorInterval)/float64(time.Millisecond), maxBatchSize, statsBridgeErrors))
+				float64(maxSensorInterval)/float64(time.Millisecond), maxBatchSize,
+				float64(maxPoseStateLockWait)/float64(time.Millisecond), statsBridgeErrors))
 			statsStarted = time.Now()
 			statsReceived = 0
 			statsForwarded = 0
@@ -695,6 +713,7 @@ func (s *HostService) poseLoop(ctx context.Context, conn *net.UDPConn) {
 			maxHostReadGap = 0
 			maxSensorInterval = 0
 			maxBatchSize = 0
+			maxPoseStateLockWait = 0
 		}
 	}
 }

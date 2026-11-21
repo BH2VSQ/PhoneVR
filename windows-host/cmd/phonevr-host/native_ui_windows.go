@@ -10,6 +10,7 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"unicode/utf16"
 	"unsafe"
 )
 
@@ -55,6 +56,7 @@ var (
 	pEndPaint                      = user32.NewProc("EndPaint")
 	pFillRect                      = user32.NewProc("FillRect")
 	pGetModuleHandle               = kernel32.NewProc("GetModuleHandleW")
+	pLoadLibrary                   = kernel32.NewProc("LoadLibraryW")
 	pRtlMoveMemory                 = ntdll.NewProc("RtlMoveMemory")
 	pLoadCursor                    = user32.NewProc("LoadCursorW")
 	pCreateSolidBrush              = gdi32.NewProc("CreateSolidBrush")
@@ -390,6 +392,7 @@ type nativeUI struct {
 	fontSmall         uintptr
 	fontValue         uintptr
 	fontTitle         uintptr
+	richEditAvailable bool
 	gdiplusToken      uintptr
 	hitTargets        []nativeHitTarget
 	menuHWnd          uintptr
@@ -412,6 +415,15 @@ func runNativeDesktopApp(service *HostService, config HostConfig) error {
 		pSetProcessDPIAware.Call()
 	}
 	app := &nativeUI{service: service, config: config, dialogs: make(map[uintptr]*nativeDialog), buttons: make(map[int]uintptr), currentSettings: DefaultPhoneDisplaySettings(), phonePresets: nativePresetDefaults(), themeConfig: loadNativeThemeConfig(), language: loadNativeLanguage()}
+	if dllName, err := syscall.UTF16PtrFromString("Msftedit.dll"); err == nil {
+		module, _, _ := pLoadLibrary.Call(uintptr(unsafe.Pointer(dllName)))
+		app.richEditAvailable = module != 0
+	}
+	if app.richEditAvailable {
+		service.addLog("Runtime Logs: RichEdit 5.0 enabled")
+	} else {
+		service.addLog("Msftedit.dll unavailable; runtime log view is using the standard EDIT fallback")
+	}
 	app.fontBody = createNativeFont("Segoe UI", 18, 400)
 	app.fontSmall = createNativeFont("Segoe UI", 14, 600)
 	app.fontValue = createNativeFont("Consolas", 28, 700)
@@ -635,7 +647,7 @@ func nativeMainWndProc(hwnd uintptr, message uint32, wParam, lParam uintptr) uin
 		}
 	case wmCreate:
 		app.createMainControls(hwnd)
-		pSetTimer.Call(hwnd, 1, 33, 0)
+		pSetTimer.Call(hwnd, 1, 16, 0)
 		return 0
 	case wmSize:
 		app.layoutMain(hwnd)
@@ -667,8 +679,9 @@ func nativeMainWndProc(hwnd uintptr, message uint32, wParam, lParam uintptr) uin
 		if app.glHWnd != 0 {
 			pInvalidateRect.Call(app.glHWnd, 0, 0)
 		}
-		// The static dashboard is redrawn only when status data changes (500 ms),
-		// never on every pose tick. This avoids continuous GDI erase/repaint flicker.
+		// Pose preview runs at approximately 60 Hz; status and text cards remain
+		// throttled to 500 ms so the UI thread does not perform expensive metadata
+		// work on every motion frame.
 		return 0
 	case wmCommand:
 		app.handleMainCommand(int(wParam & 0xffff))
@@ -778,11 +791,9 @@ func nativeDialogWndProc(hwnd uintptr, message uint32, wParam, lParam uintptr) u
 		}
 	case wmVScroll:
 		if dialog != nil {
-			if dialog.kind == "logs" && dialog.controls[501] != 0 {
-				// The log EDIT owns its own vertical scrollbar. Forward the message
-				// instead of applying the custom card-dialog scroll offset (which is
-				// intentionally unused for the native text control).
-				pSendMessage.Call(dialog.controls[501], uintptr(message), wParam, 0)
+			if dialog.kind == "logs" {
+				// The embedded RichEdit/EDIT window processes its own scrollbar
+				// messages. Never feed a WM_VSCROLL notification back into the child.
 				return 0
 			}
 			app.scrollDialog(dialog, int(wParam&0xffff), int((wParam>>16)&0xffff))
@@ -1313,8 +1324,21 @@ func (app *nativeUI) createDialogControls(d *nativeDialog) {
 		addButton(idClose, app.text("关闭", "Close"))
 
 	case "logs":
-		edit := app.createControl(d.hwnd, "EDIT", "", wsChild|wsVisible|wsBorder|wsVScroll|wsClipSiblings|esMultiline|esReadOnly|esWantReturn|esAutoVScroll|esNoHideSel, 0, 0, 10, 10, 501)
+		logClass := "EDIT"
+		if app.richEditAvailable {
+			logClass = "RICHEDIT50W"
+		}
+		edit := app.createControl(d.hwnd, logClass, "", wsChild|wsVisible|wsBorder|wsVScroll|wsClipSiblings|wsClipChildren|esMultiline|esReadOnly|esWantReturn|esAutoVScroll|esNoHideSel, 0, 0, 10, 10, 501)
 		d.controls[501] = edit
+		if edit != 0 {
+			if app.richEditAvailable {
+				p := app.palette()
+				pSendMessage.Call(edit, 0x0443, 0, uintptr(p.Input)) // EM_SETBKGNDCOLOR
+				pSendMessage.Call(edit, 0x0435, 0, 1<<20)            // EM_EXLIMITTEXT: 1 MiB
+			} else {
+				pSendMessage.Call(edit, 0x00C5, 1<<20, 0) // EM_SETLIMITTEXT: 1 MiB
+			}
+		}
 		addButton(idLogsRefresh, app.text("刷新", "Refresh"))
 		addButton(idClose, app.text("关闭", "Close"))
 		app.refreshLogDialog(d)
@@ -2022,17 +2046,39 @@ func setNativeEditTextAndRedraw(hwnd uintptr, text string) {
 	if hwnd == 0 {
 		return
 	}
-	// Avoid the classic EDIT control painting new glyphs over stale glyphs
-	// after a scroll/refresh. Suppress intermediate redraw, replace the text,
-	// then force a full child-window erase and repaint.
+	// Preserve the user's scroll position and selection. The former implementation
+	// always moved the caret to EOF, which fought the native vertical scrollbar and
+	// could leave stale glyphs visible while the control was being scrolled.
+	firstVisible := int(sendNativeMessage(hwnd, 0x00CE, 0, 0)) // EM_GETFIRSTVISIBLELINE
+	oldLineCount := int(sendNativeMessage(hwnd, 0x00BA, 0, 0)) // EM_GETLINECOUNT
+	_, clientHeight := clientSize(hwnd)
+	visibleLines := maxInt(1, clientHeight/20)
+	wasAtBottom := firstVisible+visibleLines >= oldLineCount-1
+	var selectionStart, selectionEnd uint32
+	pSendMessage.Call(hwnd, 0x00B0, uintptr(unsafe.Pointer(&selectionStart)), uintptr(unsafe.Pointer(&selectionEnd))) // EM_GETSEL
+
+	maxChars := uint32(len(utf16.Encode([]rune(text))))
+	if selectionStart > maxChars {
+		selectionStart = maxChars
+	}
+	if selectionEnd > maxChars {
+		selectionEnd = maxChars
+	}
+
 	pSendMessage.Call(hwnd, 0x000B, 0, 0) // WM_SETREDRAW(FALSE)
 	setNativeText(hwnd, text)
-	pSendMessage.Call(hwnd, 0x000B, 1, 0)                                // WM_SETREDRAW(TRUE)
-	pSendMessage.Call(hwnd, 0x00B1, ^uintptr(0), ^uintptr(0))            // EM_SETSEL: caret at end
-	pSendMessage.Call(hwnd, 0x00B7, 0, 0)                                // EM_SCROLLCARET
-	pRedrawWindow.Call(hwnd, 0, 0, uintptr(0x0001|0x0004|0x0400|0x0100)) // INVALIDATE | ERASE | FRAME | UPDATENOW
+	pSendMessage.Call(hwnd, 0x00B1, uintptr(selectionStart), uintptr(selectionEnd)) // EM_SETSEL
+	if wasAtBottom {
+		pSendMessage.Call(hwnd, 0x00B1, ^uintptr(0), ^uintptr(0)) // caret at end
+		pSendMessage.Call(hwnd, 0x00B7, 0, 0)                     // EM_SCROLLCARET
+	} else if firstVisible > 0 {
+		pSendMessage.Call(hwnd, 0x00B6, 0, uintptr(firstVisible)) // EM_LINESCROLL
+	}
+	pSendMessage.Call(hwnd, 0x000B, 1, 0)                         // WM_SETREDRAW(TRUE)
+	pRedrawWindow.Call(hwnd, 0, 0, uintptr(0x0001|0x0004|0x0100)) // RDW_INVALIDATE | RDW_ERASE | RDW_UPDATENOW
 	pUpdateWindow.Call(hwnd)
 }
+
 func (app *nativeUI) persistNativePresets(d *nativeDialog) { _ = app.syncPhoneOpticalPresets(d) }
 func (app *nativeUI) confirmMessage(message, title string) bool {
 	msg, _ := syscall.UTF16PtrFromString(message)

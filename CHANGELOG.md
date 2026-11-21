@@ -1,12 +1,3 @@
-## 0.4.24 - Activate DisplayRedirect before HMD
-
-- Fixed the DisplayRedirect/HMD activation race. The previous provider added the HMD before the DisplayRedirect, so the HMD could initialize its display before the special `k_ulDisplayRedirectContainer` override existed. OpenVR documents that this container becomes valid only after the DisplayRedirect device has activated.
-- The provider now adds only the DisplayRedirect during `Init()`, waits until its `Activate()` has completed, and only then queues the HMD from `RunFrame()`. A 5-second fallback still registers the HMD in pose-only mode if the redirect never completes activation, so a video-path failure cannot remove phone tracking.
-- HMD `Activate()` now reads back the effective merged `Prop_HasVirtualDisplayComponent_Bool` and `Prop_GraphicsAdapterLuid_Uint64` properties and logs whether SteamVR sees the redirect override before HMD display initialization.
-- Added regression tests that enforce DisplayRedirect-before-HMD registration order and verify the HMD activation readback diagnostics.
-- USB/RNDIS streaming remains deferred. The Wi-Fi video pipeline, hardware-only H.264 encoding and Android MediaCodec path are otherwise retained.
-- Android versionCode bumped to 40. Native MSVC and SteamVR runtime validation are still required; success is only confirmed when the HMD readback reports `HasVirtualDisplay=true`, the runtime queries `IVRVirtualDisplay_002`, `Present` becomes non-zero, and Host receives the first BGRA frame.
-
 ## 0.4.23 - DisplayRedirect HMD property association fix
 
 - Fixed the OpenVR DisplayRedirect-to-HMD association: the driver previously wrote `Prop_GraphicsAdapterLuid_Uint64` only to the accessory's own property container, which does not override the active HMD's display properties.

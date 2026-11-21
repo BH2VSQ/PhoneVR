@@ -478,35 +478,6 @@ public:
         const auto chaperoneResult = properties->SetStringProperty(
             container, vr::Prop_DriverProvidedChaperoneJson_String,
             kDriverProvidedChaperoneJson);
-
-        // The display-redirect companion must be activated before this HMD.
-        // Read the merged HMD properties here to verify that its special
-        // k_ulDisplayRedirectContainer override was already in place before
-        // SteamVR initialized the HMD display path.
-        vr::ETrackedPropertyError virtualDisplayReadError = vr::TrackedProp_Success;
-        vr::ETrackedPropertyError redirectLuidReadError = vr::TrackedProp_Success;
-        const bool hasVirtualDisplay = properties->GetBoolProperty(
-            container, vr::Prop_HasVirtualDisplayComponent_Bool, &virtualDisplayReadError);
-        const uint64_t effectiveRedirectLuid = properties->GetUint64Property(
-            container, vr::Prop_GraphicsAdapterLuid_Uint64, &redirectLuidReadError);
-        if (vr::VRDriverLog()) {
-            char redirectLine[256]{};
-            std::snprintf(redirectLine, sizeof(redirectLine),
-                          "PhoneVR: HMD Activate readback: HasVirtualDisplay=%s (error=%d), redirect adapter LUID=0x%016llX (error=%d)",
-                          hasVirtualDisplay ? "true" : "false",
-                          static_cast<int>(virtualDisplayReadError),
-                          static_cast<unsigned long long>(effectiveRedirectLuid),
-                          static_cast<int>(redirectLuidReadError));
-            vr::VRDriverLog()->Log(redirectLine);
-            if (!hasVirtualDisplay || virtualDisplayReadError != vr::TrackedProp_Success ||
-                redirectLuidReadError != vr::TrackedProp_Success || effectiveRedirectLuid == 0) {
-                vr::VRDriverLog()->Log(
-                    "PhoneVR: ERROR: HMD was activated without an effective DisplayRedirect override; IVRVirtualDisplay may not be selected");
-            } else {
-                vr::VRDriverLog()->Log(
-                    "PhoneVR: HMD activation sees the DisplayRedirect override before display initialization");
-            }
-        }
         if (universeResult != vr::TrackedProp_Success || chaperoneResult != vr::TrackedProp_Success) {
             char message[224]{};
             std::snprintf(message, sizeof(message),
@@ -1568,14 +1539,12 @@ class PhoneVRDisplayRedirect final : public vr::ITrackedDeviceServerDriver {
 public:
     vr::EVRInitError Activate(uint32_t objectId) override {
         m_componentQuerySeen.store(false, std::memory_order_release);
-        m_activationFinished.store(false, std::memory_order_release);
         uint64_t adapterLuid = 0;
         if (!m_display.Initialize(&adapterLuid)) {
             if (vr::VRDriverLog()) vr::VRDriverLog()->Log("PhoneVR: virtual display capture initialization failed; display redirect is inactive");
-            m_active.store(false, std::memory_order_release);
-            m_activationFinished.store(true, std::memory_order_release);
             return vr::VRInitError_Driver_Unknown;
         }
+        m_active = true;
         const auto container = vr::VRProperties()->TrackedDeviceToPropertyContainer(objectId);
         auto* properties = vr::VRProperties();
         properties->SetStringProperty(container, vr::Prop_TrackingSystemName_String, "phonevr");
@@ -1618,22 +1587,11 @@ public:
                     "PhoneVR: HMD display properties overridden by PHONEVR-DISPLAY-001 through k_ulDisplayRedirectContainer");
             }
         }
-        m_active.store(true, std::memory_order_release);
-        m_activationFinished.store(true, std::memory_order_release);
-        if (vr::VRDriverLog())
-            vr::VRDriverLog()->Log("PhoneVR: DisplayRedirect activation and HMD property override publication completed");
         return vr::VRInitError_None;
     }
-    void Deactivate() override {
-        m_active.store(false, std::memory_order_release);
-        // Keep activationFinished latched: if SteamVR fails/deactivates this
-        // accessory before the HMD is queued, the provider can still register
-        // the HMD for pose-only operation rather than leaving it absent.
-        m_display.Shutdown();
-    }
+    void Deactivate() override { m_active = false; m_display.Shutdown(); }
     void EnterStandby() override {}
-    bool IsActive() const { return m_active.load(std::memory_order_acquire); }
-    bool ActivationFinished() const { return m_activationFinished.load(std::memory_order_acquire); }
+    bool IsActive() const { return m_active; }
     bool VirtualDisplayComponentQueried() const { return m_componentQuerySeen.load(std::memory_order_acquire); }
     uint64_t PresentCounter() const { return m_display.PresentCounter(); }
     bool PresentCallbackSeen() const { return m_display.PresentCallbackSeen(); }
@@ -1669,8 +1627,7 @@ public:
     }
 private:
     VirtualDisplayComponent m_display;
-    std::atomic<bool> m_active{false};
-    std::atomic<bool> m_activationFinished{false};
+    bool m_active = false;
     std::atomic<bool> m_componentQuerySeen{false};
 };
 
@@ -1684,24 +1641,13 @@ public:
         m_hmd = new PhoneVRHmd();
         m_redirect = new PhoneVRDisplayRedirect();
         auto* host = vr::VRServerDriverHost();
-        if (!host) {
-            Cleanup();
-            return vr::VRInitError_Driver_Unknown;
+        if (!host || !host->TrackedDeviceAdded("PHONEVR-HMD-001", vr::TrackedDeviceClass_HMD, m_hmd)) {
+            Cleanup(); return vr::VRInitError_Driver_Unknown;
         }
-
-        // Register only the DisplayRedirect here. TrackedDeviceAdded queues
-        // activation asynchronously, so adding the HMD immediately afterward
-        // is not sufficient to guarantee that k_ulDisplayRedirectContainer has
-        // become valid. The HMD is added from RunFrame only after the redirect's
-        // Activate() has completed and published its HMD override properties.
         if (!host->TrackedDeviceAdded("PHONEVR-DISPLAY-001", vr::TrackedDeviceClass_DisplayRedirect, m_redirect)) {
-            if (vr::VRDriverLog()) vr::VRDriverLog()->Log("PhoneVR: failed to register DisplayRedirect");
-            Cleanup();
-            return vr::VRInitError_Driver_Unknown;
+            Cleanup(); return vr::VRInitError_Driver_Unknown;
         }
-        m_providerInitNs = MonotonicNowNs();
-        if (vr::VRDriverLog())
-            vr::VRDriverLog()->Log("PhoneVR: DisplayRedirect queued; HMD registration deferred until DisplayRedirect Activate completes");
+        if (vr::VRDriverLog()) vr::VRDriverLog()->Log("PhoneVR 0.4.22 SteamVR driver initialized");
         return vr::VRInitError_None;
     }
     void Cleanup() override {
@@ -1712,33 +1658,8 @@ public:
     }
     const char* const* GetInterfaceVersions() override { return vr::k_InterfaceVersions; }
     void RunFrame() override {
+        if (m_hmd) m_hmd->RunFrame();
         const uint64_t now = MonotonicNowNs();
-        const bool redirectActivationFinished = m_redirect && m_redirect->ActivationFinished();
-        const bool redirectActivationTimedOut = m_providerInitNs != 0 &&
-            now - m_providerInitNs >= 5000000000ULL;
-        if (m_redirect && m_hmd && !m_hmdRegistrationQueued &&
-            (redirectActivationFinished || redirectActivationTimedOut)) {
-            auto* host = vr::VRServerDriverHost();
-            if (host && host->TrackedDeviceAdded("PHONEVR-HMD-001", vr::TrackedDeviceClass_HMD, m_hmd)) {
-                m_hmdRegistrationQueued = true;
-                if (vr::VRDriverLog()) {
-                    if (!redirectActivationFinished) {
-                        vr::VRDriverLog()->Log("PhoneVR: DisplayRedirect Activate did not finish within 5 seconds; registering HMD for pose-only operation and recording that live video is unavailable");
-                    } else {
-                        vr::VRDriverLog()->Log(m_redirect->IsActive()
-                            ? "PhoneVR: DisplayRedirect Activate completed; HMD registered afterward so the HMD sees the effective virtual-display override"
-                            : "PhoneVR: DisplayRedirect activation failed; registering HMD for pose-only operation without live video");
-                    }
-                }
-            } else {
-                if (now - m_lastHmdRegistrationRetryLogNs >= 2000000000ULL) {
-                    m_lastHmdRegistrationRetryLogNs = now;
-                    if (vr::VRDriverLog())
-                        vr::VRDriverLog()->Log("PhoneVR: HMD registration is pending; TrackedDeviceAdded has not accepted the HMD yet");
-                }
-            }
-        }
-        if (m_hmd && m_hmd->IsActivated()) m_hmd->RunFrame();
         if (m_redirect && now - m_lastDisplayDiagnosticsNs >= 5000000000ULL) {
             const double intervalSeconds = m_lastDisplayDiagnosticsNs == 0
                 ? 5.0 : static_cast<double>(now - m_lastDisplayDiagnosticsNs) / 1.0e9;
@@ -1779,9 +1700,6 @@ private:
     PhoneVRHmd* m_hmd = nullptr;
     PhoneVRDisplayRedirect* m_redirect = nullptr;
     SteamVRStatusReporter m_statusReporter;
-    bool m_hmdRegistrationQueued = false;
-    uint64_t m_providerInitNs = 0;
-    uint64_t m_lastHmdRegistrationRetryLogNs = 0;
     uint64_t m_lastDisplayDiagnosticsNs = 0;
 };
 

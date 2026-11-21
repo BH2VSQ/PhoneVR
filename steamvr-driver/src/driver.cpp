@@ -1112,6 +1112,7 @@ float4 main(float4 position : SV_POSITION, float2 uv : TEXCOORD0) : SV_TARGET {
             }
             m_captureQueue.push_back(slotIndex);
         }
+        m_videoFramesQueued.fetch_add(1, std::memory_order_relaxed);
         m_captureCv.notify_one();
     }
 
@@ -1128,6 +1129,29 @@ float4 main(float4 position : SV_POSITION, float2 uv : TEXCOORD0) : SV_TARGET {
     static void PutBE32(uint8_t* p, uint32_t value) { p[0]=static_cast<uint8_t>(value>>24); p[1]=static_cast<uint8_t>(value>>16); p[2]=static_cast<uint8_t>(value>>8); p[3]=static_cast<uint8_t>(value); }
     static void PutBE64(uint8_t* p, uint64_t value) { PutBE32(p, static_cast<uint32_t>(value>>32)); PutBE32(p+4, static_cast<uint32_t>(value)); }
 
+    void MaybeLogVideoCaptureStats(bool bridgeActive, uint64_t& lastStatsNs) {
+        const uint64_t now = MonotonicNowNs();
+        if (lastStatsNs != 0 && now - lastStatsNs < 5000000000ULL) return;
+        lastStatsNs = now;
+        const uint64_t queued = m_videoFramesQueued.exchange(0, std::memory_order_relaxed);
+        const uint64_t readback = m_videoFramesReadback.exchange(0, std::memory_order_relaxed);
+        const uint64_t sent = m_videoFramesSent.exchange(0, std::memory_order_relaxed);
+        const uint64_t mapFailures = m_videoReadbackFailures.exchange(0, std::memory_order_relaxed);
+        const uint64_t bridgeFailures = m_videoBridgeFailures.exchange(0, std::memory_order_relaxed);
+        const uint64_t skipped = m_videoFramesSkipped.exchange(0, std::memory_order_relaxed);
+        char line[320]{};
+        std::snprintf(line, sizeof(line),
+                      "PhoneVR: video capture pipeline bridge=%s queued=%llu readback=%llu sent=%llu gpu-map-fail=%llu bridge-fail=%llu skipped=%llu",
+                      bridgeActive ? "connected" : "waiting",
+                      static_cast<unsigned long long>(queued),
+                      static_cast<unsigned long long>(readback),
+                      static_cast<unsigned long long>(sent),
+                      static_cast<unsigned long long>(mapFailures),
+                      static_cast<unsigned long long>(bridgeFailures),
+                      static_cast<unsigned long long>(skipped));
+        if (vr::VRDriverLog()) vr::VRDriverLog()->Log(line);
+    }
+
     void VideoCaptureLoop() {
         WSADATA wsa{};
         if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
@@ -1136,26 +1160,37 @@ float4 main(float4 position : SV_POSITION, float2 uv : TEXCOORD0) : SV_TARGET {
             return;
         }
         SOCKET bridge = INVALID_SOCKET;
+        uint64_t lastStatsNs = 0;
         std::vector<uint8_t> pixels(static_cast<size_t>(kVideoWidth) * kVideoHeight * 4);
         while (m_captureRunning.load(std::memory_order_acquire)) {
             if (bridge == INVALID_SOCKET) {
                 bridge = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+                if (bridge == INVALID_SOCKET) {
+                    m_videoBridgeFailures.fetch_add(1, std::memory_order_relaxed);
+                }
                 if (bridge != INVALID_SOCKET) {
                     sockaddr_in address{}; address.sin_family = AF_INET; address.sin_port = htons(kVideoCapturePort); address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-                    if (connect(bridge, reinterpret_cast<sockaddr*>(&address), sizeof(address)) == SOCKET_ERROR) { closesocket(bridge); bridge = INVALID_SOCKET; }
-                    else {
+                    if (connect(bridge, reinterpret_cast<sockaddr*>(&address), sizeof(address)) == SOCKET_ERROR) {
+                        closesocket(bridge); bridge = INVALID_SOCKET;
+                        m_videoBridgeFailures.fetch_add(1, std::memory_order_relaxed);
+                    } else {
                         BOOL noDelay = TRUE; setsockopt(bridge, IPPROTO_TCP, TCP_NODELAY, reinterpret_cast<const char*>(&noDelay), sizeof(noDelay));
                         DWORD timeout = 250; setsockopt(bridge, SOL_SOCKET, SO_SNDTIMEO, reinterpret_cast<const char*>(&timeout), sizeof(timeout));
                         char activation = 0;
                         if (recv(bridge, &activation, 1, MSG_WAITALL) != 1 || activation != 1) {
                             closesocket(bridge); bridge = INVALID_SOCKET;
+                            m_videoBridgeFailures.fetch_add(1, std::memory_order_relaxed);
                         } else {
                             m_captureBridgeReady.store(true, std::memory_order_release);
                             if (vr::VRDriverLog()) vr::VRDriverLog()->Log("PhoneVR: Host accepted the H.264 capture bridge");
                         }
                     }
                 }
-                if (bridge == INVALID_SOCKET) { std::this_thread::sleep_for(std::chrono::milliseconds(500)); continue; }
+                if (bridge == INVALID_SOCKET) {
+                    MaybeLogVideoCaptureStats(false, lastStatsNs);
+                    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+                    continue;
+                }
             }
             size_t slotIndex = kVideoCaptureSlots;
             {
@@ -1164,11 +1199,22 @@ float4 main(float4 position : SV_POSITION, float2 uv : TEXCOORD0) : SV_TARGET {
                 if (!m_captureRunning.load()) break;
                 if (!m_captureQueue.empty()) { slotIndex = m_captureQueue.front(); m_captureQueue.pop_front(); }
             }
-            if (slotIndex == kVideoCaptureSlots) continue;
-            bool sentFrame = false;
+            if (slotIndex == kVideoCaptureSlots) {
+                MaybeLogVideoCaptureStats(true, lastStatsNs);
+                continue;
+            }
+
+            // Only hold the D3D resource lock while mapping and copying into the
+            // CPU-owned staging buffer. TCP writes can block, so they must run
+            // after the capture slot has been released to the Present callback.
+            bool readbackReady = false;
+            uint32_t frameId = 0;
+            uint64_t timestampNs = 0;
             {
                 std::lock_guard<std::mutex> resourceLock(m_captureResourcesMutex);
                 auto& slot = m_captureSlots[slotIndex];
+                frameId = slot.frameId;
+                timestampNs = slot.timestampNs;
                 D3D11_MAPPED_SUBRESOURCE mapped{};
                 const HRESULT hr = m_context->Map(slot.staging, 0, D3D11_MAP_READ, 0, &mapped);
                 if (SUCCEEDED(hr)) {
@@ -1177,20 +1223,35 @@ float4 main(float4 position : SV_POSITION, float2 uv : TEXCOORD0) : SV_TARGET {
                                     static_cast<const uint8_t*>(mapped.pData) + static_cast<size_t>(row) * mapped.RowPitch,
                                     static_cast<size_t>(kVideoWidth) * 4);
                     m_context->Unmap(slot.staging, 0);
-                    uint8_t header[32]{}; std::memcpy(header, "PVRC", 4); header[4] = 1; header[5] = 1;
-                    PutBE16(header + 6, 32); PutBE32(header + 8, slot.frameId); PutBE64(header + 12, slot.timestampNs);
-                    PutBE16(header + 20, kVideoWidth); PutBE16(header + 22, kVideoHeight);
-                    PutBE32(header + 24, kVideoWidth * 4); PutBE32(header + 28, static_cast<uint32_t>(pixels.size()));
-                    sentFrame = SendAll(bridge, reinterpret_cast<const char*>(header), sizeof(header)) &&
-                                SendAll(bridge, reinterpret_cast<const char*>(pixels.data()), pixels.size());
+                    readbackReady = true;
+                    m_videoFramesReadback.fetch_add(1, std::memory_order_relaxed);
+                } else {
+                    m_videoReadbackFailures.fetch_add(1, std::memory_order_relaxed);
                 }
                 slot.busy.store(false, std::memory_order_release);
             }
-            if (!sentFrame) {
-                m_captureBridgeReady.store(false, std::memory_order_release);
-                closesocket(bridge); bridge = INVALID_SOCKET;
+
+            // A transient GPU readback failure drops this frame only. It must
+            // not tear down an otherwise healthy TCP bridge.
+            if (readbackReady) {
+                uint8_t header[32]{}; std::memcpy(header, "PVRC", 4); header[4] = 1; header[5] = 1;
+                PutBE16(header + 6, 32); PutBE32(header + 8, frameId); PutBE64(header + 12, timestampNs);
+                PutBE16(header + 20, kVideoWidth); PutBE16(header + 22, kVideoHeight);
+                PutBE32(header + 24, kVideoWidth * 4); PutBE32(header + 28, static_cast<uint32_t>(pixels.size()));
+                const bool sentFrame = SendAll(bridge, reinterpret_cast<const char*>(header), sizeof(header)) &&
+                                       SendAll(bridge, reinterpret_cast<const char*>(pixels.data()), pixels.size());
+                if (sentFrame) {
+                    m_videoFramesSent.fetch_add(1, std::memory_order_relaxed);
+                } else {
+                    m_captureBridgeReady.store(false, std::memory_order_release);
+                    closesocket(bridge); bridge = INVALID_SOCKET;
+                    m_videoBridgeFailures.fetch_add(1, std::memory_order_relaxed);
+                    m_videoFramesSkipped.fetch_add(1, std::memory_order_relaxed);
+                }
+            } else {
                 m_videoFramesSkipped.fetch_add(1, std::memory_order_relaxed);
             }
+            MaybeLogVideoCaptureStats(bridge != INVALID_SOCKET, lastStatsNs);
         }
         m_captureBridgeReady.store(false, std::memory_order_release);
         if (bridge != INVALID_SOCKET) closesocket(bridge);
@@ -1271,6 +1332,11 @@ float4 main(float4 position : SV_POSITION, float2 uv : TEXCOORD0) : SV_TARGET {
     std::atomic<bool> m_captureRunning{false};
     std::atomic<bool> m_captureBridgeReady{false};
     std::atomic<uint64_t> m_videoFramesSkipped{0};
+    std::atomic<uint64_t> m_videoFramesQueued{0};
+    std::atomic<uint64_t> m_videoFramesReadback{0};
+    std::atomic<uint64_t> m_videoFramesSent{0};
+    std::atomic<uint64_t> m_videoReadbackFailures{0};
+    std::atomic<uint64_t> m_videoBridgeFailures{0};
     uint64_t m_lastVideoCaptureNs = 0;
     uint32_t m_captureWidth = 0;
     uint32_t m_captureHeight = 0;

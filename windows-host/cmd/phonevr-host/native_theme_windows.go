@@ -235,7 +235,7 @@ func (app *nativeUI) paintMain(hdc uintptr) {
 		case !app.snapshot.SteamVRDisplayActive:
 			steamText = app.text("SteamVR 已连接 · 显示设备异常", "STEAMVR CONNECTED · DISPLAY ERROR")
 		case !app.snapshot.SteamVRHasPresentedFrame:
-			steamText = app.text("SteamVR 已连接 · 等待画面", "STEAMVR CONNECTED · WAITING FRAME")
+			steamText = app.text("SteamVR 已连接 · 等待 Compositor/GPU 帧同步", "STEAMVR CONNECTED · WAITING COMPOSITOR/GPU SYNC")
 		case !app.snapshot.SteamVRPoseValid:
 			steamText = app.text("SteamVR 已连接 · 等待姿态", "STEAMVR CONNECTED · WAITING POSE")
 		default:
@@ -276,6 +276,15 @@ func (app *nativeUI) paintMain(hdc uintptr) {
 
 	panel := nativeRect{14, 62, int32(w - 14), int32(h - 12)}
 	drawNativeRoundRect(hdc, panel, p.Panel, p.Border, 14)
+
+	videoState := "等待驱动视频桥接"
+	if app.snapshot.VideoCaptureBridgeActive {
+		videoState = "驱动视频桥接已连接"
+	}
+	videoSummary := fmt.Sprintf("VIDEO  %s    RAW %d    H.264 %d    UDP FRAGMENTS %d    DROPPED %d",
+		videoState, app.snapshot.VideoRawFrames, app.snapshot.VideoEncodedFrames,
+		app.snapshot.VideoUDPFragments, app.snapshot.VideoDroppedFrames)
+	drawNativeText(hdc, videoSummary, nativeRect{28, 76, int32(w - 28), 102}, p.Muted, app.fontSmall, dtVCenter|dtSingleLine|dtEndEllipsis|dtNoPrefix)
 
 	metricW, metricGap, metricH := 180, 12, 72
 	metricTotal := metricW*3 + metricGap*2

@@ -14,8 +14,11 @@ func TestSupportsH264Profile(t *testing.T) {
 		t.Fatalf("selected decoder = %q", got)
 	}
 	uncertainClassification := json.RawMessage(`[{"name":"omx.vendor.avc.decoder","mimeType":"video/avc","maxWidth":1920,"maxHeight":1080,"maxFrameRate":60,"hardwareAccelerated":true,"hardwareClassificationReliable":false,"supportsSbs1600x720At60":true}]`)
-	if supportsH264Profile(uncertainClassification, 1600, 720, 60) {
-		t.Fatal("must reject a decoder whose hardware classification is not reliable")
+	if !supportsH264Profile(uncertainClassification, 1600, 720, 60) {
+		t.Fatal("legacy Android codec classification is advisory; a name-classified hardware decoder should be accepted")
+	}
+	if got := selectH264DecoderProfile(uncertainClassification, 1600, 720, 60); got != "omx.vendor.avc.decoder" {
+		t.Fatalf("legacy Android decoder selected = %q", got)
 	}
 	if supportsH264Profile(json.RawMessage(`[ {"name":"c2.android.avc.decoder","mimeType":"video/avc","maxWidth":1920,"maxHeight":1080,"maxFrameRate":120,"hardwareAccelerated":false,"hardwareClassificationReliable":true,"supportsSbs1600x720At60":false} ]`), 1600, 720, 60) {
 		t.Fatal("must reject software-only Android decoder for live VR")

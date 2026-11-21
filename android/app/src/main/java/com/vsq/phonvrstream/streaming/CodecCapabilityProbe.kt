@@ -6,7 +6,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import android.os.Build
 
-/** Runtime-reported Android decoder capabilities; no model-name assumptions. */
+/** Android decoder capabilities with a codec-name fallback on APIs before 29. */
 data class VideoDecoderCapability(
     val name: String,
     val mimeType: String,
@@ -49,8 +49,10 @@ object CodecCapabilityProbe {
                 val hardware = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                     info.isHardwareAccelerated
                 } else {
-                    !info.name.contains("google", ignoreCase = true) &&
-                        !info.name.contains("software", ignoreCase = true)
+                    // Android 9 and earlier do not expose isHardwareAccelerated.
+                    // Use the codec naming convention as a fallback and keep the
+                    // reliability flag false so diagnostics can distinguish it.
+                    !isLikelySoftwareCodec(info.name)
                 }
                 val maxInstances = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
                     runCatching { capability.maxSupportedInstances }.getOrNull()
@@ -79,6 +81,13 @@ object CodecCapabilityProbe {
                 .thenByDescending { it.hardwareAccelerated }
                 .thenBy { it.name },
         ).take(24)
+    }
+
+    private fun isLikelySoftwareCodec(name: String): Boolean {
+        val lower = name.lowercase()
+        return lower.contains("google") || lower.contains("software") ||
+            lower.startsWith("c2.android.") || lower.startsWith("omx.google.") ||
+            lower.contains(".sw.") || lower.endsWith(".sw")
     }
 
 

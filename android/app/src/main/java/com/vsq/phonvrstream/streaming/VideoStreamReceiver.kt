@@ -28,12 +28,15 @@ class VideoStreamReceiver(
     private val frameRate: Int,
     private val decoderName: String,
     private val outputSurface: Surface,
+    private val onStatus: (String) -> Unit = {},
 ) {
     private val running = AtomicBoolean(false)
     private val needsKeyFrame = AtomicBoolean(true)
     private val framesReceived = AtomicLong(0)
     private val framesDecoded = AtomicLong(0)
     private val fragmentsRejected = AtomicLong(0)
+    private val frameArrivalReported = AtomicBoolean(false)
+    private val decodedFrameReported = AtomicBoolean(false)
     private val pendingFrames = ArrayBlockingQueue<CompletedVideoFrame>(2)
     private val reassembler = VideoFragmentReassembler()
     @Volatile private var socket: DatagramSocket? = null
@@ -41,12 +44,11 @@ class VideoStreamReceiver(
     @Volatile private var decodeThread: Thread? = null
 
     fun start() {
-        if (!running.compareAndSet(false, true)) return
         require(width > 0 && height > 0 && frameRate in 1..120) { "Invalid negotiated video profile" }
         if (!outputSurface.isValid) {
-            running.set(false)
             throw IllegalStateException("Video decoder output Surface is no longer valid")
         }
+        if (!running.compareAndSet(false, true)) return
         val udp = DatagramSocket(null)
         try {
             udp.reuseAddress = true
@@ -59,9 +61,10 @@ class VideoStreamReceiver(
             throw error
         }
         socket = udp
+        Log.i(TAG, "H.264 SBS receiver started: $hostAddress:$port ${width}x$height@$frameRate")
+        onStatus("UDP 视频接收已启动，等待 PC 首帧")
         decodeThread = Thread({ decodeLoop() }, "PhoneVR-Video-Decode").apply { start() }
         receiveThread = Thread({ receiveLoop(udp) }, "PhoneVR-Video-UDP").apply { start() }
-        Log.i(TAG, "H.264 SBS receiver started: $hostAddress:$port ${width}x$height@$frameRate")
     }
 
     fun stop() {
@@ -118,6 +121,9 @@ class VideoStreamReceiver(
                 }
                 localReceived++
                 framesReceived.incrementAndGet()
+                if (frameArrivalReported.compareAndSet(false, true)) {
+                    onStatus("已收到完整 H.264 帧，等待解码输出")
+                }
             }
             val now = System.nanoTime()
             if (now - lastStatsNs >= 5_000_000_000L) {
@@ -155,6 +161,7 @@ class VideoStreamReceiver(
             codec.configure(format, outputSurface, null, 0)
             codec.start()
             Log.i(TAG, "MediaCodec decoder active: ${codec.name}, ${width}x$height@$frameRate")
+            onStatus("H.264 解码器已启动，等待视频帧")
             val info = MediaCodec.BufferInfo()
             var presentationTimeUs = 0L
             var lastStatsNs = System.nanoTime()
@@ -196,6 +203,9 @@ class VideoStreamReceiver(
                         codec.releaseOutputBuffer(outputIndex, true)
                         decodedWindow++
                         framesDecoded.incrementAndGet()
+                        if (decodedFrameReported.compareAndSet(false, true)) {
+                            onStatus("H.264 帧已解码，等待双目显示")
+                        }
                     } else if (outputIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
                         Log.i(TAG, "MediaCodec output format: ${codec.outputFormat}")
                     } else {
@@ -210,7 +220,10 @@ class VideoStreamReceiver(
                 }
             }
         } catch (error: Throwable) {
-            if (running.get()) Log.e(TAG, "MediaCodec H.264 decoder failed", error)
+            if (running.get()) {
+                Log.e(TAG, "MediaCodec H.264 decoder failed", error)
+                onStatus("H.264 解码失败：${error.message ?: error.javaClass.simpleName}")
+            }
         } finally {
             try { codec?.stop() } catch (_: Exception) { }
             try { codec?.release() } catch (_: Exception) { }

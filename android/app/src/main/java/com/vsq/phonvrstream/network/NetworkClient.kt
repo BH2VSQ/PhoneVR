@@ -76,6 +76,8 @@ class NetworkClient(
     @Volatile private var videoSurface: Surface? = null
     @Volatile private var videoConfig: VideoSessionConfig? = null
     @Volatile private var videoReceiver: VideoStreamReceiver? = null
+    @Volatile private var videoStatusText: String = "视频尚未协商"
+    private val firstRenderedVideoGeneration = AtomicLong(-1L)
 
     /** Called by the GL renderer whenever its SurfaceTexture-backed Surface is created or recreated. */
     fun attachVideoSurface(surface: Surface) {
@@ -88,9 +90,11 @@ class NetworkClient(
             welcome.optString("videoCodec", "") != "h264" ||
             welcome.optString("videoMimeType", "") != "video/avc") {
             videoConfig = null
-            stopVideoReceiverAsync()
-            val reason = welcome.optString("videoReason", "当前未协商到兼容的硬件 H.264 视频档案")
-            postStatus("PC 已连接；视频未启用：$reason", true)
+            firstRenderedVideoGeneration.set(-1L)
+            val reason = welcome.optString("videoReason", "当前未协商到兼容的 H.264 解码器")
+            videoStatusText = "视频未启用：$reason"
+            stopVideoReceiverAsync(generation)
+            postStatus("PC 已连接，姿态链路可用 · $videoStatusText", true)
             return
         }
         val config = VideoSessionConfig(
@@ -103,12 +107,17 @@ class NetworkClient(
             generation = generation,
         )
         if (config.width <= 0 || config.height <= 0 || config.fps !in 1..120 || config.port !in 1..65535 || config.decoderName.isBlank()) {
-            postStatus("PC 返回了无效的视频流参数", true)
+            videoConfig = null
+            videoStatusText = "PC 返回的视频流参数无效"
+            stopVideoReceiverAsync(generation)
+            postStatus("PC 已连接，姿态链路可用 · $videoStatusText", true)
             return
         }
         videoConfig = config
+        firstRenderedVideoGeneration.set(-1L)
+        videoStatusText = "H.264 已协商，等待视频接收器启动"
+        postStatus("PC 已连接，姿态链路可用 · $videoStatusText", true)
         restartVideoReceiver()
-        postStatus("H.264 双目视频已协商：${config.width}×${config.height}@${config.fps} · ${config.decoderName}", true)
     }
 
     private fun restartVideoReceiver() {
@@ -122,23 +131,43 @@ class NetworkClient(
                 try {
                     val receiver = VideoStreamReceiver(
                         config.host, config.port, config.width, config.height, config.fps, config.decoderName, surface,
+                        onStatus = { status -> updateVideoStatus(config.generation, status) },
                     )
                     receiver.start()
                     videoReceiver = receiver
                 } catch (error: Throwable) {
-                    postStatus("视频接收启动失败：${error.message ?: error.javaClass.simpleName}", true)
+                    updateVideoStatus(config.generation, "视频接收启动失败：${error.message ?: error.javaClass.simpleName}")
                 }
             }
+        }
+    }
+
+    private fun updateVideoStatus(generation: Long, status: String) {
+        if (!isSessionActive(generation)) return
+        videoStatusText = status
+        postStatus("PC 已连接，姿态正常 · $status", true)
+    }
+
+    /** Called by the GL renderer after SurfaceTexture has accepted a decoded frame. */
+    fun reportVideoFrameRendered() {
+        val config = videoConfig ?: return
+        if (!isSessionActive(config.generation)) return
+        if (firstRenderedVideoGeneration.compareAndSet(-1L, config.generation)) {
+            updateVideoStatus(config.generation, "SteamVR 双目画面已到达显示纹理")
         }
     }
 
     private fun stopVideoReceiverAsync(generation: Long? = null) {
         videoLifecycleExecutor.execute {
             synchronized(videoLock) {
-                if (generation != null && videoConfig?.generation != generation) return@synchronized
+                val currentGeneration = videoConfig?.generation
+                if (generation != null && currentGeneration != null && currentGeneration != generation) return@synchronized
                 videoReceiver?.stop()
                 videoReceiver = null
-                if (generation == null || videoConfig?.generation == generation) videoConfig = null
+                if (generation == null || videoConfig?.generation == null || videoConfig?.generation == generation) {
+                    videoConfig = null
+                    firstRenderedVideoGeneration.set(-1L)
+                }
             }
         }
     }
@@ -457,7 +486,7 @@ class NetworkClient(
                 poseExecutor.execute {
                     sendPoseLoop(generation, openedUdp, destination, posePort)
                 }
-                postStatus("已连接 $serverName，姿态发送正常", true)
+                postStatus("已连接 $serverName，姿态发送正常 · $videoStatusText", true)
                 firstAttempt = false
                 retryDelayMs = INITIAL_RECONNECT_DELAY_MS
 

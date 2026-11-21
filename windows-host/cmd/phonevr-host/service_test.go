@@ -12,6 +12,24 @@ import (
 	"time"
 )
 
+func TestHostSnapshotIncludesVideoPipelineCounters(t *testing.T) {
+	service := NewHostService(false)
+	service.videoBridgeActive.Store(true)
+	service.videoRawFrames.Store(120)
+	service.videoEncodedFrames.Store(118)
+	service.videoUDPFragments.Store(420)
+	service.videoDroppedFrames.Store(2)
+
+	snapshot := service.Snapshot()
+	if !snapshot.VideoCaptureBridgeActive {
+		t.Fatal("video capture bridge state was not exposed in Snapshot")
+	}
+	if snapshot.VideoRawFrames != 120 || snapshot.VideoEncodedFrames != 118 ||
+		snapshot.VideoUDPFragments != 420 || snapshot.VideoDroppedFrames != 2 {
+		t.Fatalf("unexpected video counters: %+v", snapshot)
+	}
+}
+
 func TestHostSnapshotUsesCachedNetworkAddresses(t *testing.T) {
 	service := NewHostService(false)
 	service.localIPv4 = []string{"192.168.10.20", "10.0.0.5"}
@@ -64,6 +82,9 @@ func TestHostServiceLifecycleAndPairing(t *testing.T) {
 	}
 	if welcome.Type != "welcome" || welcome.PosePort != snapshot.PosePort {
 		t.Fatalf("unexpected welcome response: %+v", welcome)
+	}
+	if service.Snapshot().VideoCaptureBridgeActive {
+		t.Fatal("control-channel pairing must not be reported as an active raw-video capture bridge")
 	}
 	completeOpticalPresetPull(t, service, decoder, encoder)
 	if err := encoder.Encode(controlMessage{Type: "ping"}); err != nil {

@@ -28,6 +28,27 @@ class VideoStreamingIntegrationTests(unittest.TestCase):
         self.assertIn("sendEncodedVideoFrame", HOST_SERVICE)
         self.assertIn("StartHardwareH264Encoder", HOST_SERVICE)
 
+    def test_video_pipeline_reports_each_host_stage(self):
+        for field in ("videoBridgeActive", "videoRawFrames", "videoEncodedFrames", "videoUDPFragments", "videoDroppedFrames"):
+            self.assertIn(field, HOST_SERVICE)
+        self.assertIn("Video pipeline:", HOST_SERVICE)
+        self.assertIn("VIDEO  %s", (ROOT / "windows-host/cmd/phonevr-host/native_theme_windows.go").read_text(encoding="utf-8"))
+
+    def test_driver_releases_d3d_capture_lock_before_network_send(self):
+        worker = DRIVER[DRIVER.index("void VideoCaptureLoop()") : DRIVER.index("void ReleaseVideoCaptureResourcesUnlocked()")]
+        self.assertIn("std::lock_guard<std::mutex> resourceLock(m_captureResourcesMutex)", worker)
+        self.assertIn("SendAll(bridge", worker)
+        self.assertLess(worker.index("slot.busy.store(false"), worker.index("SendAll(bridge"))
+        self.assertIn("m_videoReadbackFailures", worker)
+
+    def test_android_legacy_codec_probe_and_video_stage_status(self):
+        self.assertIn("isLikelySoftwareCodec", ANDROID_CAPS)
+        self.assertIn("hardwareClassificationReliable", ANDROID_CAPS)
+        for stage in ("UDP 视频接收已启动", "已收到完整 H.264 帧", "H.264 解码器已启动"):
+            self.assertIn(stage, ANDROID_RECEIVER)
+        self.assertIn("reportVideoFrameRendered", ANDROID_NETWORK)
+        self.assertIn("videoFrameListener", ANDROID_RENDERER)
+
     def test_live_vr_never_falls_back_to_cpu_software_encoder(self):
         self.assertIn("ProbeHardwareH264Encoder", ENCODER)
         self.assertIn("CPU software encoding is disabled", ENCODER)

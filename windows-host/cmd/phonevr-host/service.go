@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/vsq-studio/phonevr-host/internal/encoder"
@@ -100,6 +101,11 @@ type HostSnapshot struct {
 	SteamVRHasPresentedFrame bool             `json:"steamVRHasPresentedFrame"`
 	SteamVRFrameCounter      uint64           `json:"steamVRFrameCounter"`
 	SteamVRHeartbeatAgeMS    int64            `json:"steamVRHeartbeatAgeMs,omitempty"`
+	VideoCaptureBridgeActive bool             `json:"videoCaptureBridgeActive"`
+	VideoRawFrames           uint64           `json:"videoRawFrames"`
+	VideoEncodedFrames       uint64           `json:"videoEncodedFrames"`
+	VideoUDPFragments        uint64           `json:"videoUdpFragments"`
+	VideoDroppedFrames       uint64           `json:"videoDroppedFrames"`
 	Logs                     []string         `json:"logs"`
 }
 
@@ -182,6 +188,11 @@ type HostService struct {
 	videoEncoderProbeDone chan struct{}
 	videoEncoderReady     bool
 	videoEncoderError     string
+	videoBridgeActive     atomic.Bool
+	videoRawFrames        atomic.Uint64
+	videoEncodedFrames    atomic.Uint64
+	videoUDPFragments     atomic.Uint64
+	videoDroppedFrames    atomic.Uint64
 	steamVRHeartbeatAt    time.Time
 	steamVRFlags          uint8
 	steamVRFrameCounter   uint64
@@ -490,6 +501,11 @@ func (s *HostService) Snapshot() HostSnapshot {
 			snapshot.SteamVRFrameCounter = s.steamVRFrameCounter
 		}
 	}
+	snapshot.VideoCaptureBridgeActive = s.videoBridgeActive.Load()
+	snapshot.VideoRawFrames = s.videoRawFrames.Load()
+	snapshot.VideoEncodedFrames = s.videoEncodedFrames.Load()
+	snapshot.VideoUDPFragments = s.videoUDPFragments.Load()
+	snapshot.VideoDroppedFrames = s.videoDroppedFrames.Load()
 	for _, device := range s.devices {
 		snapshot.ConnectedDevices = append(snapshot.ConnectedDevices, device.Snapshot)
 	}
@@ -875,6 +891,9 @@ func (s *HostService) handleControlConnection(ctx context.Context, conn net.Conn
 	s.mu.RUnlock()
 	selectedAndroidDecoder := selectH264DecoderProfile(mediaCapabilities, videoWidth, videoHeight, videoFrameRate)
 	videoEnabled := hardwareEncoderReady && selectedAndroidDecoder != ""
+	if videoEnabled && !h264DecoderClassificationReliable(mediaCapabilities, selectedAndroidDecoder) {
+		s.addLog(fmt.Sprintf("Android decoder %s is on a pre-Android-10 platform; accepting the vendor-codec heuristic after profile capability checks", selectedAndroidDecoder))
+	}
 	device := activeDevice{Snapshot: DeviceSnapshot{
 		Name: hello.DeviceName, DeviceID: hello.DeviceID, Client: hello.Client,
 		Address: remote, ConnectedAt: time.Now().Format(time.RFC3339),
@@ -1084,7 +1103,7 @@ func selectH264DecoderProfile(raw json.RawMessage, width, height, fps int) strin
 	}
 	for _, item := range entries {
 		if strings.TrimSpace(item.Name) != "" && strings.EqualFold(item.MimeType, "video/avc") &&
-			item.HardwareAccelerated && item.HardwareClassificationReliable && item.SupportsTargetProfile &&
+			item.HardwareAccelerated && item.SupportsTargetProfile &&
 			item.MaxWidth >= width && item.MaxHeight >= height && item.MaxFrameRate >= float64(fps) {
 			return item.Name
 		}
@@ -1094,6 +1113,30 @@ func selectH264DecoderProfile(raw json.RawMessage, width, height, fps int) strin
 
 func supportsH264Profile(raw json.RawMessage, width, height, fps int) bool {
 	return selectH264DecoderProfile(raw, width, height, fps) != ""
+}
+
+func h264DecoderClassificationReliable(raw json.RawMessage, decoderName string) bool {
+	var entries []struct {
+		Name                           string `json:"name"`
+		HardwareClassificationReliable bool   `json:"hardwareClassificationReliable"`
+	}
+	if len(raw) == 0 || json.Unmarshal(raw, &entries) != nil {
+		return false
+	}
+	for _, entry := range entries {
+		if entry.Name == decoderName {
+			return entry.HardwareClassificationReliable
+		}
+	}
+	return false
+}
+
+func maxDurationSeconds(value time.Duration) float64 {
+	seconds := value.Seconds()
+	if seconds < 0.001 {
+		return 0.001
+	}
+	return seconds
 }
 
 func (s *HostService) currentVideoTarget() (*net.UDPAddr, bool) {
@@ -1129,14 +1172,17 @@ func (s *HostService) sendEncodedVideoFrame(frame []byte, frameID uint32, timest
 	}
 	for _, packet := range fragments {
 		if _, err := udp.WriteToUDP(packet, target); err != nil {
+			s.videoDroppedFrames.Add(1)
 			return err
 		}
+		s.videoUDPFragments.Add(1)
 	}
 	return nil
 }
 
 func (s *HostService) videoCaptureLoop(ctx context.Context, listener net.Listener) {
 	defer s.wg.Done()
+	var lastNoVideoTargetLog time.Time
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
@@ -1148,6 +1194,10 @@ func (s *HostService) videoCaptureLoop(ctx context.Context, listener net.Listene
 		}
 		if _, enabled := s.currentVideoTarget(); !enabled {
 			_ = conn.Close()
+			if time.Since(lastNoVideoTargetLog) >= 5*time.Second {
+				s.addLog("SteamVR video bridge connection rejected: no paired Android client has negotiated a supported H.264 decoder")
+				lastNoVideoTargetLog = time.Now()
+			}
 			continue
 		}
 		_ = conn.SetWriteDeadline(time.Now().Add(time.Second))
@@ -1164,9 +1214,11 @@ func (s *HostService) videoCaptureLoop(ctx context.Context, listener net.Listene
 		}
 		s.connections[conn] = struct{}{}
 		s.mu.Unlock()
+		s.videoBridgeActive.Store(true)
 		s.wg.Add(1)
 		go func() {
 			defer s.wg.Done()
+			defer s.videoBridgeActive.Store(false)
 			defer s.removeConnection(conn)
 			defer conn.Close()
 			s.handleVideoCaptureConnection(ctx, conn)
@@ -1187,6 +1239,9 @@ func (s *HostService) handleVideoCaptureConnection(ctx context.Context, conn net
 	headerBytes := make([]byte, videoprotocol.RawFrameHeaderSize)
 	var frameCount uint64
 	statsStart := time.Now()
+	encodedAtWindowStart := s.videoEncodedFrames.Load()
+	udpAtWindowStart := s.videoUDPFragments.Load()
+	droppedAtWindowStart := s.videoDroppedFrames.Load()
 	// Reuse the fixed-size BGRA buffer. Allocating a 4.6 MiB slice for every
 	// 60 FPS frame would create hundreds of MiB/s of GC pressure on the Host.
 	raw := make([]byte, videoWidth*videoHeight*4)
@@ -1229,6 +1284,7 @@ func (s *HostService) handleVideoCaptureConnection(ctx context.Context, conn net
 			s.mu.RUnlock()
 			created, createErr := encoder.StartHardwareH264Encoder(ctx, ffmpegPath, videoWidth, videoHeight, videoFrameRate,
 				func(accessUnit []byte, id uint32, timestamp uint64, key bool) error {
+					s.videoEncodedFrames.Add(1)
 					if sendErr := s.sendEncodedVideoFrame(accessUnit, id, timestamp, key); sendErr != nil {
 						s.addLog("Dropped one H.264 access unit after UDP send failure; encoder kept running for next IDR: " + sendErr.Error())
 					}
@@ -1242,13 +1298,25 @@ func (s *HostService) handleVideoCaptureConnection(ctx context.Context, conn net
 			s.addLog("Live VR video is using hardware H.264 encoding: " + session.EncoderName())
 		}
 		if err := session.WriteFrame(raw, header.TimestampNs); err != nil {
+			s.videoDroppedFrames.Add(1)
 			s.addLog("H.264 encoder input failed: " + err.Error())
 			return
 		}
+		s.videoRawFrames.Add(1)
 		frameCount++
-		if time.Since(statsStart) >= 5*time.Second {
-			s.addLog(fmt.Sprintf("Video capture: raw frames %.1f FPS, encoded backend %s", float64(frameCount)/time.Since(statsStart).Seconds(), session.EncoderName()))
+		if elapsed := time.Since(statsStart); elapsed >= 5*time.Second {
+			seconds := maxDurationSeconds(elapsed)
+			encodedNow := s.videoEncodedFrames.Load()
+			udpNow := s.videoUDPFragments.Load()
+			droppedNow := s.videoDroppedFrames.Load()
+			s.addLog(fmt.Sprintf("Video pipeline: raw %.1f FPS | H.264 %.1f FPS | UDP fragments %d | dropped access units %d | backend %s",
+				float64(frameCount)/seconds,
+				float64(encodedNow-encodedAtWindowStart)/seconds,
+				udpNow-udpAtWindowStart, droppedNow-droppedAtWindowStart, session.EncoderName()))
 			frameCount = 0
+			encodedAtWindowStart = encodedNow
+			udpAtWindowStart = udpNow
+			droppedAtWindowStart = droppedNow
 			statsStart = time.Now()
 		}
 	}

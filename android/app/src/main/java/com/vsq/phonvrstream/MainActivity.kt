@@ -186,6 +186,7 @@ class MainActivity : Activity(), SensorEventListener {
 
         renderer = StereoRenderer()
         renderer.setVideoSurfaceListener { surface -> networkClient.attachVideoSurface(surface) }
+        renderer.setVideoFrameListener { networkClient.reportVideoFrameRendered() }
         glView = GLSurfaceView(this).apply {
             setEGLContextClientVersion(3)
             preserveEGLContextOnPause = true

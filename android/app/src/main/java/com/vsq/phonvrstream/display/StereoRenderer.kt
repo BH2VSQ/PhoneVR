@@ -37,6 +37,8 @@ class StereoRenderer : GLSurfaceView.Renderer {
     private var videoSurface: Surface? = null
     private val videoFramePending = AtomicBoolean(false)
     @Volatile private var videoSurfaceListener: ((Surface) -> Unit)? = null
+    @Volatile private var videoFrameListener: (() -> Unit)? = null
+    private var videoDisplayReported = false
     private var hasVideoFrame = false
     private val videoTextureMatrix = FloatArray(16)
     private data class VideoLocations(val position: Int, val texture: Int, val transform: Int)
@@ -63,6 +65,10 @@ class StereoRenderer : GLSurfaceView.Renderer {
         videoSurface?.let(listener)
     }
 
+    fun setVideoFrameListener(listener: () -> Unit) {
+        videoFrameListener = listener
+    }
+
     private fun createVideoInputSurface() {
         videoSurface?.release()
         videoSurfaceTexture?.release()
@@ -86,6 +92,7 @@ class StereoRenderer : GLSurfaceView.Renderer {
         videoSurface = surface
         videoFramePending.set(false)
         hasVideoFrame = false
+        videoDisplayReported = false
         videoSurfaceListener?.invoke(surface)
     }
 
@@ -178,6 +185,10 @@ class StereoRenderer : GLSurfaceView.Renderer {
                 inputTexture.updateTexImage()
                 inputTexture.getTransformMatrix(videoTextureMatrix)
                 hasVideoFrame = true
+                if (!videoDisplayReported) {
+                    videoDisplayReported = true
+                    videoFrameListener?.invoke()
+                }
             } catch (_: RuntimeException) {
                 hasVideoFrame = false
             }

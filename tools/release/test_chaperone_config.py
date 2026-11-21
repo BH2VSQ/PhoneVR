@@ -13,13 +13,15 @@ class ChaperoneConfigTests(unittest.TestCase):
     def setUpClass(cls):
         cls.source = DRIVER_CPP.read_text(encoding="utf-8")
         json_match = re.search(
-            r'constexpr\s+char\s+kDriverProvidedChaperoneJson\[\]\s*=\s*R"phonevr_chaperone\((.*?)\)phonevr_chaperone";',
+            r'constexpr\s+char\s+kDriverProvidedChaperoneJson\[\]\s*=\s*'
+            r'R"(?P<delimiter>[^()\\\s]{0,32})\((.*?)\)(?P=delimiter)";',
             cls.source,
             re.DOTALL,
         )
         if not json_match:
             raise AssertionError("Could not locate the embedded PhoneVR Chaperone JSON")
-        cls.config = json.loads(json_match.group(1))
+        cls.raw_string_delimiter = json_match.group("delimiter")
+        cls.config = json.loads(json_match.group(2))
         id_match = re.search(
             r'constexpr\s+uint32_t\s+kPhoneVRUniverseId\s*=\s*0x([0-9A-Fa-f]+)u;',
             cls.source,
@@ -27,6 +29,10 @@ class ChaperoneConfigTests(unittest.TestCase):
         if not id_match:
             raise AssertionError("Could not locate kPhoneVRUniverseId")
         cls.cpp_universe_id = int(id_match.group(1), 16)
+
+    def test_cpp_raw_string_delimiter_respects_standard_limit(self):
+        # C++ raw-string delimiters may contain at most 16 characters.
+        self.assertLessEqual(len(self.raw_string_delimiter), 16)
 
     def test_json_matches_openvr_v5_schema_basics(self):
         self.assertEqual(self.config["json_id"], "chaperone_info")

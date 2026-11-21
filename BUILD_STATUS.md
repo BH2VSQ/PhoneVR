@@ -1,4 +1,10 @@
-# PhoneVR 0.4.10 Build Status
+# PhoneVR 0.4.11 Build Status
+
+## 0.4.11 MSVC Chaperone JSON literal build fix
+
+- Shortened the embedded Chaperone JSON raw-string delimiter to `PVCHAP` (6 characters), within the C++ maximum of 16 characters.
+- Updated the Chaperone parser regression test to assert the standard raw-string delimiter length limit.
+- Fixed the specific MSVC C3512 error reported when building with Visual Studio 18 2026. The source change is verified by automated tests; a native Windows/MSVC driver build still needs to be run on the target toolchain.
 
 ## 0.4.10 Driver-provided Chaperone and stable universe
 

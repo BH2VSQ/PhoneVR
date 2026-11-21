@@ -1,3 +1,9 @@
+## 0.4.11 - MSVC Chaperone JSON literal build fix
+
+- Shortened the embedded Chaperone JSON C++ raw-string delimiter from 17 characters to the standard maximum of 16, fixing MSVC C3512.
+- Updated the Chaperone regression test to parse the raw-string delimiter generically and explicitly enforce the C++ 16-character limit, preventing this failure from recurring.
+- Bumped synchronized Android, Windows Host and SteamVR driver version metadata; Android versionCode is now 27.
+
 ## 0.4.10 - Driver-provided Chaperone and stable universe
 
 - Added a valid OpenVR v5 `chaperone_info` JSON directly to the HMD properties, avoiding an external per-user file dependency.

@@ -34,7 +34,7 @@ constexpr double kDisplayFrameIntervalSeconds = 1.0 / kDisplayRefreshRateHz;
 // SteamVR requires the JSON universeID (uint32) to match the HMD's
 // Prop_CurrentUniverseId_Uint64 property.
 constexpr uint32_t kPhoneVRUniverseId = 0x50485652u;
-constexpr char kDriverProvidedChaperoneJson[] = R"phonevr_chaperone(
+constexpr char kDriverProvidedChaperoneJson[] = R"PVCHAP(
 {
   "json_id": "chaperone_info",
   "version": 5,
@@ -55,7 +55,7 @@ constexpr char kDriverProvidedChaperoneJson[] = R"phonevr_chaperone(
     }
   ]
 }
-)phonevr_chaperone";
+)PVCHAP";
 
 uint32_t ReadBE32(const uint8_t* p) {
     return (static_cast<uint32_t>(p[0]) << 24) | (static_cast<uint32_t>(p[1]) << 16) |
@@ -738,7 +738,7 @@ public:
         if (!host->TrackedDeviceAdded("PHONEVR-DISPLAY-001", vr::TrackedDeviceClass_DisplayRedirect, m_redirect)) {
             Cleanup(); return vr::VRInitError_Driver_Unknown;
         }
-        if (vr::VRDriverLog()) vr::VRDriverLog()->Log("PhoneVR 0.4.10 SteamVR driver initialized");
+        if (vr::VRDriverLog()) vr::VRDriverLog()->Log("PhoneVR 0.4.11 SteamVR driver initialized");
         return vr::VRInitError_None;
     }
     void Cleanup() override {

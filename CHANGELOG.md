@@ -1,3 +1,12 @@
+## 0.4.19 - USB tethered streaming and D3D11 build fix
+
+- Fixed the MSVC C2065 build failure by including the Windows SDK `d3d11_4.h` header that declares `ID3D11Multithread`.
+- Added Android Auto / Wi-Fi / USB-RNDIS discovery modes. Discovery enumerates active IPv4 interfaces, binds one socket per interface and sends directed broadcasts through each selected interface.
+- Reused the existing TCP control, UDP pose and H.264 video transport over USB tethering; no ADB tunnel or USB-debugging authorization is required.
+- Added Host network-interface labels and a LocalSubnet-scoped Windows Firewall helper for inbound TCP 48101 and UDP 48100/48102.
+- Bumped Android versionCode to 35 and synchronized Android, Host and SteamVR driver metadata to 0.4.19.
+- Windows MSVC native driver build and Android Gradle/device validation remain required on target devices.
+
 ## 0.4.18 - Integrated SBS H.264 streaming
 
 - Removed the Host display-refresh-rate UI and persistence; virtual display timing is fixed at 72 Hz.

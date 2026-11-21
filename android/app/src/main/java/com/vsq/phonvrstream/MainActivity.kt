@@ -27,10 +27,13 @@ import android.widget.FrameLayout
 import android.text.InputType
 import android.widget.LinearLayout
 import android.widget.ScrollView
+import android.widget.Spinner
+import android.widget.ArrayAdapter
 import android.widget.SeekBar
 import android.widget.TextView
 import com.vsq.phonvrstream.display.StereoRenderer
 import com.vsq.phonvrstream.network.DiscoveredHost
+import com.vsq.phonvrstream.network.DiscoveryMode
 import com.vsq.phonvrstream.network.HeadPose
 import com.vsq.phonvrstream.network.NetworkClient
 import com.vsq.phonvrstream.settings.DisplaySettings
@@ -62,6 +65,7 @@ class MainActivity : Activity(), SensorEventListener {
     private lateinit var settingsPanel: LinearLayout
     private lateinit var connectionPanel: LinearLayout
     private lateinit var connectionStatusLabel: TextView
+    private lateinit var connectionModeSpinner: Spinner
     private lateinit var hostAddressInput: EditText
     private lateinit var hostPortInput: EditText
     private lateinit var discoveredHostList: LinearLayout
@@ -446,7 +450,22 @@ class MainActivity : Activity(), SensorEventListener {
         scroll.addView(content, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         panel.addView(scroll, LinearLayout.LayoutParams(-1, 0, 1f))
 
-        content.addView(label("PC 地址", secondary = true))
+        content.addView(label("连接方式", secondary = true))
+        connectionModeSpinner = Spinner(this).apply {
+            val options = listOf("自动（USB + Wi-Fi）", "Wi-Fi 无线", "USB 有线（RNDIS）")
+            adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_item, options).also {
+                it.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+            }
+            val savedMode = getSharedPreferences("phone_vr_connection", MODE_PRIVATE)
+                .getString("connection_mode", "auto")
+            setSelection(when (DiscoveryMode.fromPreference(savedMode)) {
+                DiscoveryMode.WIFI -> 1
+                DiscoveryMode.USB -> 2
+                else -> 0
+            })
+        }
+        content.addView(connectionModeSpinner, LinearLayout.LayoutParams(-1, dp(40)))
+        content.addView(label("PC 地址", secondary = true).apply { setPadding(0, dp(6), 0, 0) })
         hostAddressInput = EditText(this).apply {
             setSingleLine(true)
             hint = "例如 192.168.1.100"
@@ -476,29 +495,45 @@ class MainActivity : Activity(), SensorEventListener {
         content.addView(hostPortInput, LinearLayout.LayoutParams(-1, dp(42)))
 
         content.addView(makeButton("自动搜索局域网 PC") {
-            connectionMessage = "正在搜索局域网内的 PhoneVR Host"
+            val discoveryMode = selectedDiscoveryMode()
+            getSharedPreferences("phone_vr_connection", MODE_PRIVATE).edit()
+                .putString("connection_mode", discoveryMode.preferenceValue).apply()
+            connectionMessage = when (discoveryMode) {
+                DiscoveryMode.USB -> "正在 USB/RNDIS 有线网络中搜索 PhoneVR Host"
+                DiscoveryMode.WIFI -> "正在 Wi-Fi 网络中搜索 PhoneVR Host"
+                else -> "正在 USB 与 Wi-Fi 网络中搜索 PhoneVR Host"
+            }
             connectionStatusLabel.text = "$connectionMessage…"
             updateTopHud()
             discoveredHostList.removeAllViews()
-            networkClient.discover { hosts ->
+            networkClient.discover(discoveryMode) { hosts ->
                 discoveredHostList.removeAllViews()
                 if (hosts.isEmpty()) {
-                    discoveredHostList.addView(label(
-                        "没有发现 PC。请确认主机程序已启动，或手动输入 IP 地址。", true
-                    ).apply { setPadding(0, dp(6), 0, dp(6)) })
+                    val emptyMessage = if (discoveryMode == DiscoveryMode.USB) {
+                        "没有发现 USB 主机。请用支持数据传输的 USB 线连接手机和电脑，在手机设置中开启‘USB 网络共享’，等待 Windows 出现 USB/RNDIS 网卡后重试。"
+                    } else {
+                        "没有发现 PC。请确认主机程序已启动、Windows 防火墙允许 PhoneVRHost，或手动输入 IP 地址。"
+                    }
+                    discoveredHostList.addView(label(emptyMessage, true).apply { setPadding(0, dp(6), 0, dp(6)) })
                 } else {
                     // Always populate the address fields as soon as discovery
                     // returns. The user no longer has to tap a result row merely
                     // to transfer the discovered IP into the manual connect form.
                     val saved = getSharedPreferences("phone_vr_connection", MODE_PRIVATE)
                     val rememberedAddress = saved.getString("host", null)
-                    val selected = hosts.firstOrNull { it.address == rememberedAddress } ?: hosts.first()
+                    val selected = if (discoveryMode == DiscoveryMode.AUTO) {
+                        hosts.firstOrNull { it.connectionType == "USB" }
+                            ?: hosts.firstOrNull { it.address == rememberedAddress }
+                            ?: hosts.first()
+                    } else {
+                        hosts.firstOrNull { it.address == rememberedAddress } ?: hosts.first()
+                    }
                     fillConnectionAddress(selected, persist = true)
                     hosts.forEach { host -> addDiscoveredHost(host, selected.address == host.address) }
                     connectionStatusLabel.text = if (hosts.size == 1) {
-                        "已发现 ${selected.name}，IP 地址已自动填入"
+                        "已发现 ${selected.name}（${selected.connectionType}），IP 地址已自动填入"
                     } else {
-                        "发现 ${hosts.size} 台 PC，已填入 ${selected.name}（可点击其他设备切换）"
+                        "发现 ${hosts.size} 个网络入口，已填入 ${selected.name}（${selected.connectionType}），可点击切换"
                     }
                     connectionStatusLabel.setTextColor(Color.rgb(118, 225, 164))
                 }
@@ -514,7 +549,7 @@ class MainActivity : Activity(), SensorEventListener {
         content.addView(discoveredHostList)
 
         content.addView(label(
-            "手机和电脑需要连接同一局域网。若自动搜索失败，可以在上方手动输入 PC 的 IPv4 地址。",
+            "Wi-Fi：手机和电脑连接同一局域网。USB：使用数据线连接手机和电脑，并在手机系统设置中开启 USB 网络共享（RNDIS）；USB 模式不需要 ADB 或 USB 调试。若发现失败，可手动输入 Host 对应网卡的 IPv4 地址。",
             secondary = true,
         ).apply { setPadding(0, dp(8), 0, dp(10)) })
 
@@ -551,6 +586,12 @@ class MainActivity : Activity(), SensorEventListener {
         return panel
     }
 
+    private fun selectedDiscoveryMode(): DiscoveryMode = when (connectionModeSpinner.selectedItemPosition) {
+        1 -> DiscoveryMode.WIFI
+        2 -> DiscoveryMode.USB
+        else -> DiscoveryMode.AUTO
+    }
+
     private fun fillConnectionAddress(host: DiscoveredHost, persist: Boolean) {
         if (::hostAddressInput.isInitialized) hostAddressInput.setText(host.address)
         if (::hostPortInput.isInitialized) hostPortInput.setText(host.controlPort.toString())
@@ -564,7 +605,7 @@ class MainActivity : Activity(), SensorEventListener {
 
     private fun addDiscoveredHost(host: DiscoveredHost, selected: Boolean = false) {
         discoveredHostList.addView(makeButton(
-            "${if (selected) "✓ " else ""}${host.name}  ·  ${host.address}"
+            "${if (selected) "✓ " else ""}${host.name}  ·  ${host.address}  ·  ${host.connectionType}"
         ) {
             fillConnectionAddress(host, persist = true)
             connectionStatusLabel.text = "已选择 ${host.name}（${host.address}）"

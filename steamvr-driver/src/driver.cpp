@@ -8,6 +8,7 @@
 #include <ws2tcpip.h>
 #include <windows.h>
 #include <d3d11.h>
+#include <d3d11_4.h> // ID3D11Multithread is declared by the Windows 10 D3D11.4 header.
 #include <dxgi1_2.h>
 #include <d3dcompiler.h>
 #include <openvr_driver.h>
@@ -1336,7 +1337,7 @@ public:
         if (!host->TrackedDeviceAdded("PHONEVR-DISPLAY-001", vr::TrackedDeviceClass_DisplayRedirect, m_redirect)) {
             Cleanup(); return vr::VRInitError_Driver_Unknown;
         }
-        if (vr::VRDriverLog()) vr::VRDriverLog()->Log("PhoneVR 0.4.18 SteamVR driver initialized");
+        if (vr::VRDriverLog()) vr::VRDriverLog()->Log("PhoneVR 0.4.19 SteamVR driver initialized");
         return vr::VRInitError_None;
     }
     void Cleanup() override {

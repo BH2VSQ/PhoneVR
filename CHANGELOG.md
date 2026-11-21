@@ -1,3 +1,12 @@
+## 0.4.19 - Persistent video encoder and capture backpressure fix
+
+- Moved the FFmpeg H.264 session out of individual driver TCP connection handlers into one Host service-lifetime encoder worker. A transient TCP reconnect no longer closes and respawns FFmpeg.
+- Reused the H.264 hardware encoder selected and validated during synchronous Host startup preflight. Streaming startup no longer repeats FFmpeg encoder discovery and hardware test subprocesses on each connection.
+- Decoupled loopback TCP reception from FFmpeg stdin writes through a bounded two-frame latest-frame-wins queue with pooled BGRA buffers. When QSV falls behind, stale frames are dropped instead of blocking TCP receive and triggering a reconnect cycle.
+- Serialized the driver capture bridge to one active connection, increased the Host TCP receive buffer and idle timeout, and increased the driver's raw-frame send timeout from 250 ms to 5 seconds.
+- Added rate-limited WSA socket-error diagnostics and Host input-queue-drop/FPS telemetry. The persistent encoder retries failed sessions with a five-second backoff.
+- Go tests, race tests, `go vet`, Windows/amd64 Host cross-build, and 41 Python release regression tests pass. Native MSVC SteamVR driver compilation and end-to-end Windows/Redmi K40 LineageOS validation remain pending.
+
 ## 0.4.19 - DisplayRedirect startup-order and HMD override follow-up
 
 - Pre-initialize the DisplayRedirect D3D11 capture device before registering tracked devices, then register DisplayRedirect before the PhoneVR HMD.

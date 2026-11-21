@@ -171,6 +171,35 @@ func startH264Encoder(ctx context.Context, ffmpegPath string, width, height, fps
 	if selected.Name == "" {
 		return nil, fmt.Errorf("no usable H.264 encoder session: %s", strings.Join(testErrors, "; "))
 	}
+	return startH264EncoderWithCapability(ctx, ffmpegPath, width, height, fps, selected, callback, logf)
+}
+
+// StartH264EncoderWithCapability starts a persistent encoder session using a
+// hardware capability already tested during Host startup. It deliberately does
+// not spawn additional FFmpeg discovery/probe processes for every video bridge
+// reconnect. The Host owns this session for its lifetime, independently of the
+// loopback TCP capture connection.
+func StartH264EncoderWithCapability(ctx context.Context, ffmpegPath string, width, height, fps int, selected Capability, callback AccessUnitCallback, logf func(string)) (*H264EncoderSession, error) {
+	if !selected.Hardware || selected.Codec != CodecH264 || selected.Name == "" {
+		return nil, errors.New("a prevalidated hardware H.264 encoder capability is required")
+	}
+	if width < 16 || height < 16 || fps < 1 || fps > 120 {
+		return nil, errors.New("invalid H.264 encoder profile")
+	}
+	if callback == nil {
+		return nil, errors.New("H.264 access-unit callback is required")
+	}
+	if ffmpegPath == "" {
+		resolved, err := exec.LookPath("ffmpeg")
+		if err != nil {
+			return nil, fmt.Errorf("find FFmpeg: %w", err)
+		}
+		ffmpegPath = resolved
+	}
+	return startH264EncoderWithCapability(ctx, ffmpegPath, width, height, fps, selected, callback, logf)
+}
+
+func startH264EncoderWithCapability(ctx context.Context, ffmpegPath string, width, height, fps int, selected Capability, callback AccessUnitCallback, logf func(string)) (*H264EncoderSession, error) {
 	args := rawH264EncoderArgs(selected, width, height, fps)
 	cmd := exec.CommandContext(ctx, ffmpegPath, args...)
 	stdin, err := cmd.StdinPipe()

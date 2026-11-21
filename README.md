@@ -153,3 +153,7 @@ The in-app manager provides status refresh, **Install / Repair Bundled Driver**,
 ### 2026-11-22 video-output follow-up
 
 The current source includes a DisplayRedirect initialization-order and HMD property-override fix, plus synchronous Host H.264 hardware preflight before opening the pairing listener. See `docs/2026-11-22-displayredirect-startup-order.md` for the log evidence and device-side validation steps.
+
+## Video-stream stability follow-up
+
+The 2026-11-22 video encoder lifecycle and backpressure fix keeps one hardware H.264 encoder session alive across brief loopback TCP reconnects. Raw BGRA frames are received independently of FFmpeg input through a bounded latest-frame queue. See `docs/2026-11-22-video-encoder-lifecycle-backpressure.md` for details and validation status.

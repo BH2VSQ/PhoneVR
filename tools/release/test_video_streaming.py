@@ -26,7 +26,15 @@ class VideoStreamingIntegrationTests(unittest.TestCase):
         self.assertRegex(HOST_SERVICE, r"androidVideoPort\s*=\s*48104")
         self.assertIn("videoCaptureLoop", HOST_SERVICE)
         self.assertIn("sendEncodedVideoFrame", HOST_SERVICE)
-        self.assertIn("StartHardwareH264Encoder", HOST_SERVICE)
+        self.assertIn("StartH264EncoderWithCapability", HOST_SERVICE)
+        self.assertIn("videoEncoderLoop", HOST_SERVICE)
+        self.assertIn("enqueueRawVideoFrame", HOST_SERVICE)
+        self.assertIn("videoInputQueueDepth", HOST_SERVICE)
+        self.assertIn("persistent H.264 encoder", HOST_SERVICE)
+        capture_handler = HOST_SERVICE[HOST_SERVICE.index("func (s *HostService) handleVideoCaptureConnection") : HOST_SERVICE.index("// videoEncoderLoop owns exactly one FFmpeg process")]
+        self.assertNotIn("StartHardwareH264Encoder", capture_handler)
+        self.assertNotIn("StartH264EncoderWithCapability", capture_handler)
+        self.assertIn("CompareAndSwap(false, true)", HOST_SERVICE)
 
     def test_video_pipeline_reports_each_host_stage(self):
         for field in ("videoBridgeActive", "videoRawFrames", "videoEncodedFrames", "videoUDPFragments", "videoDroppedFrames"):
@@ -40,6 +48,8 @@ class VideoStreamingIntegrationTests(unittest.TestCase):
         self.assertIn("SendAll(bridge", worker)
         self.assertLess(worker.index("slot.busy.store(false"), worker.index("SendAll(bridge"))
         self.assertIn("m_videoReadbackFailures", worker)
+        self.assertIn("DWORD timeout = 5000", worker)
+        self.assertIn("raw video TCP send failed WSA error", worker)
 
     def test_android_legacy_codec_probe_and_video_stage_status(self):
         self.assertIn("isLikelySoftwareCodec", ANDROID_CAPS)
@@ -53,6 +63,7 @@ class VideoStreamingIntegrationTests(unittest.TestCase):
         self.assertIn("ProbeHardwareH264Encoder", ENCODER)
         self.assertIn("CPU software encoding is disabled", ENCODER)
         self.assertIn("StartHardwareH264Encoder", ENCODER)
+        self.assertIn("StartH264EncoderWithCapability", ENCODER)
         self.assertIn("h264PendingFrameLimit", ENCODER)
         self.assertIn("-flush_packets", ENCODER)
 

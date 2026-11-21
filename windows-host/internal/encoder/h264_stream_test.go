@@ -9,6 +9,17 @@ import (
 	"time"
 )
 
+func TestStartH264EncoderWithCapabilityRejectsSoftwareFallback(t *testing.T) {
+	_, err := StartH264EncoderWithCapability(
+		context.Background(), "ffmpeg-does-not-need-to-exist", 1600, 720, 60,
+		Capability{Name: "libx264", Codec: CodecH264, Backend: BackendSoftware, Hardware: false},
+		func([]byte, uint32, uint64, bool) error { return nil }, nil,
+	)
+	if err == nil || !strings.Contains(err.Error(), "prevalidated hardware H.264") {
+		t.Fatalf("software capability should be rejected before process launch, got %v", err)
+	}
+}
+
 func TestH264AccessUnitParserSplitsAtAUD(t *testing.T) {
 	// SPS/PPS prefix, AUD + IDR frame, then AUD + inter frame. Synthetic NAL
 	// payloads are sufficient to test Annex-B boundary handling.

@@ -36,6 +36,8 @@ const (
 	videoWidth              = 1600
 	videoHeight             = 720
 	videoFrameRate          = 60
+	videoInputQueueDepth    = 2 // one frame may be written to FFmpeg while two newer frames wait
+	videoBridgeReadTimeout  = 10 * time.Second
 	discoveryQuery          = "PHONEVR_DISCOVER_V1"
 	discoveryPrefix         = "PHONEVR_HOST_V1 "
 	maxLogEntries           = 250
@@ -168,6 +170,11 @@ type activeDevice struct {
 	VideoEnabled bool
 }
 
+type rawVideoFrame struct {
+	data        []byte
+	timestampNs uint64
+}
+
 type HostService struct {
 	lifecycleMu sync.Mutex
 	mu          sync.RWMutex
@@ -187,8 +194,12 @@ type HostService struct {
 	videoFFmpegPath       string
 	videoEncoderProbeDone chan struct{}
 	videoEncoderReady     bool
+	videoEncoderSelected  encoder.Capability
 	videoEncoderError     string
 	videoBridgeActive     atomic.Bool
+	videoFrameQueue       chan *rawVideoFrame
+	videoFramePool        sync.Pool
+	videoInputQueueDrops  atomic.Uint64
 	videoRawFrames        atomic.Uint64
 	videoEncodedFrames    atomic.Uint64
 	videoUDPFragments     atomic.Uint64
@@ -324,6 +335,12 @@ func (s *HostService) Start(config HostConfig) error {
 	s.steamVRStatus = udpSteamVRStatus
 	s.videoCaptureListener = videoCaptureListener
 	s.videoUDP = videoUDP
+	s.videoFrameQueue = make(chan *rawVideoFrame, videoInputQueueDepth)
+	s.videoFramePool = sync.Pool{New: func() any {
+		return &rawVideoFrame{data: make([]byte, videoWidth*videoHeight*4)}
+	}}
+	s.videoBridgeActive.Store(false)
+	s.videoInputQueueDrops.Store(0)
 	s.steamVRHeartbeatAt = time.Time{}
 	s.steamVRFlags = 0
 	s.steamVRFrameCounter = 0
@@ -343,12 +360,13 @@ func (s *HostService) Start(config HostConfig) error {
 		s.addLog(fmt.Sprintf("Host interface [%s] %s: %s", address.Kind, address.Name, address.IP))
 	}
 
-	s.wg.Add(5)
+	s.wg.Add(6)
 	go s.acceptLoop(ctx, tcpListener)
 	go s.discoveryLoop(ctx, udpDiscovery, serverName, config.ControlPort)
 	go s.poseLoop(ctx, udpPose)
 	go s.steamVRStatusLoop(ctx, udpSteamVRStatus)
 	go s.videoCaptureLoop(ctx, videoCaptureListener)
+	go s.videoEncoderLoop(ctx)
 	return nil
 }
 
@@ -410,8 +428,10 @@ func (s *HostService) ProbeVideoEncoders(ffmpegPath string) {
 	s.videoEncoderReady = probeErr == nil
 	if probeErr != nil {
 		s.videoEncoderError = probeErr.Error()
+		s.videoEncoderSelected = encoder.Capability{}
 	} else {
 		s.videoEncoderError = ""
+		s.videoEncoderSelected = selected
 	}
 	s.mu.Unlock()
 	if probeErr != nil {
@@ -1238,8 +1258,16 @@ func (s *HostService) videoCaptureLoop(ctx context.Context, listener net.Listene
 			}
 			continue
 		}
+		// There is exactly one driver-side producer. Reject overlapping stale
+		// sockets instead of running two readers and two FFmpeg pipelines.
+		if !s.videoBridgeActive.CompareAndSwap(false, true) {
+			_ = conn.Close()
+			s.addLog("Rejected overlapping SteamVR video bridge connection while the previous bridge is still active")
+			continue
+		}
 		_ = conn.SetWriteDeadline(time.Now().Add(time.Second))
 		if _, err := conn.Write([]byte{1}); err != nil {
+			s.videoBridgeActive.Store(false)
 			_ = conn.Close()
 			continue
 		}
@@ -1247,12 +1275,12 @@ func (s *HostService) videoCaptureLoop(ctx context.Context, listener net.Listene
 		s.mu.Lock()
 		if s.listener == nil {
 			s.mu.Unlock()
+			s.videoBridgeActive.Store(false)
 			_ = conn.Close()
 			return
 		}
 		s.connections[conn] = struct{}{}
 		s.mu.Unlock()
-		s.videoBridgeActive.Store(true)
 		s.wg.Add(1)
 		go func() {
 			defer s.wg.Done()
@@ -1264,33 +1292,62 @@ func (s *HostService) videoCaptureLoop(ctx context.Context, listener net.Listene
 	}
 }
 
+func (s *HostService) acquireRawVideoFrame() *rawVideoFrame {
+	if frame, ok := s.videoFramePool.Get().(*rawVideoFrame); ok && frame != nil && len(frame.data) == videoWidth*videoHeight*4 {
+		return frame
+	}
+	return &rawVideoFrame{data: make([]byte, videoWidth*videoHeight*4)}
+}
+
+func (s *HostService) releaseRawVideoFrame(frame *rawVideoFrame) {
+	if frame == nil {
+		return
+	}
+	frame.timestampNs = 0
+	s.videoFramePool.Put(frame)
+}
+
+// enqueueRawVideoFrame is latest-frame-wins. The TCP reader must keep draining
+// the driver's 4.6 MiB BGRA frames even when QSV is briefly slower than capture;
+// stale frames are dropped from this tiny queue instead of back-pressuring the
+// loopback socket until the driver times out and reconnects.
+func (s *HostService) enqueueRawVideoFrame(frame *rawVideoFrame) {
+	if frame == nil || s.videoFrameQueue == nil {
+		s.releaseRawVideoFrame(frame)
+		return
+	}
+	select {
+	case s.videoFrameQueue <- frame:
+		return
+	default:
+	}
+	select {
+	case stale := <-s.videoFrameQueue:
+		s.releaseRawVideoFrame(stale)
+		s.videoInputQueueDrops.Add(1)
+	default:
+	}
+	select {
+	case s.videoFrameQueue <- frame:
+	default:
+		s.releaseRawVideoFrame(frame)
+		s.videoInputQueueDrops.Add(1)
+	}
+}
+
 func (s *HostService) handleVideoCaptureConnection(ctx context.Context, conn net.Conn) {
 	if tcp, ok := conn.(*net.TCPConn); ok {
-		_ = tcp.SetReadBuffer(8 * 1024 * 1024)
+		_ = tcp.SetReadBuffer(16 * 1024 * 1024)
 	}
-	var session *encoder.H264EncoderSession
-	defer func() {
-		if session != nil {
-			session.Close()
-		}
-	}()
 	headerBytes := make([]byte, videoprotocol.RawFrameHeaderSize)
-	var frameCount uint64
-	statsStart := time.Now()
-	encodedAtWindowStart := s.videoEncodedFrames.Load()
-	udpAtWindowStart := s.videoUDPFragments.Load()
-	droppedAtWindowStart := s.videoDroppedFrames.Load()
-	// Reuse the fixed-size BGRA buffer. Allocating a 4.6 MiB slice for every
-	// 60 FPS frame would create hundreds of MiB/s of GC pressure on the Host.
-	raw := make([]byte, videoWidth*videoHeight*4)
 	for ctx.Err() == nil {
-		_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+		_ = conn.SetReadDeadline(time.Now().Add(videoBridgeReadTimeout))
 		if _, err := io.ReadFull(conn, headerBytes); err != nil {
 			if ctx.Err() != nil {
 				return
 			}
 			if nerr, ok := err.(net.Error); ok && nerr.Timeout() {
-				s.addLog("Video capture bridge stalled while reading a frame header; reconnecting")
+				s.addLog("Video capture bridge idle for 10 seconds; reconnecting without restarting the persistent H.264 encoder")
 				return
 			}
 			s.addLog("Video capture bridge closed: " + err.Error())
@@ -1305,57 +1362,123 @@ func (s *HostService) handleVideoCaptureConnection(ctx context.Context, conn net
 			s.addLog(fmt.Sprintf("Unexpected SteamVR video profile %dx%d stride=%d; expected %dx%d BGRA", header.Width, header.Height, header.Stride, videoWidth, videoHeight))
 			return
 		}
-		if int(header.PayloadSize) != len(raw) {
-			s.addLog(fmt.Sprintf("SteamVR raw frame payload %d does not match negotiated buffer %d", header.PayloadSize, len(raw)))
+		if int(header.PayloadSize) != videoWidth*videoHeight*4 {
+			s.addLog(fmt.Sprintf("SteamVR raw frame payload %d does not match negotiated buffer %d", header.PayloadSize, videoWidth*videoHeight*4))
 			return
 		}
-		if _, err := io.ReadFull(conn, raw); err != nil {
+		frame := s.acquireRawVideoFrame()
+		_ = conn.SetReadDeadline(time.Now().Add(videoBridgeReadTimeout))
+		if _, err := io.ReadFull(conn, frame.data); err != nil {
+			s.releaseRawVideoFrame(frame)
 			s.addLog("Incomplete SteamVR raw video frame; reconnecting: " + err.Error())
 			return
 		}
 		if _, enabled := s.currentVideoTarget(); !enabled {
+			s.releaseRawVideoFrame(frame)
 			return
 		}
-		if session == nil {
-			s.mu.RLock()
-			ffmpegPath := s.videoFFmpegPath
-			s.mu.RUnlock()
-			created, createErr := encoder.StartHardwareH264Encoder(ctx, ffmpegPath, videoWidth, videoHeight, videoFrameRate,
-				func(accessUnit []byte, id uint32, timestamp uint64, key bool) error {
-					s.videoEncodedFrames.Add(1)
-					if sendErr := s.sendEncodedVideoFrame(accessUnit, id, timestamp, key); sendErr != nil {
-						s.addLog("Dropped one H.264 access unit after UDP send failure; encoder kept running for next IDR: " + sendErr.Error())
-					}
-					return nil
-				}, s.addLog)
-			if createErr != nil {
-				s.addLog("H.264 video encoder session failed: " + createErr.Error())
+		frame.timestampNs = header.TimestampNs
+		s.videoRawFrames.Add(1)
+		s.enqueueRawVideoFrame(frame)
+	}
+}
+
+// videoEncoderLoop owns exactly one FFmpeg process for the Host service
+// lifetime. It is intentionally independent of the driver's TCP connection:
+// brief loopback reconnects can no longer spawn and destroy FFmpeg repeatedly.
+func (s *HostService) videoEncoderLoop(ctx context.Context) {
+	defer s.wg.Done()
+	var session *encoder.H264EncoderSession
+	var retryAfter time.Time
+	var framesInWindow uint64
+	statsStart := time.Now()
+	encodedAtWindowStart := s.videoEncodedFrames.Load()
+	udpAtWindowStart := s.videoUDPFragments.Load()
+	droppedAtWindowStart := s.videoDroppedFrames.Load()
+	inputDropsAtWindowStart := s.videoInputQueueDrops.Load()
+	defer func() {
+		if session != nil {
+			session.Close()
+		}
+		for {
+			select {
+			case frame := <-s.videoFrameQueue:
+				s.releaseRawVideoFrame(frame)
+			default:
 				return
 			}
-			session = created
-			s.addLog("Live VR video is using hardware H.264 encoding: " + session.EncoderName())
 		}
-		if err := session.WriteFrame(raw, header.TimestampNs); err != nil {
-			s.videoDroppedFrames.Add(1)
-			s.addLog("H.264 encoder input failed: " + err.Error())
+	}()
+
+	for {
+		select {
+		case <-ctx.Done():
 			return
-		}
-		s.videoRawFrames.Add(1)
-		frameCount++
-		if elapsed := time.Since(statsStart); elapsed >= 5*time.Second {
-			seconds := maxDurationSeconds(elapsed)
-			encodedNow := s.videoEncodedFrames.Load()
-			udpNow := s.videoUDPFragments.Load()
-			droppedNow := s.videoDroppedFrames.Load()
-			s.addLog(fmt.Sprintf("Video pipeline: raw %.1f FPS | H.264 %.1f FPS | UDP fragments %d | dropped access units %d | backend %s",
-				float64(frameCount)/seconds,
-				float64(encodedNow-encodedAtWindowStart)/seconds,
-				udpNow-udpAtWindowStart, droppedNow-droppedAtWindowStart, session.EncoderName()))
-			frameCount = 0
-			encodedAtWindowStart = encodedNow
-			udpAtWindowStart = udpNow
-			droppedAtWindowStart = droppedNow
-			statsStart = time.Now()
+		case frame := <-s.videoFrameQueue:
+			if frame == nil {
+				continue
+			}
+			if session == nil {
+				if time.Now().Before(retryAfter) {
+					s.releaseRawVideoFrame(frame)
+					continue
+				}
+				s.mu.RLock()
+				ffmpegPath := s.videoFFmpegPath
+				selected := s.videoEncoderSelected
+				ready := s.videoEncoderReady
+				s.mu.RUnlock()
+				if !ready || selected.Name == "" {
+					s.releaseRawVideoFrame(frame)
+					retryAfter = time.Now().Add(5 * time.Second)
+					continue
+				}
+				created, createErr := encoder.StartH264EncoderWithCapability(ctx, ffmpegPath, videoWidth, videoHeight, videoFrameRate, selected,
+					func(accessUnit []byte, id uint32, timestamp uint64, key bool) error {
+						s.videoEncodedFrames.Add(1)
+						if sendErr := s.sendEncodedVideoFrame(accessUnit, id, timestamp, key); sendErr != nil {
+							s.addLog("Dropped one H.264 access unit after UDP send failure; persistent encoder remains active: " + sendErr.Error())
+						}
+						return nil
+					}, s.addLog)
+				if createErr != nil {
+					s.addLog("Persistent H.264 encoder startup failed; retrying after 5 seconds: " + createErr.Error())
+					retryAfter = time.Now().Add(5 * time.Second)
+					s.releaseRawVideoFrame(frame)
+					continue
+				}
+				session = created
+				s.addLog("Persistent live VR hardware H.264 encoder started: " + session.EncoderName())
+			}
+
+			if err := session.WriteFrame(frame.data, frame.timestampNs); err != nil {
+				s.videoDroppedFrames.Add(1)
+				s.addLog("Persistent H.264 encoder input failed; stopping the failed session and retrying after 5 seconds: " + err.Error())
+				session.Close()
+				session = nil
+				retryAfter = time.Now().Add(5 * time.Second)
+				s.releaseRawVideoFrame(frame)
+				continue
+			}
+			s.releaseRawVideoFrame(frame)
+			framesInWindow++
+			if elapsed := time.Since(statsStart); elapsed >= 5*time.Second {
+				seconds := maxDurationSeconds(elapsed)
+				encodedNow := s.videoEncodedFrames.Load()
+				udpNow := s.videoUDPFragments.Load()
+				droppedNow := s.videoDroppedFrames.Load()
+				inputDropsNow := s.videoInputQueueDrops.Load()
+				s.addLog(fmt.Sprintf("Video pipeline: queued-to-FFmpeg %.1f FPS | H.264 %.1f FPS | UDP fragments %d | input queue drops %d | dropped access units %d | backend %s",
+					float64(framesInWindow)/seconds,
+					float64(encodedNow-encodedAtWindowStart)/seconds,
+					udpNow-udpAtWindowStart, inputDropsNow-inputDropsAtWindowStart, droppedNow-droppedAtWindowStart, session.EncoderName()))
+				framesInWindow = 0
+				encodedAtWindowStart = encodedNow
+				udpAtWindowStart = udpNow
+				droppedAtWindowStart = droppedNow
+				inputDropsAtWindowStart = inputDropsNow
+				statsStart = time.Now()
+			}
 		}
 	}
 }

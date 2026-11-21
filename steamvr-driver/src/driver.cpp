@@ -1153,11 +1153,18 @@ float4 main(float4 position : SV_POSITION, float2 uv : TEXCOORD0) : SV_TARGET {
         m_captureCv.notify_one();
     }
 
-    static bool SendAll(SOCKET socketValue, const char* data, size_t length) {
+    static bool SendAll(SOCKET socketValue, const char* data, size_t length, int* socketError = nullptr) {
         while (length) {
             const int chunk = static_cast<int>(std::min<size_t>(length, 1024 * 1024));
             const int sent = send(socketValue, data, chunk, 0);
-            if (sent == SOCKET_ERROR || sent == 0) return false;
+            if (sent == SOCKET_ERROR) {
+                if (socketError) *socketError = WSAGetLastError();
+                return false;
+            }
+            if (sent == 0) {
+                if (socketError) *socketError = WSAECONNRESET;
+                return false;
+            }
             data += sent; length -= static_cast<size_t>(sent);
         }
         return true;
@@ -1212,7 +1219,13 @@ float4 main(float4 position : SV_POSITION, float2 uv : TEXCOORD0) : SV_TARGET {
                         m_videoBridgeFailures.fetch_add(1, std::memory_order_relaxed);
                     } else {
                         BOOL noDelay = TRUE; setsockopt(bridge, IPPROTO_TCP, TCP_NODELAY, reinterpret_cast<const char*>(&noDelay), sizeof(noDelay));
-                        DWORD timeout = 250; setsockopt(bridge, SOL_SOCKET, SO_SNDTIMEO, reinterpret_cast<const char*>(&timeout), sizeof(timeout));
+                        // A raw 1600x720 BGRA frame is 4.6 MiB. A 250 ms send
+                        // timeout is too aggressive during brief Host/encoder stalls
+                        // and causes a reconnect loop that used to respawn FFmpeg.
+                        DWORD timeout = 5000;
+                        setsockopt(bridge, SOL_SOCKET, SO_SNDTIMEO, reinterpret_cast<const char*>(&timeout), sizeof(timeout));
+                        int sendBufferBytes = 8 * 1024 * 1024;
+                        setsockopt(bridge, SOL_SOCKET, SO_SNDBUF, reinterpret_cast<const char*>(&sendBufferBytes), sizeof(sendBufferBytes));
                         char activation = 0;
                         if (recv(bridge, &activation, 1, MSG_WAITALL) != 1 || activation != 1) {
                             closesocket(bridge); bridge = INVALID_SOCKET;
@@ -1275,12 +1288,22 @@ float4 main(float4 position : SV_POSITION, float2 uv : TEXCOORD0) : SV_TARGET {
                 PutBE16(header + 6, 32); PutBE32(header + 8, frameId); PutBE64(header + 12, timestampNs);
                 PutBE16(header + 20, kVideoWidth); PutBE16(header + 22, kVideoHeight);
                 PutBE32(header + 24, kVideoWidth * 4); PutBE32(header + 28, static_cast<uint32_t>(pixels.size()));
-                const bool sentFrame = SendAll(bridge, reinterpret_cast<const char*>(header), sizeof(header)) &&
-                                       SendAll(bridge, reinterpret_cast<const char*>(pixels.data()), pixels.size());
+                int sendError = 0;
+                const bool sentFrame = SendAll(bridge, reinterpret_cast<const char*>(header), sizeof(header), &sendError) &&
+                                       SendAll(bridge, reinterpret_cast<const char*>(pixels.data()), pixels.size(), &sendError);
                 if (sentFrame) {
                     m_videoFramesSent.fetch_add(1, std::memory_order_relaxed);
                 } else {
                     m_captureBridgeReady.store(false, std::memory_order_release);
+                    const uint64_t errorNow = MonotonicNowNs();
+                    if (vr::VRDriverLog() && (m_lastBridgeErrorLogNs == 0 || errorNow - m_lastBridgeErrorLogNs >= 2000000000ULL)) {
+                        char line[192]{};
+                        std::snprintf(line, sizeof(line),
+                                      "PhoneVR: raw video TCP send failed WSA error=%d; reconnecting capture bridge",
+                                      sendError);
+                        vr::VRDriverLog()->Log(line);
+                        m_lastBridgeErrorLogNs = errorNow;
+                    }
                     closesocket(bridge); bridge = INVALID_SOCKET;
                     m_videoBridgeFailures.fetch_add(1, std::memory_order_relaxed);
                     m_videoFramesSkipped.fetch_add(1, std::memory_order_relaxed);
@@ -1375,6 +1398,7 @@ float4 main(float4 position : SV_POSITION, float2 uv : TEXCOORD0) : SV_TARGET {
     std::atomic<uint64_t> m_videoReadbackFailures{0};
     std::atomic<uint64_t> m_videoBridgeFailures{0};
     uint64_t m_lastVideoCaptureNs = 0;
+    uint64_t m_lastBridgeErrorLogNs = 0;
     uint32_t m_captureWidth = 0;
     uint32_t m_captureHeight = 0;
     bool m_loggedVideoFormatFailure = false;

@@ -8,6 +8,7 @@ import (
 	"math"
 	"net"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -27,6 +28,28 @@ func TestHostSnapshotIncludesVideoPipelineCounters(t *testing.T) {
 	if snapshot.VideoRawFrames != 120 || snapshot.VideoEncodedFrames != 118 ||
 		snapshot.VideoUDPFragments != 420 || snapshot.VideoDroppedFrames != 2 {
 		t.Fatalf("unexpected video counters: %+v", snapshot)
+	}
+}
+
+func TestRawVideoQueueKeepsNewestFramesWhenEncoderFallsBehind(t *testing.T) {
+	service := NewHostService(false)
+	service.videoFrameQueue = make(chan *rawVideoFrame, videoInputQueueDepth)
+	service.videoFramePool = sync.Pool{}
+
+	for value := byte(1); value <= 3; value++ {
+		service.enqueueRawVideoFrame(&rawVideoFrame{data: []byte{value}, timestampNs: uint64(value)})
+	}
+
+	if got := len(service.videoFrameQueue); got != videoInputQueueDepth {
+		t.Fatalf("queue depth = %d, want bounded depth %d", got, videoInputQueueDepth)
+	}
+	if got := service.videoInputQueueDrops.Load(); got != 1 {
+		t.Fatalf("dropped stale frames = %d, want 1", got)
+	}
+	first := <-service.videoFrameQueue
+	second := <-service.videoFrameQueue
+	if first.data[0] != 2 || second.data[0] != 3 {
+		t.Fatalf("queue did not preserve newest frames: first=%d second=%d", first.data[0], second.data[0])
 	}
 }
 

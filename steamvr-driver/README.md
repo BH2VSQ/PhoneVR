@@ -1,4 +1,4 @@
-# PhoneVR SteamVR Driver — 0.4.18
+# PhoneVR SteamVR Driver — 0.4.19
 
 Windows x64 OpenVR server driver foundation for the PhoneVR wireless HMD.
 
@@ -26,6 +26,8 @@ packets, maximum pose publish gap and maximum sample age. The virtual-display
 component separately reports `Present` / `WaitForPresent` callback rates and
 maximum callback durations, so tracking-rate problems can be distinguished
 from compositor/GPU synchronization stalls. The virtual display timing is fixed at 72 Hz in this revision; sensor input frequency is not the display refresh frequency.
+
+The D3D11 capture implementation uses `ID3D11Multithread`, declared by the Windows SDK header `d3d11_4.h`, to enable context-level multithread protection when the capture and compositor callbacks share the immediate context.
 
 ## Build
 

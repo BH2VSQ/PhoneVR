@@ -64,3 +64,8 @@ Optical presets are persisted in Android app storage. The first launch after upg
 After pairing, the Windows Host sends `get_optical_presets`. Android returns the locally stored catalogue as `optical_presets`. Host-side create/edit/clone/rename/delete operations are sent back with `set_optical_presets`; Android validates the entries, persists them, and acknowledges the normalized list with `optical_presets_ack`. To apply a preset, the Host sends `apply_optical_preset` with only the preset ID. Android resolves that ID from its local store, persists the active preset and effective display settings, updates `StereoRenderer`, and returns `display_settings_ack`.
 
 The `display_settings` report and `set_display_settings` command remain supported for compatibility with earlier Host builds. The current Windows UI manages parameters through optical presets instead of directly editing a separate phone calibration state.
+
+
+## Wired USB connection
+
+The PC connection panel offers Auto, Wi-Fi and USB/RNDIS discovery. For wired streaming, connect the handset to the Windows PC using a data-capable USB cable and enable **USB tethering / USB 网络共享** in Android Settings. Select **USB 有线（RNDIS）** and search. The app enumerates active IPv4 interfaces and sends directed discovery broadcasts through the USB tether interface (normally `rndis0`, `usb0` or an Ethernet-style interface). Once discovered, the same TCP control, UDP pose and H.264 video flows run over the USB network. This mode does not require ADB or Android USB debugging.

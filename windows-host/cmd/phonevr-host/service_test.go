@@ -828,3 +828,20 @@ func TestPoseUpdateDoesNotWaitForGeneralServiceMutex(t *testing.T) {
 	}
 	t.Fatal("pose receiver waited for the general Host service mutex")
 }
+
+func TestClassifyHostInterface(t *testing.T) {
+	cases := map[string]string{
+		"Remote NDIS Compatible Device": "USB/RNDIS",
+		"USB Ethernet/RNDIS Gadget":     "USB/RNDIS",
+		"Wi-Fi":                         "Wi-Fi",
+		"wlan0":                         "Wi-Fi",
+		"Ethernet 3":                    "Ethernet",
+		"eth0":                          "Ethernet",
+		"vEthernet (Default Switch)":    "Network",
+	}
+	for name, expected := range cases {
+		if actual := classifyHostInterface(name); actual != expected {
+			t.Errorf("classifyHostInterface(%q) = %q, want %q", name, actual, expected)
+		}
+	}
+}

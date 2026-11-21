@@ -217,8 +217,20 @@ func (s *HostService) Start(config HostConfig) error {
 	}
 	// Network-interface enumeration can block on virtual adapters and VPN
 	// providers. Resolve addresses once at service start, never in Snapshot(),
-	// because Snapshot is polled by the UI while the pose receiver needs s.mu.
-	localIPs := localIPv4Addresses()
+	// Enumerate once before starting real-time workers. This also exposes USB/RNDIS
+	// addresses for tethered Android discovery without doing interface queries in
+	// the hot pose path or while holding the service state lock.
+	networkAddresses := localIPv4NetworkAddresses()
+	localIPs := make([]string, 0, len(networkAddresses))
+	localIPSet := make(map[string]struct{}, len(networkAddresses))
+	for _, address := range networkAddresses {
+		if _, exists := localIPSet[address.IP]; exists {
+			continue
+		}
+		localIPSet[address.IP] = struct{}{}
+		localIPs = append(localIPs, address.IP)
+	}
+	sort.Strings(localIPs)
 	serverName, hostErr := localHostName()
 	if hostErr != nil || strings.TrimSpace(serverName) == "" {
 		serverName = "PhoneVR Host"
@@ -317,8 +329,8 @@ func (s *HostService) Start(config HostConfig) error {
 	s.poseStateMu.Unlock()
 
 	s.addLog(fmt.Sprintf("Host started on %s | TCP %d | UDP discovery %d | UDP pose %d", config.ListenAddress, config.ControlPort, config.DiscoveryPort, config.PosePort))
-	for _, ip := range localIPs {
-		s.addLog("LAN address: " + ip)
+	for _, address := range networkAddresses {
+		s.addLog(fmt.Sprintf("Host interface [%s] %s: %s", address.Kind, address.Name, address.IP))
 	}
 
 	s.wg.Add(5)
@@ -1274,12 +1286,34 @@ func (s *HostService) setError(message string) {
 	s.addLog("ERROR: " + message)
 }
 
-func localIPv4Addresses() []string {
+type HostNetworkAddress struct {
+	Name string
+	IP   string
+	Kind string
+}
+
+func classifyHostInterface(name string) string {
+	normalized := strings.ToLower(name)
+	switch {
+	case strings.Contains(normalized, "rndis"), strings.Contains(normalized, "remote ndis"), strings.Contains(normalized, "usb"), strings.Contains(normalized, "tether"):
+		return "USB/RNDIS"
+	case strings.Contains(normalized, "wi-fi"), strings.Contains(normalized, "wifi"), strings.Contains(normalized, "wlan"):
+		return "Wi-Fi"
+	case strings.Contains(normalized, "vethernet"):
+		return "Network"
+	case strings.Contains(normalized, "ethernet"), strings.HasPrefix(normalized, "eth"):
+		return "Ethernet"
+	default:
+		return "Network"
+	}
+}
+
+func localIPv4NetworkAddresses() []HostNetworkAddress {
 	interfaces, err := net.Interfaces()
 	if err != nil {
 		return nil
 	}
-	var result []string
+	var result []HostNetworkAddress
 	for _, item := range interfaces {
 		if item.Flags&net.FlagUp == 0 || item.Flags&net.FlagLoopback != 0 {
 			continue
@@ -1288,9 +1322,32 @@ func localIPv4Addresses() []string {
 		for _, address := range addresses {
 			ipNet, ok := address.(*net.IPNet)
 			if ok && ipNet.IP.To4() != nil {
-				result = append(result, ipNet.IP.String())
+				result = append(result, HostNetworkAddress{Name: item.Name, IP: ipNet.IP.String(), Kind: classifyHostInterface(item.Name)})
 			}
 		}
+	}
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].Kind != result[j].Kind {
+			return result[i].Kind < result[j].Kind
+		}
+		if result[i].Name != result[j].Name {
+			return result[i].Name < result[j].Name
+		}
+		return result[i].IP < result[j].IP
+	})
+	return result
+}
+
+func localIPv4Addresses() []string {
+	addresses := localIPv4NetworkAddresses()
+	result := make([]string, 0, len(addresses))
+	seen := make(map[string]struct{}, len(addresses))
+	for _, address := range addresses {
+		if _, exists := seen[address.IP]; exists {
+			continue
+		}
+		seen[address.IP] = struct{}{}
+		result = append(result, address.IP)
 	}
 	sort.Strings(result)
 	return result

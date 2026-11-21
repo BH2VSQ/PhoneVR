@@ -77,7 +77,7 @@ class PoseLatencyRegressionTests(unittest.TestCase):
         self.assertIn("constexpr double alpha = 0.80", DRIVER)
 
     def test_snapshot_never_enumerates_network_adapters_under_pose_mutex(self):
-        self.assertIn("localIPs := localIPv4Addresses()", HOST_SERVICE)
+        self.assertIn("networkAddresses := localIPv4NetworkAddresses()", HOST_SERVICE)
         self.assertIn("s.localIPv4 = append([]string(nil), localIPs...)", HOST_SERVICE)
         self.assertIn("LocalIPv4: append([]string(nil), s.localIPv4...)", HOST_SERVICE)
         snapshot_body = HOST_SERVICE.split("func (s *HostService) Snapshot() HostSnapshot {", 1)[1].split("// PoseFrame", 1)[0]

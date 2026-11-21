@@ -18,6 +18,9 @@ import java.io.OutputStreamWriter
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
+import java.net.Inet4Address
+import java.net.InterfaceAddress
+import java.net.NetworkInterface
 import java.net.InetSocketAddress
 import java.net.Socket
 import java.net.SocketTimeoutException
@@ -173,60 +176,178 @@ class NetworkClient(
         latestPose.set(pose)
     }
 
-    fun discover(onResults: (List<DiscoveredHost>) -> Unit) {
+    private data class DiscoveryTarget(
+        val interfaceName: String,
+        val localAddress: Inet4Address,
+        val broadcastAddress: Inet4Address,
+        val connectionType: String,
+    )
+
+    private data class DiscoverySocket(
+        val target: DiscoveryTarget,
+        val socket: DatagramSocket,
+    )
+
+    fun discover(mode: DiscoveryMode = DiscoveryMode.AUTO, onResults: (List<DiscoveredHost>) -> Unit) {
         discoveryExecutor.execute {
             val found = linkedMapOf<String, DiscoveredHost>()
             var multicastLock: WifiManager.MulticastLock? = null
+            val sockets = mutableListOf<DiscoverySocket>()
             try {
                 val wifiManager = appContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
-                if (wifiManager != null) {
+                if (wifiManager != null && mode != DiscoveryMode.USB) {
                     multicastLock = wifiManager.createMulticastLock("PhoneVR-LAN-Discovery").apply {
                         setReferenceCounted(false)
                         acquire()
                     }
                 }
-                DatagramSocket(null).use { socket ->
-                    socket.reuseAddress = true
-                    socket.broadcast = true
-                    socket.bind(InetSocketAddress(0))
-                    socket.soTimeout = DISCOVERY_READ_TIMEOUT_MS
-                    val request = DISCOVERY_REQUEST.toByteArray(StandardCharsets.UTF_8)
-                    socket.send(
-                        DatagramPacket(
-                            request, request.size,
-                            InetAddress.getByName("255.255.255.255"), DISCOVERY_PORT,
-                        ),
-                    )
-                    val deadline = System.currentTimeMillis() + DISCOVERY_WINDOW_MS
-                    val buffer = ByteArray(2048)
-                    while (System.currentTimeMillis() < deadline) {
-                        try {
-                            val packet = DatagramPacket(buffer, buffer.size)
-                            socket.receive(packet)
-                            val response = String(packet.data, packet.offset, packet.length, StandardCharsets.UTF_8)
-                            if (!response.startsWith(DISCOVERY_RESPONSE_PREFIX)) continue
-                            val json = JSONObject(response.removePrefix(DISCOVERY_RESPONSE_PREFIX))
-                            val address = packet.address.hostAddress ?: continue
-                            found[address] = DiscoveredHost(
-                                address = address,
-                                controlPort = json.optInt("controlPort", DEFAULT_CONTROL_PORT),
-                                name = json.optString("name", "PhoneVR Host"),
-                            )
-                        } catch (_: SocketTimeoutException) {
-                            // Continue until the discovery window expires.
+
+                val targets = enumerateDiscoveryTargets(mode)
+                val request = DISCOVERY_REQUEST.toByteArray(StandardCharsets.UTF_8)
+                for (target in targets) {
+                    try {
+                        val socket = DatagramSocket(null).apply {
+                            reuseAddress = false
+                            broadcast = true
+                            bind(InetSocketAddress(target.localAddress, 0))
+                            soTimeout = DISCOVERY_READ_TIMEOUT_MS
                         }
+                        socket.send(DatagramPacket(
+                            request, request.size, target.broadcastAddress, DISCOVERY_PORT,
+                        ))
+                        sockets += DiscoverySocket(target, socket)
+                    } catch (error: Exception) {
+                        postStatus("接口 ${target.interfaceName} 搜索失败：${error.message ?: error.javaClass.simpleName}", false)
+                    }
+                }
+
+                // Preserve compatibility with VPNs and unusual networks that do not
+                // expose an IPv4 directed-broadcast address through NetworkInterface.
+                if (sockets.isEmpty() && mode == DiscoveryMode.AUTO) {
+                    DatagramSocket(null).use { socket ->
+                        socket.reuseAddress = true
+                        socket.broadcast = true
+                        socket.bind(InetSocketAddress(0))
+                        socket.soTimeout = DISCOVERY_READ_TIMEOUT_MS
+                        socket.send(DatagramPacket(
+                            request, request.size, InetAddress.getByName("255.255.255.255"), DISCOVERY_PORT,
+                        ))
+                        val deadline = System.currentTimeMillis() + DISCOVERY_WINDOW_MS
+                        readDiscoveryResponses(socket, null, deadline, found)
+                    }
+                } else {
+                    val deadline = System.currentTimeMillis() + DISCOVERY_WINDOW_MS
+                    // Poll each per-interface socket with a short timeout. Binding
+                    // each socket to the interface address forces discovery over
+                    // both Wi-Fi and Android USB tethering (rndis0/usb0).
+                    while (System.currentTimeMillis() < deadline && sockets.isNotEmpty()) {
+                        var receivedAny = false
+                        val remaining = (deadline - System.currentTimeMillis()).coerceAtLeast(1L)
+                        val timeout = minOf(80L, remaining).toInt().coerceAtLeast(10)
+                        for (entry in sockets) {
+                            try {
+                                entry.socket.soTimeout = timeout
+                                val buffer = ByteArray(2048)
+                                val packet = DatagramPacket(buffer, buffer.size)
+                                entry.socket.receive(packet)
+                                receivedAny = true
+                                parseDiscoveryResponse(packet, entry.target, found)
+                            } catch (_: SocketTimeoutException) {
+                                // Poll the next active interface.
+                            }
+                        }
+                        if (!receivedAny && System.currentTimeMillis() >= deadline) break
                     }
                 }
             } catch (error: Exception) {
                 postStatus("搜索 PC 失败：${error.message ?: error.javaClass.simpleName}", false)
             } finally {
+                sockets.forEach { runCatching { it.socket.close() } }
                 try {
                     if (multicastLock?.isHeld == true) multicastLock?.release()
                 } catch (_: Exception) { }
             }
-            mainHandler.post { onResults(found.values.toList()) }
+            val sorted = found.values.sortedWith(
+                compareBy<DiscoveredHost> { if (mode == DiscoveryMode.AUTO && it.connectionType == "USB") 0 else 1 }
+                    .thenBy { it.name }.thenBy { it.address },
+            )
+            mainHandler.post { onResults(sorted) }
         }
     }
+
+    private fun readDiscoveryResponses(
+        socket: DatagramSocket,
+        target: DiscoveryTarget?,
+        deadline: Long,
+        found: MutableMap<String, DiscoveredHost>,
+    ) {
+        while (System.currentTimeMillis() < deadline) {
+            try {
+                val buffer = ByteArray(2048)
+                val packet = DatagramPacket(buffer, buffer.size)
+                socket.soTimeout = DISCOVERY_READ_TIMEOUT_MS
+                socket.receive(packet)
+                parseDiscoveryResponse(packet, target, found)
+            } catch (_: SocketTimeoutException) {
+                // Keep listening until the bounded discovery window expires.
+            }
+        }
+    }
+
+    private fun parseDiscoveryResponse(
+        packet: DatagramPacket,
+        target: DiscoveryTarget?,
+        found: MutableMap<String, DiscoveredHost>,
+    ) {
+        val response = String(packet.data, packet.offset, packet.length, StandardCharsets.UTF_8)
+        if (!response.startsWith(DISCOVERY_RESPONSE_PREFIX)) return
+        val json = JSONObject(response.removePrefix(DISCOVERY_RESPONSE_PREFIX))
+        val address = packet.address.hostAddress ?: return
+        val type = target?.connectionType ?: "LAN"
+        val iface = target?.interfaceName.orEmpty()
+        val host = DiscoveredHost(
+            address = address,
+            controlPort = json.optInt("controlPort", DEFAULT_CONTROL_PORT),
+            name = json.optString("name", "PhoneVR Host"),
+            connectionType = type,
+            interfaceName = iface,
+        )
+        found["$address|$type"] = host
+    }
+
+    private fun enumerateDiscoveryTargets(mode: DiscoveryMode): List<DiscoveryTarget> {
+        val result = mutableListOf<DiscoveryTarget>()
+        val interfaces = runCatching { NetworkInterface.getNetworkInterfaces()?.toList().orEmpty() }.getOrDefault(emptyList())
+        for (networkInterface in interfaces) {
+            val active = runCatching { networkInterface.isUp && !networkInterface.isLoopback }.getOrDefault(false)
+            if (!active) continue
+            val name = networkInterface.name ?: networkInterface.displayName ?: "unknown"
+            val type = ConnectionInterfaceClassifier.classify(name)
+            if (!ConnectionInterfaceClassifier.accepts(mode, type)) continue
+            for (entry: InterfaceAddress in networkInterface.interfaceAddresses) {
+                val local = entry.address as? Inet4Address ?: continue
+                var broadcast = entry.broadcast as? Inet4Address
+                if (broadcast == null) broadcast = calculateBroadcast(local, entry) ?: continue
+                result += DiscoveryTarget(name, local, broadcast, type)
+            }
+        }
+        return result.distinctBy { "${it.interfaceName}|${it.localAddress.hostAddress}|${it.broadcastAddress.hostAddress}" }
+    }
+
+    private fun calculateBroadcast(local: Inet4Address, entry: InterfaceAddress): Inet4Address? {
+        val prefix = entry.networkPrefixLength.toInt().coerceIn(0, 32)
+        if (prefix !in 1..30) return null // /31 and /32 links do not have a usable broadcast host range.
+        val address = local.address
+        val result = ByteArray(4)
+        for (index in 0 until 4) {
+            val remainingBits = (prefix - index * 8).coerceIn(0, 8)
+            val mask = if (remainingBits == 0) 0 else (0xFF shl (8 - remainingBits)) and 0xFF
+            val hostMask = mask.inv() and 0xFF
+            result[index] = ((address[index].toInt() and 0xFF) or hostMask).toByte()
+        }
+        return runCatching { InetAddress.getByAddress(result) as Inet4Address }.getOrNull()
+    }
+
 
     /**
      * Starts a session-scoped connection loop. A short Wi-Fi interruption or a
@@ -671,7 +792,7 @@ class NetworkClient(
         const val DEFAULT_VIDEO_FPS = 60
         const val DISCOVERY_PORT = 48100
         private const val PROTOCOL_VERSION = 1
-        private const val CLIENT_VERSION = "PhoneVRStream-0.4.18"
+        private const val CLIENT_VERSION = "PhoneVRStream-0.4.19"
         private const val DISCOVERY_REQUEST = "PHONEVR_DISCOVER_V1"
         private const val DISCOVERY_RESPONSE_PREFIX = "PHONEVR_HOST_V1 "
         private const val DISCOVERY_WINDOW_MS = 1800L

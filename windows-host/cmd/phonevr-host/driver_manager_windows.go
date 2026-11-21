@@ -378,11 +378,19 @@ func fileExists(path string) bool {
 	return err == nil && !info.IsDir()
 }
 
+// setDriverStatusText converts LF-only strings to CRLF, which is the native
+// line-break format expected by a standard Win32 multiline EDIT control.
+func setDriverStatusText(hwnd uintptr, text string) {
+	text = strings.ReplaceAll(text, "\r\n", "\n")
+	text = strings.ReplaceAll(text, "\n", "\r\n")
+	setNativeText(hwnd, text)
+}
+
 func (app *nativeUI) refreshDriverStatus(d *nativeDialog) {
 	if d == nil || d.status == 0 {
 		return
 	}
-	setNativeText(d.status, app.text("正在检查 SteamVR 驱动...", "Checking SteamVR driver..."))
+	setDriverStatusText(d.status, app.text("正在检查 SteamVR 驱动...", "Checking SteamVR driver..."))
 	go func(hwnd, status uintptr) {
 		state, err := getPhoneVRDriverStatus()
 		ok, _, _ := pIsWindow.Call(hwnd)
@@ -390,7 +398,7 @@ func (app *nativeUI) refreshDriverStatus(d *nativeDialog) {
 			return
 		}
 		if err != nil {
-			setNativeText(status, "SteamVR: "+err.Error())
+			setDriverStatusText(status, "SteamVR: "+err.Error())
 			return
 		}
 		lines := []string{}
@@ -410,7 +418,7 @@ func (app *nativeUI) refreshDriverStatus(d *nativeDialog) {
 			lines = append(lines, "内置驱动：可用")
 		}
 		lines = append(lines, "SteamVR: "+state.Runtime)
-		setNativeText(status, strings.Join(lines, "\n"))
+		setDriverStatusText(status, strings.Join(lines, "\n"))
 	}(d.hwnd, d.status)
 }
 
@@ -418,7 +426,7 @@ func (app *nativeUI) runDriverTask(d *nativeDialog, startText string, task func(
 	if d == nil {
 		return
 	}
-	setNativeText(d.status, startText)
+	setDriverStatusText(d.status, startText)
 	buttons := []uintptr{d.controls[idDriverRefresh], d.controls[idDriverInstall], d.controls[idDriverRemove]}
 	for _, button := range buttons {
 		if button != 0 {
@@ -433,9 +441,9 @@ func (app *nativeUI) runDriverTask(d *nativeDialog, startText string, task func(
 			return
 		}
 		if err != nil {
-			setNativeText(status, "操作失败："+err.Error())
+			setDriverStatusText(status, "操作失败："+err.Error())
 		} else {
-			setNativeText(status, message)
+			setDriverStatusText(status, message)
 		}
 		pInvalidateRect.Call(hwnd, 0, 1)
 		for _, button := range buttons {

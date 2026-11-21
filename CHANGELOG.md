@@ -1,3 +1,9 @@
+## 0.4.6 - Driver manager status readability
+
+- Replaced the SteamVR driver status label with a read-only multiline text control that automatically wraps long paths and supports text selection and copying.
+- Increased the status area height and moved the driver action buttons lower to improve vertical spacing.
+- Removed the decorative footer frame surrounding the Close button while keeping the button in its original bottom position.
+
 ## 0.4.5 - Automated release
 
 - Android versionName and versionCode bumped by the manual release workflow.

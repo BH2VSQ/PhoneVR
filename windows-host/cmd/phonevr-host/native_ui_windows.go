@@ -150,6 +150,8 @@ const (
 	wsClipSiblings      = 0x04000000
 	wsClipChildren      = 0x02000000
 	esAutoHScroll       = 0x0080
+	esAutoVScroll       = 0x0040
+	esNoHideSel         = 0x0100
 	esReadOnly          = 0x0800
 	esMultiline         = 0x0004
 	esWantReturn        = 0x1000
@@ -1257,7 +1259,10 @@ func (app *nativeUI) createDialogControls(d *nativeDialog) {
 		addButton(idClose, app.text("关闭", "Close"))
 
 	case "driver":
-		d.status = app.createControl(d.hwnd, "STATIC", app.text("正在检查 SteamVR 驱动...", "Checking SteamVR driver..."), wsChild|wsVisible, 0, 0, 10, 10, 0)
+		// A read-only multiline EDIT control wraps long installation paths and
+		// keeps the status text selectable for Ctrl+A / Ctrl+C.
+		d.status = app.createControl(d.hwnd, "EDIT", app.text("正在检查 SteamVR 驱动...", "Checking SteamVR driver..."),
+			wsChild|wsVisible|wsTabStop|esMultiline|esReadOnly|esAutoVScroll|esNoHideSel, 0, 0, 10, 10, 0)
 		addButton(idDriverRefresh, app.text("检查状态", "Check Status"))
 		addButton(idDriverInstall, app.text("安装 / 修复内置驱动", "Install / Repair Bundled Driver"))
 		addButton(idDriverRemove, app.text("卸载并停用自动部署", "Uninstall & Disable Auto Deploy"))
@@ -1377,11 +1382,11 @@ func (app *nativeUI) layoutDialog(d *nativeDialog) {
 
 	case "driver":
 		margin := 24
-		move(d.status, margin, 82, w-2*margin, 150)
+		move(d.status, margin, 82, w-2*margin, 162)
 		buttonW := (w - 2*margin - 14) / 2
-		move(d.controls[idDriverRefresh], margin, 246, buttonW, 42)
-		move(d.controls[idDriverInstall], margin+buttonW+14, 246, buttonW, 42)
-		move(d.controls[idDriverRemove], margin, 304, w-2*margin, 42)
+		move(d.controls[idDriverRefresh], margin, 260, buttonW, 42)
+		move(d.controls[idDriverInstall], margin+buttonW+14, 260, buttonW, 42)
+		move(d.controls[idDriverRemove], margin, 318, w-2*margin, 42)
 		// Keep the footer compact so the status area has more usable room.
 		move(d.controls[idClose], w-margin-124, h-46, 124, 34)
 
@@ -1558,11 +1563,10 @@ func (app *nativeUI) paintDialog(d *nativeDialog, hdc uintptr) {
 	}
 	drawNativeText(hdc, title, nativeRect{22, 10, int32(w - 22), 48}, p.Text, app.fontTitle, dtVCenter|dtSingleLine|dtEndEllipsis|dtNoPrefix)
 	drawNativeLine(hdc, 18, 64, w-18, 64, p.Border, 1)
-	footerTop := h - 92
-	if d.kind == "driver" {
-		footerTop = h - 62
+	if d.kind != "driver" {
+		footerTop := h - 92
+		drawNativeRoundRect(hdc, nativeRect{12, int32(footerTop), int32(w - 12), int32(h - 10)}, p.Panel, p.Border, 12)
 	}
-	drawNativeRoundRect(hdc, nativeRect{12, int32(footerTop), int32(w - 12), int32(h - 10)}, p.Panel, p.Border, 12)
 	if d.kind == "presets" {
 		l := ComputeNativePresetDialogLayout(w, h)
 		drawNativeRoundRect(hdc, nativeRect{int32(l.LeftPanel.Left), int32(l.LeftPanel.Top), int32(l.LeftPanel.Right), int32(l.LeftPanel.Bottom)}, p.Surface, p.Border, 12)

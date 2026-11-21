@@ -8,7 +8,6 @@ ACTIVITY = (ROOT / "android/app/src/main/java/com/vsq/phonvrstream/MainActivity.
 QUATERNION = (ROOT / "android/app/src/main/java/com/vsq/phonvrstream/tracking/Quaternion.kt").read_text(encoding="utf-8")
 HOST_SERVICE = (ROOT / "windows-host/cmd/phonevr-host/service.go").read_text(encoding="utf-8")
 HOST_UI = (ROOT / "windows-host/cmd/phonevr-host/native_ui_windows.go").read_text(encoding="utf-8")
-HOST_THEME = (ROOT / "windows-host/cmd/phonevr-host/native_theme_windows.go").read_text(encoding="utf-8")
 DRIVER_README = (ROOT / "steamvr-driver/README.md").read_text(encoding="utf-8")
 
 
@@ -78,7 +77,7 @@ class PoseLatencyRegressionTests(unittest.TestCase):
         self.assertIn("constexpr double alpha = 0.80", DRIVER)
 
     def test_snapshot_never_enumerates_network_adapters_under_pose_mutex(self):
-        self.assertIn("networkAddresses := localIPv4NetworkAddresses()", HOST_SERVICE)
+        self.assertIn("localIPs := localIPv4Addresses()", HOST_SERVICE)
         self.assertIn("s.localIPv4 = append([]string(nil), localIPs...)", HOST_SERVICE)
         self.assertIn("LocalIPv4: append([]string(nil), s.localIPv4...)", HOST_SERVICE)
         snapshot_body = HOST_SERVICE.split("func (s *HostService) Snapshot() HostSnapshot {", 1)[1].split("// PoseFrame", 1)[0]
@@ -100,20 +99,11 @@ class PoseLatencyRegressionTests(unittest.TestCase):
     def test_host_pose_preview_runs_at_sixty_hz_target(self):
         self.assertIn("pSetTimer.Call(hwnd, 1, 16, 0)", HOST_UI)
 
-    def test_virtual_display_redirect_uses_extended_display_mode(self):
-        self.assertIn("bool IsDisplayOnDesktop() override { return true; }", DRIVER)
-        self.assertIn("Extended Display Mode required", DRIVER)
-        self.assertIn("keep SteamVR Direct Mode disabled", DRIVER)
-        self.assertIn("Extended\nDisplay Mode", DRIVER_README)
-        self.assertNotIn("enable **SteamVR → Settings → Developer → Enable Direct Mode**", DRIVER_README)
-
-    def test_component_query_state_is_exposed_to_host(self):
-        self.assertIn("kStatus2VirtualDisplayComponentQueried", DRIVER)
-        self.assertEqual(DRIVER.count("bool VirtualDisplayComponentQueried() const"), 1)
-        self.assertIn("SteamVRVirtualDisplayComponentQueried", HOST_SERVICE)
-        self.assertIn("STEAMVR HAS NOT QUERIED IVRVirtualDisplay", HOST_THEME)
-        self.assertIn("LogInvalidPresentInfoOnce", DRIVER)
-        self.assertIn("invalidPresent=%llu", DRIVER)
+    def test_driver_requests_non_desktop_hmd_display_and_documents_runtime_toggle(self):
+        self.assertIn("bool IsDisplayOnDesktop() override { return false; }", DRIVER)
+        self.assertIn("Enable Direct Mode", DRIVER)
+        self.assertIn("SteamVR Settings > Developer > Enable Direct Mode", DRIVER)
+        self.assertIn("IVRVirtualDisplay", DRIVER_README)
 
     def test_host_pose_state_has_a_dedicated_lock_separate_from_general_service_state(self):
         self.assertIn("poseStateMu           sync.RWMutex", HOST_SERVICE)

@@ -1,10 +1,10 @@
-# PhoneVR Low-Latency Video Protocol v1 (0.4.21)
+# PhoneVR Low-Latency Video Protocol v1 (0.4.18)
 
 This protocol is additive to control protocol v1. It does not alter the existing
-`PVSP` 36-byte Android HMD pose datagram. The 0.4.21 implementation wires the
+`PVSP` 36-byte Android HMD pose datagram. The 0.4.18 implementation wires the
 SteamVR backbuffer capture, Host hardware H.264 encode, `PVRV` UDP fragments,
-Android reassembly, MediaCodec decode and SBS stereo rendering. Wi-Fi is the currently supported streaming transport; USB tether/RNDIS is deferred. Full real-device
-latency and Wi-Fi end-to-end qualification remain required.
+Android reassembly, MediaCodec decode and SBS stereo rendering. Full real-device
+latency and Wi-Fi loss qualification remain required.
 
 ## Transport layout
 
@@ -18,7 +18,8 @@ latency and Wi-Fi end-to-end qualification remain required.
 | 48105 | UDP loopback only | SteamVR driver → Host | Driver heartbeat and display diagnostics |
 | 48106 | TCP loopback only | SteamVR driver → Host | Raw BGRA compositor capture bridge (`PVRC`) |
 
-The PC and phone should be connected to the same LAN/WLAN. Guest network/client isolation must be disabled for wireless discovery.
+The PC should preferably use Ethernet to a Wi-Fi 6 access point while the phone
+uses a dedicated 5 GHz WLAN. Guest network/client isolation must be disabled.
 Ports 48103, 48105 and 48106 bind only to loopback; the video UDP sender targets
 the phone's paired control-session IP.
 
@@ -100,5 +101,3 @@ repeats an IDR at least once per second so the receiver can recover after loss.
 Real Windows MSVC/D3D11, target-GPU hardware encoding, Android device MediaCodec
 and Wi-Fi end-to-end tests are still required before claiming validated runtime
 performance.
-
-

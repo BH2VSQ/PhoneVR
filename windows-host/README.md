@@ -1,4 +1,4 @@
-# PhoneVR Host 0.4.23 bundled SteamVR driver and live SBS video
+# PhoneVR Host 0.4.18 bundled SteamVR driver and live SBS video
 
 Executable version is injected from the repository root `VERSION` file during builds.
 
@@ -9,11 +9,6 @@ Native Windows desktop application and Go networking service for the PhoneVRStre
 The Host runs a bounded FFmpeg encoder-candidate probe at startup. Use `PhoneVRHost.exe -ffmpeg <path>` when FFmpeg is not on PATH. NVIDIA NVENC, AMD AMF and Intel QSV names are candidates only; the video pipeline must still initialize the selected encoder against a concrete DXGI adapter and test a frame before marking it usable.
 
 ## Native desktop UI
-
-### Video pipeline status
-
-The Host status pill reports whether SteamVR is calling virtual-display `Present`, whether the D3D11 capture resources and loopback bridge are ready, whether raw BGRA frames reached Host, whether the hardware H.264 encoder/UDP sender are active, and the latest Android receive/decode/display stage. Runtime Logs also include Android stage detail and per-stage counts. USB tether/RNDIS selection is deferred; use Auto or Wi-Fi discovery for the current video-streaming path.
-
 
 `PhoneVRHost.exe` creates a native Win32 top-level application window. The UI is drawn with Win32/GDI+ and the HMD pose preview uses WGL/OpenGL. There is no WebView, browser runtime or local HTTP dashboard.
 
@@ -123,5 +118,3 @@ Open **SteamVR Driver** from the Host main menu to refresh status, install/repai
 ## Live stereo video stream
 
 When the Android client reports a hardware MediaCodec H.264 decoder supporting 1600×720 at 60 FPS, and Host has verified a working PC hardware H.264 encoder, the driver streams the final SBS compositor image to Host over loopback TCP `127.0.0.1:48106`. Host encodes with NVENC, AMF or QSV and sends MTU-safe H.264 Annex-B UDP fragments to the phone on port `48104`. CPU software encoding is disabled for this live path to protect SteamVR rendering performance. The virtual display remains fixed at 72 Hz; the retired Host refresh-rate setting is no longer present.
-
-

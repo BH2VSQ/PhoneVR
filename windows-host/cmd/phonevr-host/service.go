@@ -15,7 +15,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/vsq-studio/phonevr-host/internal/encoder"
@@ -26,7 +25,7 @@ import (
 const (
 	protocolVersion         = 1
 	controlIdleTimeout      = 15 * time.Second
-	controlWriteTimeout     = 12 * time.Second
+	controlWriteTimeout     = 5 * time.Second
 	discoveryPortDefault    = 48100
 	controlPortDefault      = 48101
 	posePortDefault         = 48102
@@ -63,13 +62,6 @@ type DeviceSnapshot struct {
 	MediaCapabilities json.RawMessage       `json:"mediaCapabilities,omitempty"`
 	BatteryLevel      *int                  `json:"batteryLevel,omitempty"`
 	Charging          bool                  `json:"charging,omitempty"`
-	VideoEnabled      bool                  `json:"videoEnabled"`
-	VideoStage        string                `json:"videoStage,omitempty"`
-	VideoDetail       string                `json:"videoDetail,omitempty"`
-	VideoDatagrams    uint64                `json:"videoDatagrams,omitempty"`
-	VideoAccessUnits  uint64                `json:"videoAccessUnits,omitempty"`
-	VideoDecoded      uint64                `json:"videoDecoded,omitempty"`
-	VideoRendered     uint64                `json:"videoRendered,omitempty"`
 }
 
 type PoseSnapshot struct {
@@ -87,38 +79,28 @@ type PoseSnapshot struct {
 }
 
 type HostSnapshot struct {
-	Running                               bool             `json:"running"`
-	ServerName                            string           `json:"serverName"`
-	ListenAddress                         string           `json:"listenAddress"`
-	LocalIPv4                             []string         `json:"localIPv4"`
-	DiscoveryPort                         int              `json:"discoveryPort"`
-	ControlPort                           int              `json:"controlPort"`
-	PosePort                              int              `json:"posePort"`
-	ConnectedDevices                      []DeviceSnapshot `json:"connectedDevices"`
-	LatestPose                            *PoseSnapshot    `json:"latestPose,omitempty"`
-	PacketsReceived                       uint64           `json:"packetsReceived"`
-	LastPacketAt                          string           `json:"lastPacketAt,omitempty"`
-	Uptime                                string           `json:"uptime,omitempty"`
-	LastError                             string           `json:"lastError,omitempty"`
-	SteamVRConnected                      bool             `json:"steamVRConnected"`
-	SteamVRDriverLoaded                   bool             `json:"steamVRDriverLoaded"`
-	SteamVRHMDActive                      bool             `json:"steamVRHmdActive"`
-	SteamVRPoseValid                      bool             `json:"steamVRPoseValid"`
-	SteamVRDisplayActive                  bool             `json:"steamVRDisplayActive"`
-	SteamVRHasPresentedFrame              bool             `json:"steamVRHasPresentedFrame"`
-	SteamVRPresentCallbackSeen            bool             `json:"steamVRPresentCallbackSeen"`
-	SteamVRVsyncCallbackSeen              bool             `json:"steamVRVsyncCallbackSeen"`
-	SteamVRVirtualDisplayComponentQueried bool             `json:"steamVRVirtualDisplayComponentQueried"`
-	SteamVRCaptureBridgeReady             bool             `json:"steamVRCaptureBridgeReady"`
-	SteamVRRawFrameSent                   bool             `json:"steamVRRawFrameSent"`
-	SteamVRCaptureResourcesReady          bool             `json:"steamVRcaptureResourcesReady"`
-	VideoEncoderReady                     bool             `json:"videoEncoderReady"`
-	VideoEncoderError                     string           `json:"videoEncoderError,omitempty"`
-	VideoEncodedFrames                    uint64           `json:"videoEncodedFrames"`
-	VideoUDPPackets                       uint64           `json:"videoUdpPackets"`
-	SteamVRFrameCounter                   uint64           `json:"steamVRFrameCounter"`
-	SteamVRHeartbeatAgeMS                 int64            `json:"steamVRHeartbeatAgeMs,omitempty"`
-	Logs                                  []string         `json:"logs"`
+	Running                  bool             `json:"running"`
+	ServerName               string           `json:"serverName"`
+	ListenAddress            string           `json:"listenAddress"`
+	LocalIPv4                []string         `json:"localIPv4"`
+	DiscoveryPort            int              `json:"discoveryPort"`
+	ControlPort              int              `json:"controlPort"`
+	PosePort                 int              `json:"posePort"`
+	ConnectedDevices         []DeviceSnapshot `json:"connectedDevices"`
+	LatestPose               *PoseSnapshot    `json:"latestPose,omitempty"`
+	PacketsReceived          uint64           `json:"packetsReceived"`
+	LastPacketAt             string           `json:"lastPacketAt,omitempty"`
+	Uptime                   string           `json:"uptime,omitempty"`
+	LastError                string           `json:"lastError,omitempty"`
+	SteamVRConnected         bool             `json:"steamVRConnected"`
+	SteamVRDriverLoaded      bool             `json:"steamVRDriverLoaded"`
+	SteamVRHMDActive         bool             `json:"steamVRHmdActive"`
+	SteamVRPoseValid         bool             `json:"steamVRPoseValid"`
+	SteamVRDisplayActive     bool             `json:"steamVRDisplayActive"`
+	SteamVRHasPresentedFrame bool             `json:"steamVRHasPresentedFrame"`
+	SteamVRFrameCounter      uint64           `json:"steamVRFrameCounter"`
+	SteamVRHeartbeatAgeMS    int64            `json:"steamVRHeartbeatAgeMs,omitempty"`
+	Logs                     []string         `json:"logs"`
 }
 
 type PoseFrameSnapshot struct {
@@ -160,22 +142,16 @@ type welcomeMessage struct {
 }
 
 type controlMessage struct {
-	Type             string                `json:"type"`
-	RequestID        string                `json:"requestId,omitempty"`
-	Settings         *PhoneDisplaySettings `json:"settings,omitempty"`
-	Presets          []OpticalPreset       `json:"presets,omitempty"`
-	PresetID         string                `json:"presetId,omitempty"`
-	Action           string                `json:"action,omitempty"`
-	Status           string                `json:"status,omitempty"`
-	Message          string                `json:"message,omitempty"`
-	BatteryLevel     *int                  `json:"batteryLevel,omitempty"`
-	Charging         bool                  `json:"charging,omitempty"`
-	VideoStage       string                `json:"videoStage,omitempty"`
-	VideoDetail      string                `json:"videoDetail,omitempty"`
-	VideoDatagrams   uint64                `json:"videoDatagrams,omitempty"`
-	VideoAccessUnits uint64                `json:"videoAccessUnits,omitempty"`
-	VideoDecoded     uint64                `json:"videoDecoded,omitempty"`
-	VideoRendered    uint64                `json:"videoRendered,omitempty"`
+	Type         string                `json:"type"`
+	RequestID    string                `json:"requestId,omitempty"`
+	Settings     *PhoneDisplaySettings `json:"settings,omitempty"`
+	Presets      []OpticalPreset       `json:"presets,omitempty"`
+	PresetID     string                `json:"presetId,omitempty"`
+	Action       string                `json:"action,omitempty"`
+	Status       string                `json:"status,omitempty"`
+	Message      string                `json:"message,omitempty"`
+	BatteryLevel *int                  `json:"batteryLevel,omitempty"`
+	Charging     bool                  `json:"charging,omitempty"`
 }
 
 type activeDevice struct {
@@ -206,13 +182,8 @@ type HostService struct {
 	videoEncoderProbeDone chan struct{}
 	videoEncoderReady     bool
 	videoEncoderError     string
-	videoEncodedFrames    atomic.Uint64
-	videoUDPPackets       atomic.Uint64
-	videoUDPBytes         atomic.Uint64
-	videoFirstRawLogged   atomic.Bool
 	steamVRHeartbeatAt    time.Time
 	steamVRFlags          uint8
-	steamVRFlags2         uint8
 	steamVRFrameCounter   uint64
 	cancel                context.CancelFunc
 	wg                    sync.WaitGroup
@@ -246,19 +217,8 @@ func (s *HostService) Start(config HostConfig) error {
 	}
 	// Network-interface enumeration can block on virtual adapters and VPN
 	// providers. Resolve addresses once at service start, never in Snapshot(),
-	// Enumerate once before starting real-time workers. Address discovery must not
-	// run from the UI snapshot path or while holding the service state lock.
-	networkAddresses := localIPv4NetworkAddresses()
-	localIPs := make([]string, 0, len(networkAddresses))
-	localIPSet := make(map[string]struct{}, len(networkAddresses))
-	for _, address := range networkAddresses {
-		if _, exists := localIPSet[address.IP]; exists {
-			continue
-		}
-		localIPSet[address.IP] = struct{}{}
-		localIPs = append(localIPs, address.IP)
-	}
-	sort.Strings(localIPs)
+	// because Snapshot is polled by the UI while the pose receiver needs s.mu.
+	localIPs := localIPv4Addresses()
 	serverName, hostErr := localHostName()
 	if hostErr != nil || strings.TrimSpace(serverName) == "" {
 		serverName = "PhoneVR Host"
@@ -344,7 +304,6 @@ func (s *HostService) Start(config HostConfig) error {
 	s.videoUDP = videoUDP
 	s.steamVRHeartbeatAt = time.Time{}
 	s.steamVRFlags = 0
-	s.steamVRFlags2 = 0
 	s.steamVRFrameCounter = 0
 	s.cancel = cancel
 	s.devices = make(map[string]activeDevice)
@@ -358,8 +317,8 @@ func (s *HostService) Start(config HostConfig) error {
 	s.poseStateMu.Unlock()
 
 	s.addLog(fmt.Sprintf("Host started on %s | TCP %d | UDP discovery %d | UDP pose %d", config.ListenAddress, config.ControlPort, config.DiscoveryPort, config.PosePort))
-	for _, address := range networkAddresses {
-		s.addLog(fmt.Sprintf("Host interface [%s] %s: %s", address.Kind, address.Name, address.IP))
+	for _, ip := range localIPs {
+		s.addLog("LAN address: " + ip)
 	}
 
 	s.wg.Add(5)
@@ -405,10 +364,9 @@ func (s *HostService) ProbeVideoEncoders(ffmpegPath string) {
 	}
 	done := s.videoEncoderProbeDone
 	s.mu.Unlock()
-	s.addLog("Starting hardware H.264 encoder preflight; live streaming will only be enabled after an actual IDR test")
 	go func() {
 		defer close(done)
-		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		candidates, err := encoder.ProbeFFmpeg(ctx, ffmpegPath)
 		if err != nil {
@@ -467,7 +425,6 @@ func (s *HostService) Stop() {
 	s.videoUDP = nil
 	s.steamVRHeartbeatAt = time.Time{}
 	s.steamVRFlags = 0
-	s.steamVRFlags2 = 0
 	s.steamVRFrameCounter = 0
 	s.cancel = nil
 	s.devices = make(map[string]activeDevice)
@@ -519,19 +476,9 @@ func (s *HostService) Snapshot() HostSnapshot {
 			snapshot.SteamVRPoseValid = s.steamVRFlags&steamVRFlagPoseValid != 0
 			snapshot.SteamVRDisplayActive = s.steamVRFlags&steamVRFlagDisplayActive != 0
 			snapshot.SteamVRHasPresentedFrame = s.steamVRFlags&steamVRFlagPresentedFrame != 0
-			snapshot.SteamVRPresentCallbackSeen = s.steamVRFlags&steamVRFlagPresentCallbackSeen != 0
-			snapshot.SteamVRVsyncCallbackSeen = s.steamVRFlags2&steamVRFlag2VsyncCallbackSeen != 0
-			snapshot.SteamVRVirtualDisplayComponentQueried = s.steamVRFlags2&steamVRFlag2VirtualDisplayComponentQueried != 0
-			snapshot.SteamVRCaptureBridgeReady = s.steamVRFlags&steamVRFlagCaptureBridgeReady != 0
-			snapshot.SteamVRRawFrameSent = s.steamVRFlags&steamVRFlagFirstRawFrameSent != 0
-			snapshot.SteamVRCaptureResourcesReady = s.steamVRFlags2&steamVRFlag2CaptureResourcesReady != 0
 			snapshot.SteamVRFrameCounter = s.steamVRFrameCounter
 		}
 	}
-	snapshot.VideoEncoderReady = s.videoEncoderReady
-	snapshot.VideoEncoderError = s.videoEncoderError
-	snapshot.VideoEncodedFrames = s.videoEncodedFrames.Load()
-	snapshot.VideoUDPPackets = s.videoUDPPackets.Load()
 	for _, device := range s.devices {
 		snapshot.ConnectedDevices = append(snapshot.ConnectedDevices, device.Snapshot)
 	}
@@ -655,7 +602,6 @@ func (s *HostService) steamVRStatusLoop(ctx context.Context, conn *net.UDPConn) 
 		s.mu.Lock()
 		s.steamVRHeartbeatAt = time.Now()
 		s.steamVRFlags = heartbeat.Flags
-		s.steamVRFlags2 = heartbeat.Flags2
 		s.steamVRFrameCounter = heartbeat.FrameCounter
 		s.mu.Unlock()
 	}
@@ -877,7 +823,7 @@ func (s *HostService) handleControlConnection(ctx context.Context, conn net.Conn
 	defer conn.Close()
 	defer s.removeConnection(conn)
 	_ = conn.SetReadDeadline(time.Now().Add(8 * time.Second))
-	_ = conn.SetWriteDeadline(time.Now().Add(30 * time.Second))
+	_ = conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
 	reader := bufio.NewScanner(conn)
 	reader.Buffer(make([]byte, 1024), 64*1024)
 	if !reader.Scan() {
@@ -909,7 +855,7 @@ func (s *HostService) handleControlConnection(ctx context.Context, conn net.Conn
 	if probeDone != nil {
 		select {
 		case <-probeDone:
-		case <-time.After(21 * time.Second):
+		case <-time.After(6 * time.Second):
 		}
 	}
 	s.mu.RLock()
@@ -921,19 +867,12 @@ func (s *HostService) handleControlConnection(ctx context.Context, conn net.Conn
 	device := activeDevice{Snapshot: DeviceSnapshot{
 		Name: hello.DeviceName, DeviceID: hello.DeviceID, Client: hello.Client,
 		Address: remote, ConnectedAt: time.Now().Format(time.RFC3339),
-		MediaCapabilities: append(json.RawMessage(nil), mediaCapabilities...), VideoEnabled: videoEnabled,
+		MediaCapabilities: append(json.RawMessage(nil), mediaCapabilities...),
 	}, Conn: conn, WriteMu: &sync.Mutex{}, VideoEnabled: videoEnabled}
 	s.mu.Lock()
 	s.devices[remote] = device
 	s.mu.Unlock()
 	s.addLog(fmt.Sprintf("Device paired: %s (%s)", hello.DeviceName, remote))
-	if videoEnabled {
-		s.addLog(fmt.Sprintf("Video negotiation accepted: Host hardware H.264 encoder ready; Android decoder=%s; profile=%dx%d@%d", selectedAndroidDecoder, videoWidth, videoHeight, videoFrameRate))
-	} else if !hardwareEncoderReady {
-		s.addLog("Video negotiation rejected: hardware H.264 encoder is not ready: " + encoderError)
-	} else {
-		s.addLog("Video negotiation rejected: Android did not advertise a verified hardware H.264 decoder for the target profile")
-	}
 	defer func() {
 		s.mu.Lock()
 		delete(s.devices, remote)
@@ -966,9 +905,6 @@ func (s *HostService) handleControlConnection(ctx context.Context, conn net.Conn
 		welcome.VideoReason = fmt.Sprintf("Android needs a hardware H.264 decoder supporting %dx%d@%d", videoWidth, videoHeight, videoFrameRate)
 		s.addLog(fmt.Sprintf("Video streaming disabled for %s: Android did not advertise hardware H.264 %dx%d@%d support", hello.DeviceName, videoWidth, videoHeight, videoFrameRate))
 	}
-	// Encoder preflight may take several seconds on a driver-cold machine. The
-	// original hello write deadline must not expire while the probe is running.
-	_ = conn.SetWriteDeadline(time.Now().Add(12 * time.Second))
 	if err := writeJSONLine(conn, welcome); err != nil {
 		s.addLog("Pair response failed: " + err.Error())
 		return
@@ -1029,43 +965,6 @@ func (s *HostService) handleControlConnection(ctx context.Context, conn net.Conn
 			}
 			if err := writeControlJSON(device, map[string]any{"type": "pong", "timeMs": time.Now().UnixMilli()}); err != nil {
 				return
-			}
-		case "video_status":
-			stage := strings.TrimSpace(message.VideoStage)
-			if stage == "" {
-				stage = "unknown"
-			}
-			changed := false
-			s.mu.Lock()
-			if current, ok := s.devices[remote]; ok && current.Conn == conn {
-				changed = current.Snapshot.VideoStage != stage || current.Snapshot.VideoDetail != message.VideoDetail
-				current.Snapshot.VideoStage = stage
-				current.Snapshot.VideoDetail = message.VideoDetail
-				// Video stage reports can come from separate receive/decode/GL
-				// threads. Keep counters monotonic so a late stage-only update
-				// with zero counters cannot erase newer progress metrics.
-				if message.VideoDatagrams > current.Snapshot.VideoDatagrams {
-					current.Snapshot.VideoDatagrams = message.VideoDatagrams
-				}
-				if message.VideoAccessUnits > current.Snapshot.VideoAccessUnits {
-					current.Snapshot.VideoAccessUnits = message.VideoAccessUnits
-				}
-				if message.VideoDecoded > current.Snapshot.VideoDecoded {
-					current.Snapshot.VideoDecoded = message.VideoDecoded
-				}
-				if message.VideoRendered > current.Snapshot.VideoRendered {
-					current.Snapshot.VideoRendered = message.VideoRendered
-				}
-				s.devices[remote] = current
-			}
-			s.mu.Unlock()
-			if changed {
-				detail := strings.TrimSpace(message.VideoDetail)
-				if detail != "" {
-					s.addLog(fmt.Sprintf("Android video stage [%s]: %s", stage, detail))
-				} else {
-					s.addLog("Android video stage: " + stage)
-				}
 			}
 		case "optical_presets":
 			presets := normalizeOpticalPresets(message.Presets)
@@ -1217,16 +1116,10 @@ func (s *HostService) sendEncodedVideoFrame(frame []byte, frameID uint32, timest
 	if err != nil {
 		return err
 	}
-	encodedCount := s.videoEncodedFrames.Add(1)
 	for _, packet := range fragments {
 		if _, err := udp.WriteToUDP(packet, target); err != nil {
 			return err
 		}
-		s.videoUDPPackets.Add(1)
-		s.videoUDPBytes.Add(uint64(len(packet)))
-	}
-	if encodedCount == 1 {
-		s.addLog(fmt.Sprintf("First H.264 access unit sent over UDP to %s:%d (%d bytes, keyFrame=%t)", target.IP, target.Port, len(frame), keyFrame))
 	}
 	return nil
 }
@@ -1252,7 +1145,6 @@ func (s *HostService) videoCaptureLoop(ctx context.Context, listener net.Listene
 			continue
 		}
 		_ = conn.SetWriteDeadline(time.Time{})
-		s.addLog("SteamVR video capture bridge accepted; waiting for the first raw BGRA frame")
 		s.mu.Lock()
 		if s.listener == nil {
 			s.mu.Unlock()
@@ -1283,8 +1175,6 @@ func (s *HostService) handleVideoCaptureConnection(ctx context.Context, conn net
 	}()
 	headerBytes := make([]byte, videoprotocol.RawFrameHeaderSize)
 	var frameCount uint64
-	var encodedBaseline uint64
-	var udpBaseline uint64
 	statsStart := time.Now()
 	// Reuse the fixed-size BGRA buffer. Allocating a 4.6 MiB slice for every
 	// 60 FPS frame would create hundreds of MiB/s of GC pressure on the Host.
@@ -1319,9 +1209,6 @@ func (s *HostService) handleVideoCaptureConnection(ctx context.Context, conn net
 			s.addLog("Incomplete SteamVR raw video frame; reconnecting: " + err.Error())
 			return
 		}
-		if frameCount == 0 && s.videoFirstRawLogged.CompareAndSwap(false, true) {
-			s.addLog(fmt.Sprintf("First SteamVR raw BGRA frame received by Host: id=%d timestamp=%d size=%dx%d bytes=%d", header.FrameID, header.TimestampNs, header.Width, header.Height, len(raw)))
-		}
 		if _, enabled := s.currentVideoTarget(); !enabled {
 			return
 		}
@@ -1349,15 +1236,8 @@ func (s *HostService) handleVideoCaptureConnection(ctx context.Context, conn net
 		}
 		frameCount++
 		if time.Since(statsStart) >= 5*time.Second {
-			encodedNow := s.videoEncodedFrames.Load()
-			udpNow := s.videoUDPPackets.Load()
-			duration := time.Since(statsStart).Seconds()
-			s.addLog(fmt.Sprintf("Video pipeline: raw=%.1f FPS encoded=%.1f FPS udp=%d packets/%.2f MB backend=%s",
-				float64(frameCount)/duration, float64(encodedNow-encodedBaseline)/duration,
-				udpNow-udpBaseline, float64(s.videoUDPBytes.Load())/1048576.0, session.EncoderName()))
+			s.addLog(fmt.Sprintf("Video capture: raw frames %.1f FPS, encoded backend %s", float64(frameCount)/time.Since(statsStart).Seconds(), session.EncoderName()))
 			frameCount = 0
-			encodedBaseline = encodedNow
-			udpBaseline = udpNow
 			statsStart = time.Now()
 		}
 	}
@@ -1394,32 +1274,12 @@ func (s *HostService) setError(message string) {
 	s.addLog("ERROR: " + message)
 }
 
-type HostNetworkAddress struct {
-	Name string
-	IP   string
-	Kind string
-}
-
-func classifyHostInterface(name string) string {
-	normalized := strings.ToLower(name)
-	switch {
-	case strings.Contains(normalized, "wi-fi"), strings.Contains(normalized, "wifi"), strings.Contains(normalized, "wlan"):
-		return "Wi-Fi"
-	case strings.Contains(normalized, "vethernet"):
-		return "Network"
-	case strings.Contains(normalized, "ethernet"), strings.HasPrefix(normalized, "eth"):
-		return "Ethernet"
-	default:
-		return "Network"
-	}
-}
-
-func localIPv4NetworkAddresses() []HostNetworkAddress {
+func localIPv4Addresses() []string {
 	interfaces, err := net.Interfaces()
 	if err != nil {
 		return nil
 	}
-	var result []HostNetworkAddress
+	var result []string
 	for _, item := range interfaces {
 		if item.Flags&net.FlagUp == 0 || item.Flags&net.FlagLoopback != 0 {
 			continue
@@ -1428,32 +1288,9 @@ func localIPv4NetworkAddresses() []HostNetworkAddress {
 		for _, address := range addresses {
 			ipNet, ok := address.(*net.IPNet)
 			if ok && ipNet.IP.To4() != nil {
-				result = append(result, HostNetworkAddress{Name: item.Name, IP: ipNet.IP.String(), Kind: classifyHostInterface(item.Name)})
+				result = append(result, ipNet.IP.String())
 			}
 		}
-	}
-	sort.Slice(result, func(i, j int) bool {
-		if result[i].Kind != result[j].Kind {
-			return result[i].Kind < result[j].Kind
-		}
-		if result[i].Name != result[j].Name {
-			return result[i].Name < result[j].Name
-		}
-		return result[i].IP < result[j].IP
-	})
-	return result
-}
-
-func localIPv4Addresses() []string {
-	addresses := localIPv4NetworkAddresses()
-	result := make([]string, 0, len(addresses))
-	seen := make(map[string]struct{}, len(addresses))
-	for _, address := range addresses {
-		if _, exists := seen[address.IP]; exists {
-			continue
-		}
-		seen[address.IP] = struct{}{}
-		result = append(result, address.IP)
 	}
 	sort.Strings(result)
 	return result

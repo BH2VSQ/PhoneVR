@@ -1,6 +1,6 @@
 # PhoneVRStream
 
-Repository revision: **0.4.23**. Windows Host: **0.4.23**. Android client: **0.4.23**. Control protocol: **v1**; video packet protocol: **v1**.
+Repository revision: **0.4.18**. Windows Host: **0.4.18**. Android client: **0.4.18**. Control protocol: **v1**; video packet protocol: **v1**.
 
 PhoneVRStream is a multi-component project for using an Android phone as a PC VR streaming HMD. Both applications live in one repository and use independent build/test pipelines.
 
@@ -22,7 +22,7 @@ PhoneVRStream/
 └── dist/                       # Local build output (git-ignored)
 ```
 
-## Windows Host 0.4.23 bundled SteamVR driver
+## Windows Host 0.4.18 bundled SteamVR driver and live video
 
 The virtual display timing is fixed at 72 Hz in this revision. The adjustable refresh-rate menu and its configuration file have been removed; this avoids presenting refresh-rate choices before the PC compositor and phone rendering path have been profiled end to end.
 
@@ -43,27 +43,19 @@ The Windows Host has been migrated from an Edge/Chrome app-mode dashboard to a n
 
 The normal `PhoneVRHost.exe` is built with the Windows GUI subsystem and opens the native desktop application. `PhoneVRHost-console.exe -headless` runs the network service without a desktop window for diagnostics or server-only use.
 
-## Live video streaming diagnostics
-
-The Wi-Fi video path is staged independently from the pose path: SteamVR `IVRVirtualDisplay::Present` → D3D11 SBS capture/readback → loopback TCP raw-frame bridge → Host hardware H.264 → UDP 48104 → Android MediaCodec → SurfaceTexture/OpenGL stereo display. The Host status pill and Runtime Logs distinguish each stage. USB tether/RNDIS streaming is deferred in this revision.
-
-The SteamVR driver writes periodic capture counters to `vrserver.txt`: `captured`, `readback`, `sent`, `map-retries` and `skipped`. Android reports `receiver_started`, `udp_wait`, `udp_first_datagram`, `fragment_wait`, `first_access_unit`, `decoder_ready`, `decoded_frame`, `decoder_error` and `surface_frame` over the TCP control channel. Use these stages to identify where the video path stops before changing codecs or network settings.
-
-The DisplayRedirect accessory associates its GPU adapter and virtual-display capability with the active HMD through OpenVR's `vr::k_ulDisplayRedirectContainer`. On startup, `vrserver.txt` reports the accessory-local and HMD-override property-write results. A successful override is necessary for SteamVR to select the virtual-display presentation path; the final runtime confirmation is a non-zero `Present` callback rate followed by the first raw BGRA frame reaching Host.
-
-## Android client 0.4.23
+## Android client 0.4.18
 
 - Landscape immersive display with OpenGL ES 3.0 stereo rendering.
 - Locally stored optical preset selector with Daydream View v2.0 (2017) and Generic Cardboard built-in presets.
 - Existing manual display settings are migrated into an Android-local optical preset during the first upgrade; parameter editing is performed in the Windows Host preset editor.
 - IMU sensor processing on a dedicated HandlerThread, quaternion-continuous pose transmission over UDP at up to 200 Hz, TCP pairing and heartbeat, battery reporting and bounded auto-reconnect.
-- Automatic LAN discovery and connection to the remembered active Host, with selectable Auto / Wi-Fi interface discovery.
+- Automatic LAN discovery and connection to the remembered active Host.
 - Android-owned optical preset synchronization and preset-ID application, plus recenter operations over the TCP control channel.
 - Daydream Controller input provider interface is prepared; actual pairing and input forwarding remain future work.
 - `CodecCapabilityProbe` enumerates device MediaCodec decoders and advertises only a hardware H.264 decoder that explicitly supports the negotiated 1600×720@60 profile. `MediaCodec` decodes the H.264 SBS stream to a `SurfaceTexture`; the OpenGL stereo renderer applies the optical warp independently to the left and right halves.
 
 
-## SteamVR driver 0.4.23
+## SteamVR driver 0.4.18
 
 The PhoneVR Host contains its own Windows x64 OpenVR driver inside the Host executable. The normal build compiles `steamvr-driver/`, embeds the resulting manifest, DLL and resources into both Host executables, and no longer asks users to download or select a ZIP. On startup, the Host checks whether SteamVR is installed and whether the user has disabled automatic deployment. When enabled, it copies the embedded driver into a content-versioned directory under `%LOCALAPPDATA%\PhoneVR\SteamVRDriver` and registers it with SteamVR's own `vrpathreg.exe`.
 
@@ -74,7 +66,7 @@ The driver opens the final SteamVR compositor backbuffer through D3D11 shared te
 - `steamvr-driver/` is a Windows x64 C++ OpenVR driver built with CMake and the Valve OpenVR SDK pinned to commit `0924064316de3effbcd1acf1e309182a2deb1c05`.
 - Registers `PhoneVRHmd` as `TrackedDeviceClass_HMD` with an `IVRDisplayComponent`, and `PhoneVRDisplayRedirect` as `TrackedDeviceClass_DisplayRedirect` with an `IVRVirtualDisplay` component.
 - Uses latest-only pose forwarding at Android, Host and driver stages; driver angular velocity is derived from Android sensor timestamps and supplied to SteamVR for prediction. Host and driver expose pose-rate/age diagnostics.
-- The current `IVRVirtualDisplay` / `DisplayRedirect` path uses SteamVR Extended Display Mode, as in Valve's `virtual_display` sample. The HMD reports `IsDisplayOnDesktop=true`; keep **SteamVR → Settings → Developer → Enable Direct Mode** disabled. Direct Mode is not implemented yet because PhoneVR does not provide `IVRDriverDirectModeComponent`.
+- `IsDisplayOnDesktop=false` is reported by the HMD. When SteamVR warns that the HMD is running as a monitor, enable **SteamVR → Settings → Developer → Enable Direct Mode** and restart SteamVR.
 - Receives validated Android `PVSP` quaternion packets from the Go Host through loopback UDP port 48103. A dedicated above-normal-priority pose worker publishes each new pose immediately to OpenVR, independently of `RunFrame`, with a 10 ms keepalive. Driver diagnostics compare received / unique / repeated pose rates against `RunFrame` cadence and report maximum publish gap and sample age. `IVRVirtualDisplay` separately reports `Present` / `WaitForPresent` rates and callback durations. The virtual display timing is fixed at 72 Hz in this revision; the retired refresh-rate setting is no longer exposed. The driver reports 3DoF orientation only; it does not invent positional tracking.
 - Publishes a stable OpenVR v5 driver-provided Chaperone JSON and matching universe ID at HMD activation. The seated/standing transforms are neutral; collision bounds are empty because PhoneVR does not yet provide 6DoF position tracking or a real room-scale safety perimeter.
 - The `IVRVirtualDisplay::Present` callback opens the D3D11 shared backbuffer, uses bounded keyed-mutex synchronization and queues a small GPU-completion fence. Once a compatible Android hardware decoder and a verified PC hardware H.264 encoder are available, the driver GPU-scales the final SBS compositor image to 1600×720 and places it in a three-slot staging ring. A background worker reads back BGRA frames and sends them to Host over loopback TCP 48106; no network I/O or CPU pixel readback occurs in the compositor callback. Host hardware-encodes H.264 and sends `PVRV` fragments to Android UDP 48104. `WaitForPresent` maps the small fence texture; virtual display timing remains fixed at 72 Hz. Completed frames and live SteamVR state are reported to Host over loopback UDP 48105.
@@ -82,16 +74,11 @@ The driver opens the final SteamVR compositor backbuffer through D3D11 shared te
 
 ## SteamVR direct display mode
 
-The current PhoneVR wireless capture implementation uses OpenVR
-`IVRVirtualDisplay` on a `TrackedDeviceClass_DisplayRedirect` device, matching
-Valve's `virtual_display` sample. That sample requires the HMD to be in
-**Extended Display Mode**. Accordingly, PhoneVR's `IVRDisplayComponent`
-reports `IsDisplayOnDesktop=true`; keep **SteamVR → Settings → Developer →
-Enable Direct Mode** disabled. PhoneVR does not yet implement
-`IVRDriverDirectModeComponent`, so enabling Direct Mode selects a path this
-revision does not provide and can prevent `IVRVirtualDisplay::Present` from
-being called. The desktop-monitor warning is expected for this current
-architecture; PhoneVR does not force-edit the user's global SteamVR settings.
+The PhoneVR HMD display component reports `IsDisplayOnDesktop=false`; the
+separate display-redirect device remains on `IVRVirtualDisplay` for the final
+wireless compositor backbuffer. If SteamVR warns that the HMD is running as a
+monitor, enable **SteamVR → Settings → Developer → Enable Direct Mode** and
+restart SteamVR. PhoneVR does not force-edit the user's global SteamVR settings.
 
 ## Video pipeline foundation
 
@@ -142,11 +129,10 @@ The Windows Host version is injected from the root VERSION file at build time. T
 | 48101 | TCP | Pairing, heartbeat, remote settings/actions |
 | 48102 | UDP | HMD quaternion pose |
 | 48103 | UDP loopback only | Go Host -> SteamVR driver pose bridge |
-| 48104 | UDP | Host -> Android H.264 video fragments |
+| 48104 | UDP | Reserved for encoded video stream |
 | 48105 | UDP loopback only | SteamVR driver -> Host runtime heartbeat |
-| 48106 | TCP loopback only | SteamVR driver -> Host raw BGRA capture bridge |
 
-The PC and phone should use the same LAN. Guest Wi-Fi or AP/client isolation may block wireless discovery and direct connections.
+The PC and phone must be on the same LAN. Guest Wi-Fi or AP/client isolation may block discovery and direct connections.
 
 ## Continuous integration and releases
 
@@ -159,5 +145,3 @@ The PC and phone should use the same LAN. Guest Wi-Fi or AP/client isolation may
 The Windows Host executable includes the compiled PhoneVR OpenVR driver. At startup it checks SteamVR registration and, unless the user has explicitly disabled auto-deployment, stages the embedded driver in a content-versioned directory under `%LOCALAPPDATA%\PhoneVR\SteamVRDriver` before registering it with SteamVR's `vrpathreg.exe`.
 
 The in-app manager provides status refresh, **Install / Repair Bundled Driver**, and **Uninstall & Disable Auto Deploy**. Uninstall persists the user's opt-out choice, so a later Host launch does not reinstall the driver unexpectedly. Manual installation clears the opt-out marker. Only files under PhoneVR's own managed directory are deleted; manually registered drivers in other paths are only unregistered. Restart SteamVR after driver changes. No driver ZIP selector or separate Release driver ZIP is required.
-
-

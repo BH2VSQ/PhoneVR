@@ -64,8 +64,3 @@ Optical presets are persisted in Android app storage. The first launch after upg
 After pairing, the Windows Host sends `get_optical_presets`. Android returns the locally stored catalogue as `optical_presets`. Host-side create/edit/clone/rename/delete operations are sent back with `set_optical_presets`; Android validates the entries, persists them, and acknowledges the normalized list with `optical_presets_ack`. To apply a preset, the Host sends `apply_optical_preset` with only the preset ID. Android resolves that ID from its local store, persists the active preset and effective display settings, updates `StereoRenderer`, and returns `display_settings_ack`.
 
 The `display_settings` report and `set_display_settings` command remain supported for compatibility with earlier Host builds. The current Windows UI manages parameters through optical presets instead of directly editing a separate phone calibration state.
-
-
-## Live SBS video reception
-
-When the Host negotiates a supported hardware H.264 decoder, the Android client binds UDP 48104, reassembles complete PVRV v1 access units and decodes them with the exact negotiated MediaCodec name into the stereo renderer's SurfaceTexture. The Android client reports receiver, UDP, fragment reassembly, decoder and first-render stages to the Host over the TCP control channel. The current streaming path is Wi-Fi; USB tether/RNDIS support is deferred.

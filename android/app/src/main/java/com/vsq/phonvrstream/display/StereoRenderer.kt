@@ -5,7 +5,6 @@ import android.opengl.GLES11Ext
 import android.graphics.SurfaceTexture
 import android.os.Handler
 import android.os.Looper
-import android.util.Log
 import android.view.Surface
 import android.opengl.GLSurfaceView
 import com.vsq.phonvrstream.settings.DisplaySettings
@@ -38,9 +37,7 @@ class StereoRenderer : GLSurfaceView.Renderer {
     private var videoSurface: Surface? = null
     private val videoFramePending = AtomicBoolean(false)
     @Volatile private var videoSurfaceListener: ((Surface) -> Unit)? = null
-    @Volatile private var firstVideoFrameListener: (() -> Unit)? = null
     private var hasVideoFrame = false
-    private var firstVideoFrameLogged = false
     private val videoTextureMatrix = FloatArray(16)
     private data class VideoLocations(val position: Int, val texture: Int, val transform: Int)
     private lateinit var video: VideoLocations
@@ -64,10 +61,6 @@ class StereoRenderer : GLSurfaceView.Renderer {
     fun setVideoSurfaceListener(listener: (Surface) -> Unit) {
         videoSurfaceListener = listener
         videoSurface?.let(listener)
-    }
-
-    fun setFirstVideoFrameListener(listener: () -> Unit) {
-        firstVideoFrameListener = listener
     }
 
     private fun createVideoInputSurface() {
@@ -185,11 +178,6 @@ class StereoRenderer : GLSurfaceView.Renderer {
                 inputTexture.updateTexImage()
                 inputTexture.getTransformMatrix(videoTextureMatrix)
                 hasVideoFrame = true
-                if (!firstVideoFrameLogged) {
-                    firstVideoFrameLogged = true
-                    Log.i("PhoneVRDisplay", "First decoded video frame consumed by SurfaceTexture renderer")
-                    firstVideoFrameListener?.invoke()
-                }
             } catch (_: RuntimeException) {
                 hasVideoFrame = false
             }

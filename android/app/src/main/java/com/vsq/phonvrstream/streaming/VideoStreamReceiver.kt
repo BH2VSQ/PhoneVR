@@ -28,16 +28,12 @@ class VideoStreamReceiver(
     private val frameRate: Int,
     private val decoderName: String,
     private val outputSurface: Surface,
-    private val onStage: (stage: String, detail: String, datagrams: Long, accessUnits: Long, decoded: Long) -> Unit = { _, _, _, _, _ -> },
 ) {
     private val running = AtomicBoolean(false)
     private val needsKeyFrame = AtomicBoolean(true)
     private val framesReceived = AtomicLong(0)
     private val framesDecoded = AtomicLong(0)
     private val fragmentsRejected = AtomicLong(0)
-    private val udpDatagrams = AtomicLong(0)
-    private val udpBytes = AtomicLong(0)
-    private val queueDrops = AtomicLong(0)
     private val pendingFrames = ArrayBlockingQueue<CompletedVideoFrame>(2)
     private val reassembler = VideoFragmentReassembler()
     @Volatile private var socket: DatagramSocket? = null
@@ -63,10 +59,9 @@ class VideoStreamReceiver(
             throw error
         }
         socket = udp
-        Log.i(TAG, "H.264 SBS receiver bound: $hostAddress:$port ${width}x$height@$frameRate")
-        reportStage("receiver_started", "UDP $hostAddress:$port · ${width}x$height@$frameRate · $decoderName")
         decodeThread = Thread({ decodeLoop() }, "PhoneVR-Video-Decode").apply { start() }
         receiveThread = Thread({ receiveLoop(udp) }, "PhoneVR-Video-UDP").apply { start() }
+        Log.i(TAG, "H.264 SBS receiver started: $hostAddress:$port ${width}x$height@$frameRate")
     }
 
     fun stop() {
@@ -81,13 +76,7 @@ class VideoStreamReceiver(
         socket = null
         pendingFrames.clear()
         reassembler.clear()
-        Log.i(TAG, "H.264 SBS receiver stopped; datagrams=${udpDatagrams.get()} bytes=${udpBytes.get()} complete=${framesReceived.get()} decoded=${framesDecoded.get()} invalidOrForeign=${fragmentsRejected.get()} queueDrops=${queueDrops.get()}")
-    }
-
-    private fun reportStage(stage: String, detail: String) {
-        runCatching {
-            onStage(stage, detail, udpDatagrams.get(), framesReceived.get(), framesDecoded.get())
-        }.onFailure { Log.w(TAG, "Unable to report video stage $stage", it) }
+        Log.i(TAG, "H.264 SBS receiver stopped; received=${framesReceived.get()} decoded=${framesDecoded.get()} rejected=${fragmentsRejected.get()}")
     }
 
     private fun receiveLoop(udp: DatagramSocket) {
@@ -95,26 +84,15 @@ class VideoStreamReceiver(
         val expectedAddress = runCatching { InetAddress.getByName(hostAddress).hostAddress }.getOrNull()
         val buffer = ByteArray(VideoFragmentReassembler.MAX_DATAGRAM_SIZE)
         var previousFrameId: Long? = null
-        var localCompleted = 0L
-        var localDatagrams = 0L
-        var localBytes = 0L
-        var localQueueDrops = 0L
-        var firstDatagramLogged = false
-        var lastNoDatagramReportNs = System.nanoTime()
         var lastStatsNs = System.nanoTime()
+        var localReceived = 0L
+        var localRejected = 0L
         while (running.get()) {
             val datagram = DatagramPacket(buffer, buffer.size)
             try {
                 udp.receive(datagram)
             } catch (_: java.net.SocketTimeoutException) {
                 reassembler.expire()
-                val idleNow = System.nanoTime()
-                if (!firstDatagramLogged && idleNow - lastNoDatagramReportNs >= 2_000_000_000L) {
-                    lastNoDatagramReportNs = idleNow
-                    val detail = "No H.264 UDP datagrams received from $hostAddress:$port; receiver is bound and waiting"
-                    Log.w(TAG, detail)
-                    reportStage("udp_wait", detail)
-                }
                 continue
             } catch (_: SocketException) {
                 if (running.get()) Log.w(TAG, "Video UDP socket closed unexpectedly")
@@ -123,25 +101,11 @@ class VideoStreamReceiver(
                 if (running.get()) Log.w(TAG, "Video UDP receive failed", error)
                 continue
             }
-            if (expectedAddress != null && datagram.address.hostAddress != expectedAddress) {
-                fragmentsRejected.incrementAndGet()
-                if (fragmentsRejected.get() == 1L) {
-                    reportStage("udp_foreign_source", "Ignoring video datagrams from ${datagram.address.hostAddress}; expected $expectedAddress")
-                }
-                continue
-            }
-            lastNoDatagramReportNs = System.nanoTime()
-            udpDatagrams.incrementAndGet()
-            udpBytes.addAndGet(datagram.length.toLong())
-            localDatagrams++
-            localBytes += datagram.length
-            if (!firstDatagramLogged) {
-                firstDatagramLogged = true
-                Log.i(TAG, "First H.264 UDP datagram received from ${datagram.address.hostAddress}:${datagram.port}")
-                reportStage("udp_first_datagram", "Received from ${datagram.address.hostAddress}:${datagram.port}")
-            }
+            if (expectedAddress != null && datagram.address.hostAddress != expectedAddress) continue
             val frame = reassembler.accept(datagram.data, datagram.length)
-            if (frame != null) {
+            if (frame == null) {
+                localRejected++
+            } else {
                 previousFrameId?.let { previous ->
                     val delta = (frame.frameId - previous) and 0xffff_ffffL
                     if (delta > 1L && delta < 0x8000_0000L) needsKeyFrame.set(true)
@@ -151,25 +115,15 @@ class VideoStreamReceiver(
                     pendingFrames.poll()
                     pendingFrames.offer(frame)
                     needsKeyFrame.set(true)
-                    queueDrops.incrementAndGet()
-                    localQueueDrops++
                 }
-                localCompleted++
+                localReceived++
                 framesReceived.incrementAndGet()
-                if (framesReceived.get() == 1L) {
-                    reportStage("first_access_unit", "Complete H.264 access unit ${frame.frameId} · ${frame.bytes.size} bytes · IDR=${frame.keyFrame}")
-                }
             }
             val now = System.nanoTime()
             if (now - lastStatsNs >= 5_000_000_000L) {
-                val seconds = (now - lastStatsNs) / 1e9
-                val detail = "${(localDatagrams / seconds).toInt()} datagrams/s · ${(localBytes * 8 / seconds / 1_000_000).toInt()} Mbps · ${(localCompleted / seconds).toInt()} access units/s · queueDrops=$localQueueDrops · queue=${pendingFrames.size}"
-                Log.i(TAG, "Video RX $detail")
-                reportStage(if (localDatagrams > 0 && localCompleted == 0L) "fragment_wait" else "receiving", detail)
-                localCompleted = 0
-                localDatagrams = 0
-                localBytes = 0
-                localQueueDrops = 0
+                Log.i(TAG, "Video RX ${(localReceived * 1e9 / (now - lastStatsNs)).toInt()} FPS; incomplete/rejected=$localRejected; decoder queue=${pendingFrames.size}")
+                localReceived = 0
+                localRejected = 0
                 lastStatsNs = now
             }
         }
@@ -200,14 +154,11 @@ class VideoStreamReceiver(
             }
             codec.configure(format, outputSurface, null, 0)
             codec.start()
-            Log.i(TAG, "MediaCodec decoder active: ${codec.name}, ${width}x$height@$frameRate; waiting for first complete IDR access unit")
-            reportStage("decoder_ready", "${codec.name} configured for ${width}x$height@$frameRate")
+            Log.i(TAG, "MediaCodec decoder active: ${codec.name}, ${width}x$height@$frameRate")
             val info = MediaCodec.BufferInfo()
             var presentationTimeUs = 0L
             var lastStatsNs = System.nanoTime()
             var decodedWindow = 0L
-            var firstInputLogged = false
-            var firstOutputLogged = false
             while (running.get()) {
                 val frame = try { pendingFrames.poll(50, java.util.concurrent.TimeUnit.MILLISECONDS) } catch (_: InterruptedException) { null }
                 if (frame != null) {
@@ -230,11 +181,6 @@ class VideoStreamReceiver(
                         input.clear()
                         input.put(frame.bytes)
                         codec.queueInputBuffer(inputIndex, 0, frame.bytes.size, presentationTimeUs, 0)
-                        if (!firstInputLogged) {
-                            firstInputLogged = true
-                            Log.i(TAG, "First H.264 access unit queued to MediaCodec: frame=${frame.frameId} keyFrame=${frame.keyFrame} bytes=${frame.bytes.size}")
-                            reportStage("decoder_input", "Frame=${frame.frameId} · IDR=${frame.keyFrame} · ${frame.bytes.size} bytes")
-                        }
                         presentationTimeUs += 1_000_000L / frameRate
                     } else {
                         // Dropping an H.264 reference access unit can invalidate
@@ -250,11 +196,6 @@ class VideoStreamReceiver(
                         codec.releaseOutputBuffer(outputIndex, true)
                         decodedWindow++
                         framesDecoded.incrementAndGet()
-                        if (!firstOutputLogged) {
-                            firstOutputLogged = true
-                            Log.i(TAG, "First decoded H.264 frame released to SurfaceTexture")
-                            reportStage("decoded_frame", "First output buffer released to SurfaceTexture")
-                        }
                     } else if (outputIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
                         Log.i(TAG, "MediaCodec output format: ${codec.outputFormat}")
                     } else {
@@ -269,10 +210,7 @@ class VideoStreamReceiver(
                 }
             }
         } catch (error: Throwable) {
-            if (running.get()) {
-                Log.e(TAG, "MediaCodec H.264 decoder failed", error)
-                reportStage("decoder_error", error.message ?: error.javaClass.simpleName)
-            }
+            if (running.get()) Log.e(TAG, "MediaCodec H.264 decoder failed", error)
         } finally {
             try { codec?.stop() } catch (_: Exception) { }
             try { codec?.release() } catch (_: Exception) { }

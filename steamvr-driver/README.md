@@ -1,4 +1,4 @@
-# PhoneVR SteamVR Driver — 0.4.23
+# PhoneVR SteamVR Driver — 0.4.18
 
 Windows x64 OpenVR server driver foundation for the PhoneVR wireless HMD.
 
@@ -26,8 +26,6 @@ packets, maximum pose publish gap and maximum sample age. The virtual-display
 component separately reports `Present` / `WaitForPresent` callback rates and
 maximum callback durations, so tracking-rate problems can be distinguished
 from compositor/GPU synchronization stalls. The virtual display timing is fixed at 72 Hz in this revision; sensor input frequency is not the display refresh frequency.
-
-The D3D11 capture implementation uses `ID3D11Multithread`, declared by the Windows SDK header `d3d11_4.h`, to enable context-level multithread protection when the capture and compositor callbacks share the immediate context.
 
 ## Build
 
@@ -75,31 +73,22 @@ The driver exposes only the phone's 3DoF orientation. No room-scale position
 or 6DoF tracking is synthesized.
 
 
-## SteamVR display mode for IVRVirtualDisplay
+## Direct display mode in SteamVR
 
-The wireless capture path is implemented through a separate
-`TrackedDeviceClass_DisplayRedirect` device exposing `IVRVirtualDisplay_002`,
-with `redirectsDisplay: true` in the driver manifest. This follows Valve's
-`virtual_display` sample, which requires the headset to run in **Extended
-Display Mode**. The PhoneVR HMD therefore returns `true` from
-`IVRDisplayComponent::IsDisplayOnDesktop()`.
+`PhoneVRHmd` exposes `IVRDisplayComponent` and returns `false` from
+`IsDisplayOnDesktop()`, which tells SteamVR that the HMD must not be treated as
+an extended desktop monitor. The separate `PhoneVRDisplayRedirect` continues
+to implement `IVRVirtualDisplay`, which is the OpenVR wireless-output path for
+obtaining the final compositor backbuffer. It should not be replaced with
+`IVRDriverDirectModeComponent`: that interface is for a driver's own display
+compositor and would bypass the final-composited-frame handoff PhoneVR needs.
 
-The redirect device must also associate its display properties with the active
-HMD. During `PhoneVRDisplayRedirect::Activate()`, PhoneVR writes the selected
-DXGI adapter LUID and `Prop_HasVirtualDisplayComponent_Bool=true` to
-`vr::k_ulDisplayRedirectContainer`. OpenVR defines this as the override
-container whose properties are surfaced through the HMD property container;
-writing the LUID only to the accessory's own property container is not enough
-for a separate HMD + DisplayRedirect topology. Both write results are logged.
-
-Keep **SteamVR → Settings → Developer → Enable Direct Mode** disabled for this
-implementation. PhoneVR does not yet implement `IVRDriverDirectModeComponent`;
-turning Direct Mode on selects an interface path that this version does not
-provide and can stop SteamVR from calling `IVRVirtualDisplay::Present`. The
-SteamVR monitor warning about the HMD running as a display is expected with
-this virtual-display architecture. A future native Direct Mode implementation
-will need to add and validate `IVRDriverDirectModeComponent`, rather than only
-changing `IsDisplayOnDesktop()`.
+If SteamVR still reports that the HMD is running as a monitor, enable
+**SteamVR → Settings → Developer → Enable Direct Mode**, then restart SteamVR.
+This is a SteamVR runtime setting and can be unavailable when the graphics
+driver/runtime cannot take direct display ownership; PhoneVR does not silently
+rewrite the user's global `steamvr.vrsettings` file. The driver logs that it
+reports `IsDisplayOnDesktop=false` when the HMD activates.
 
 ## Chaperone / tracking universe
 

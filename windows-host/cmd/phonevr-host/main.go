@@ -8,7 +8,7 @@ import (
 	"syscall"
 )
 
-var appVersion = "0.4.23"
+var appVersion = "0.4.18"
 
 func main() {
 	listenAddress := flag.String("listen", "0.0.0.0", "IPv4 address to bind")
@@ -44,8 +44,8 @@ func main() {
 
 	if *headless {
 		fmt.Println("PhoneVR Host running in headless mode. Press Ctrl+C to stop.")
-		for _, address := range localIPv4NetworkAddresses() {
-			fmt.Printf("Host interface [%s] %s: %s\n", address.Kind, address.Name, address.IP)
+		for _, ip := range localIPv4Addresses() {
+			fmt.Printf("LAN address: %s\n", ip)
 		}
 		signalChannel := make(chan os.Signal, 1)
 		signal.Notify(signalChannel, os.Interrupt, syscall.SIGTERM)

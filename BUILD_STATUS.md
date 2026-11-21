@@ -1,37 +1,24 @@
-# Build status
+# PhoneVR 0.4.18 Build Status
 
-## 0.4.23 DisplayRedirect-to-HMD property association
+## Integrated SBS H.264 streaming and fixed virtual display timing
 
-- Fixed a missing OpenVR property bridge in `PhoneVRDisplayRedirect::Activate()`. The driver previously wrote `Prop_GraphicsAdapterLuid_Uint64` only to the DisplayRedirect accessory's own container.
-- The DisplayRedirect now writes the graphics adapter LUID and `Prop_HasVirtualDisplayComponent_Bool=true` into `vr::k_ulDisplayRedirectContainer`, which the OpenVR SDK defines as the property override container surfaced through the active HMD's property container.
-- Accessory-local LUID metadata remains for diagnostics; logs report both property-write results and warn if either HMD override fails.
-- Added static regression tests for the manifest and required property overrides.
-- This addresses the missing association suspected from the prior `Present`-never-called / no-raw-frame behavior. It is not yet confirmed until the target SteamVR runtime reports `Present` callbacks and the Host receives a raw BGRA frame.
+- Removed the Host display-refresh UI, persistence file and driver-side dynamic refresh loader. The virtual display remains fixed at 72 Hz while the end-to-end frame pipeline is brought up and profiled.
+- SteamVR `IVRVirtualDisplay` captures the final SBS backbuffer only after a compatible Android client has negotiated video. D3D11 GPU-scales the frame to 1600×720 and uses a bounded three-slot staging ring. A background worker performs CPU readback and loopback TCP delivery to Host port 48106.
+- Host validates a real hardware H.264 encoder session (NVENC/AMF/QSV) with an actual IDR output test. CPU software encoding is intentionally disabled for live VR video to avoid adding load to a CPU-bound SteamVR compositor.
+- Host reuses a single BGRA receive buffer to avoid allocating 4.6 MiB per frame at 60 FPS. The encoder timestamp backlog is bounded to eight frames and H.264 output packets are flushed immediately to avoid accumulating seconds of stale video. Encoded H.264 Annex-B access units are sent as 1200-byte payload fragments using the `PVRV` v1 UDP packet format to Android port 48104. A transient UDP send failure drops the access unit without terminating the encoder; Android requests recovery by waiting for the next IDR after frame loss.
+- Android advertises the exact hardware decoder profile only when a reliably classified hardware MediaCodec decoder supports 1600×720@60. Host selects and sends that exact codec name in the welcome message; Android creates it by name rather than relying on the system's default MIME-type decoder selection. `VideoStreamReceiver` reassembles complete access units into a two-frame bounded queue, decodes on a dedicated thread and releases output buffers to the renderer's SurfaceTexture. A dropped H.264 input access unit triggers IDR resynchronization. `StereoRenderer` samples the decoded SBS stream and then applies the existing optical warp independently per eye.
+- Pose UDP and control TCP remain independent. Video capture, encoding and decoding use their own workers and bounded queues.
 
-## Video bridge diagnostics and Wi-Fi-only scope
+## Network ports
 
-- USB tether/RNDIS selection and its firewall helper are deferred; the Android connection UI now offers Auto and Wi-Fi discovery only.
-- Focus is on diagnosing the SteamVR virtual-display Present callback, D3D11 backbuffer capture, Host raw-frame bridge, H.264 encoder, UDP transport and Android MediaCodec output as separate stages.
-- Host encoder preflight and Android handshake deadlines are extended so hardware encoder probing cannot silently exceed the client's handshake timeout.
-- The HMD continues to provide `IVRDisplayComponent` for display geometry/distortion; the separate `TrackedDeviceClass_DisplayRedirect` remains the `IVRVirtualDisplay` endpoint for final compositor backbuffers.
-- Capture supports common SDR/HDR compositor formats where D3D11 shader sampling is supported, including resolving multisampled textures before downscaling.
-- The capture worker no longer holds the shared D3D resource lock while sending a full raw frame over the local TCP bridge.
-- D3D11 capture-resource readiness is now asserted only after all capture resources are successfully created (and on the already-created fast path); the Host status therefore no longer remains falsely stuck at "waiting for GPU capture resources".
-- The staging readback worker retries `DXGI_ERROR_WAS_STILL_DRAWING` for a bounded interval without holding the capture resource mutex while sleeping, instead of dropping the first nonblocking Map result.
-- SteamVR logs separate captured, successful readback and sent BGRA frame rates, plus Map retries and skipped frames.
-- Android `VideoStreamReceiver` now reports its stages through the TCP control session; Host status distinguishes receiver startup, missing UDP packets, unexpected packet sources, incomplete fragment assembly, decoder startup/failure, decoded output and the first frame consumed by the stereo renderer.
+- TCP 48101: Host control/pairing.
+- UDP 48102: Android-to-Host IMU pose.
+- TCP 127.0.0.1:48106: SteamVR driver-to-Host raw BGRA capture bridge (loopback only).
+- UDP 48104: Host-to-Android H.264 video fragments.
 
-## Validation limitations
+## Validation and known limitations
 
-- Go tests, Race, Vet and Windows AMD64 Host cross-compilation are run in this environment.
-- Native MSVC D3D11 driver compilation, Windows SteamVR compositor integration, hardware H.264 encoder initialization, Android Gradle APK packaging, MediaCodec playback and Wi-Fi end-to-end streaming require the target Windows PC and Android handset.
-
-
-## 0.4.22 virtual-display Present bootstrap and mode correction
-
-- The 0.4.21 driver told SteamVR `IsDisplayOnDesktop=false` while implementing only `IVRVirtualDisplay` and not `IVRDriverDirectModeComponent`. Valve's virtual_display sample uses Extended Display Mode. The HMD now reports `IsDisplayOnDesktop=true`; Direct Mode must remain disabled for this implementation.
-- The Host heartbeat now exposes whether SteamVR queried `IVRVirtualDisplay_002`, whether VSync timing was queried, and whether Present was called. This separates driver component discovery from compositor submission.
-- `GetTimeSinceLastVsync` is seeded at activation so initial timing queries are valid before the first Present.
-- Added diagnostics for invalid Present arguments and duplicate `VirtualDisplayComponentQueried` method cleanup.
-- Fixed Android control acknowledgements to leave the UI thread (including remote actions such as `center_view`) to avoid `NetworkOnMainThreadException`.
-- Requires Windows MSVC/SteamVR runtime validation; do not claim Present or live video is fixed until Host reports Present calls and the first raw frame.
+- Go unit/integration tests, Race, Vet, Windows AMD64 Host cross-compilation, Python release tests, raw protocol tests and the local FFmpeg H.264 encoder integration test are the available source-level checks for this revision.
+- Local FFmpeg integration confirms that the encoder session emits Annex-B access units and an IDR with the locally available encoder; Host live streaming explicitly requires a verified hardware backend. Android's pure Kotlin fragment reassembler compiles independently with kotlinc.
+- Windows MSVC SteamVR DLL compilation and D3D11 runtime capture, GPU hardware encoder operation on the target PC, Android Gradle/MediaCodec execution, Wi-Fi packet loss behavior and full end-to-end phone display remain to be verified on target devices.
+- Software H.264 fallback is deliberately disabled for the live stream because the reported PC CPU utilization already reaches 100% during SteamVR movement. If NVENC/AMF/QSV cannot initialize, Host will disable video and log the exact reason while pose/control remain operational.

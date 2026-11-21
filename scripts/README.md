@@ -90,5 +90,3 @@ This removes generated build outputs while preserving Android SDK, Gradle user c
 
 
 Java version detection captures standard output and standard error separately. This is intentional: `java -version` normally prints to standard error, which must not be confused with a PowerShell error when `$ErrorActionPreference` is set to `Stop`. JDK 17 or newer is accepted.
-
-

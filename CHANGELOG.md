@@ -102,3 +102,10 @@
 - Installation checks the `phonevr` manifest identity, avoids duplicate registration by replacing the existing PhoneVR entry, rolls back registration if an update fails, and only deletes files from the PhoneVR-managed driver directory.
 - Release workflow now builds and publishes `PhoneVR-SteamVR-Driver-Windows-x64.zip` as a dedicated GitHub Release asset.
 - Added ZIP traversal, package-integrity, and driver-manifest validation tests.
+
+## 0.4.3
+
+- Fixed the Windows local SteamVR driver ZIP picker crash. The `OPENFILENAMEW` ABI now includes `lpEditInfo` and `lpstrPrompt` before `pvReserved`, `dwReserved`, and `FlagsEx`.
+- Added amd64/386 structure size and field-offset regression tests.
+- Kept the selected-file buffer and UTF-16 filter/title buffers alive across the native dialog call.
+- Added `CommDlgExtendedError` reporting so a real common-dialog failure is reported in the Host instead of being silently treated as cancellation.

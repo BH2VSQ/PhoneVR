@@ -1,6 +1,6 @@
 # PhoneVRStream
 
-Repository revision: **0.4.2**. Windows Host: **0.4.2**. Android client: **0.4.2**. Control protocol: **v1**; video packet protocol: **v1 foundation**.
+Repository revision: **0.4.3**. Windows Host: **0.4.3**. Android client: **0.4.3**. Control protocol: **v1**; video packet protocol: **v1 foundation**.
 
 PhoneVRStream is a multi-component project for using an Android phone as a PC VR streaming HMD. Both applications live in one repository and use independent build/test pipelines.
 
@@ -22,7 +22,7 @@ PhoneVRStream/
 └── dist/                       # Local build output (git-ignored)
 ```
 
-## Windows Host 0.4.2 hotfix
+## Windows Host 0.4.3 hotfix
 
 The Windows Host has been migrated from an Edge/Chrome app-mode dashboard to a native Windows desktop application.
 
@@ -41,7 +41,7 @@ The Windows Host has been migrated from an Edge/Chrome app-mode dashboard to a n
 
 The normal `PhoneVRHost.exe` is built with the Windows GUI subsystem and opens the native desktop application. `PhoneVRHost-console.exe -headless` runs the network service without a desktop window for diagnostics or server-only use.
 
-## Android client 0.4.2 hotfix
+## Android client 0.4.3 hotfix
 
 - Landscape immersive display with OpenGL ES 3.0 stereo rendering.
 - Locally stored optical preset selector with Daydream View v2.0 (2017) and Generic Cardboard built-in presets.
@@ -53,7 +53,7 @@ The normal `PhoneVRHost.exe` is built with the Windows GUI subsystem and opens t
 - `CodecCapabilityProbe` enumerates device MediaCodec decoders for H.264, HEVC and AV1, including hardware classification, supported size/frame-rate limits, profiles and color formats.
 
 
-## SteamVR driver 0.4.2
+## SteamVR driver 0.4.3
 
 The Windows Host main menu now contains **SteamVR Driver** management. The user can check registration, download and install the Windows x64 driver ZIP from the latest GitHub Release, choose a local driver ZIP, or uninstall the registered PhoneVR driver. The Host validates the ZIP manifest and DLL, extracts it under `%LOCALAPPDATA%\PhoneVR\SteamVRDriver`, and calls SteamVR `vrpathreg.exe` to register or unregister it. Uninstall removes files only from the Host-managed directory; a manually installed driver in another directory is only unregistered. Restart SteamVR after uninstall.
 

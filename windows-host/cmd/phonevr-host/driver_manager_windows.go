@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -305,28 +306,51 @@ type nativeOpenFileName struct {
 	CustomData       uintptr
 	Hook             uintptr
 	TemplateName     *uint16
-	Reserved         uintptr
-	Reserved2        uint32
-	FlagsEx          uint32
+	// These two fields are present in the current OPENFILENAMEW ABI.
+	// Omitting them shifts pvReserved/dwReserved/FlagsEx and corrupts memory
+	// when the common dialog writes the structure on return.
+	EditInfo  uintptr // LPEDITMENU
+	Prompt    uintptr // LPCSTR
+	Reserved  uintptr // pvReserved
+	Reserved2 uint32  // dwReserved
+	FlagsEx   uint32
 }
 
-func choosePhoneVRDriverZip(owner uintptr) string {
-	proc := syscall.NewLazyDLL("comdlg32.dll").NewProc("GetOpenFileNameW")
+func choosePhoneVRDriverZip(owner uintptr) (string, error) {
+	dll := syscall.NewLazyDLL("comdlg32.dll")
+	proc := dll.NewProc("GetOpenFileNameW")
+	if err := proc.Find(); err != nil {
+		return "", fmt.Errorf("无法加载 Windows 文件选择器：%w", err)
+	}
 	buffer := make([]uint16, 32768)
 	filterUnits := syscall.StringToUTF16("PhoneVR SteamVR Driver (*.zip)\x00*.zip\x00")
-	title, _ := syscall.UTF16PtrFromString("选择 PhoneVR SteamVR 驱动 ZIP")
-	initial, _ := syscall.UTF16PtrFromString("")
+	titleUnits := syscall.StringToUTF16("选择 PhoneVR SteamVR 驱动 ZIP")
 	info := nativeOpenFileName{
 		StructSize: uint32(unsafe.Sizeof(nativeOpenFileName{})), Owner: owner,
 		Filter: &filterUnits[0], FilterIndex: 1, File: &buffer[0], MaxFile: uint32(len(buffer)),
-		InitialDir: initial, Title: title,
+		Title: &titleUnits[0],
 		Flags: 0x00001000 | 0x00000800 | 0x00080000 | 0x00000008, // FILEMUSTEXIST | PATHMUSTEXIST | EXPLORER | NOCHANGEDIR
 	}
-	ok, _, _ := proc.Call(uintptr(unsafe.Pointer(&info)))
+	ok, _, callErr := proc.Call(uintptr(unsafe.Pointer(&info)))
+	runtime.KeepAlive(&info)
+	runtime.KeepAlive(buffer)
+	runtime.KeepAlive(filterUnits)
+	runtime.KeepAlive(titleUnits)
 	if ok == 0 {
-		return ""
+		errorProc := dll.NewProc("CommDlgExtendedError")
+		if findErr := errorProc.Find(); findErr == nil {
+			code, _, _ := errorProc.Call()
+			if code != 0 {
+				return "", fmt.Errorf("Windows 文件选择器失败（CommDlgExtendedError=0x%X）：%v", code, callErr)
+			}
+		}
+		return "", nil // User cancelled.
 	}
-	return syscall.UTF16ToString(buffer)
+	selected := syscall.UTF16ToString(buffer)
+	if selected == "" {
+		return "", errors.New("文件选择器返回了空路径")
+	}
+	return selected, nil
 }
 
 func (app *nativeUI) refreshDriverStatus(d *nativeDialog) {

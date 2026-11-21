@@ -1729,7 +1729,11 @@ func (app *nativeUI) handleDialogCommand(d *nativeDialog, id int) {
 		case idDriverRelease:
 			app.runDriverTask(d, app.text("正在从 GitHub Release 下载并安装...", "Downloading and installing driver from GitHub Release..."), installLatestPhoneVRDriver)
 		case idDriverLocal:
-			archive := choosePhoneVRDriverZip(d.hwnd)
+			archive, pickerErr := choosePhoneVRDriverZip(d.hwnd)
+			if pickerErr != nil {
+				setNativeText(d.status, "无法打开文件选择器："+pickerErr.Error())
+				return
+			}
 			if archive != "" {
 				app.runDriverTask(d, app.text("正在验证并安装驱动包...", "Validating and installing driver package..."), func() (string, error) {
 					path, err := installPhoneVRDriverArchive(archive)

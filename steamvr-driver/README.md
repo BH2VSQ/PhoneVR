@@ -1,4 +1,4 @@
-# PhoneVR SteamVR Driver — 0.4.8
+# PhoneVR SteamVR Driver — 0.4.9
 
 Windows x64 OpenVR server driver foundation for the PhoneVR wireless HMD.
 
@@ -47,17 +47,19 @@ The output is `dist/steamvr-driver`. The `tools/install-steamvr-driver.ps1` help
 ## Current implementation boundary
 
 `IVRVirtualDisplay::Present` opens and caches SteamVR's D3D11 shared backbuffer,
-uses a bounded keyed-mutex acquire, and queues a full-frame copy to a staging
-texture. A 1x1 synchronization copy is queued after the full-frame copy;
-`WaitForPresent` maps only its small staging texture to fence earlier GPU work,
-while leaving the full image in the CPU-readable staging surface for the future
-encoder. `GetTimeSinceLastVsync` advances a 72 Hz virtual-vsync clock from the
-last supplied compositor timestamp and keeps its frame counter monotonic. This
-is the P0 capture/synchronization
-foundation only: it does **not** yet copy pixels into an encoder-owned buffer,
-submit to NVENC/AMF/QSV, or send video packets. The HMD projection/distortion
-values and eye geometry are initial SBS defaults; final optical-profile handoff
-from Android is a subsequent integration step.
+uses a bounded keyed-mutex acquire (10 ms maximum), and queues only a small
+staging-texture copy as a GPU-completion fence. `WaitForPresent` maps this small
+synchronization texture. Because P0 has no encoder or frame consumer, it
+intentionally does not copy the unused full-resolution image into staging
+memory. `GetTimeSinceLastVsync` advances a 72 Hz virtual-vsync clock from the
+last supplied compositor timestamp and keeps its frame counter monotonic. The
+driver logs all enumerated DXGI adapters, the selected adapter LUID, opened
+backbuffer dimensions/format, mutex contention and GPU synchronization errors
+with rate limiting. This is the P0 synchronization foundation only: it does
+**not** yet copy pixels into an encoder-owned buffer, submit to NVENC/AMF/QSV,
+or send video packets. The HMD projection/distortion values and eye geometry
+are initial SBS defaults; final optical-profile handoff from Android is a
+subsequent integration step.
 
 The driver exposes only the phone's 3DoF orientation. No room-scale position
 or 6DoF tracking is synthesized.

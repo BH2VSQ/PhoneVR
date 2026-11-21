@@ -1,23 +1,23 @@
-# PhoneVR 0.4.8 Build Status
+# PhoneVR 0.4.9 Build Status
 
-## 0.4.8 MSVC build-log fixes
+## 0.4.9 SteamVR flicker and load investigation
 
-- Fixed MSVC C3668: `IVRVirtualDisplay` in the pinned OpenVR 2.15.6 header declares only `Present`, `WaitForPresent` and `GetTimeSinceLastVsync`; it does not declare a virtual destructor. `VirtualDisplayComponent` now has a normal concrete destructor that calls `Shutdown()` without `override`.
-- Removed C4005 macro-redefinition warnings by guarding `WIN32_LEAN_AND_MEAN` and `NOMINMAX` when they are not already defined by the CMake target.
-- The user's reported Windows build log stops at this C++ compile error. The corrected source has not yet been built with MSVC in this environment; rebuild on Windows to confirm the full native driver link and embedding stages.
+- Removed the unused full-resolution staging texture and `CopyResource` operation from the virtual display Present path. The current P0 milestone does not consume that frame data; copying the full 2400x1080 buffer every present was unnecessary GPU/memory traffic.
+- Retained a small 32x32 CPU-readable staging texture and a 1x1 copy solely as a GPU-completion fence, mapped in `WaitForPresent`.
+- Increased the bounded keyed-mutex wait from 2 ms to 10 ms, aligned with Valve's virtual-display sample, to reduce unnecessary frame drops while retaining a finite timeout.
+- Added logs for every enumerated DXGI adapter, selected adapter LUID, opened compositor backbuffer size/format/sample count, keyed-mutex acquisition failures, and D3D11 Map failure/device-removed reason. Failure logs are rate-limited.
+- Map failures now clear the pending synchronization flag rather than leaving the driver in a stale pending state.
+- This change reduces avoidable D3D11 copy overhead and improves diagnosis. It does not establish that the user's intermittent black/gray view is fully fixed; actual Windows/SteamVR validation is still required.
+- Steam Client WebHelper CPU use is not directly controlled by PhoneVR's D3D11 driver code. It may be related to Steam's Chromium-based dashboard/overlay content or another Steam UI component; the process name and CPU percentage alone do not prove causation.
 
-## P0 changes
+## Earlier P0 implementation retained
 
-- Replaced the hard-coded SteamVR disconnected label with a live loopback health handshake from the OpenVR server driver. The Host now separately tracks driver loaded, HMD activated, valid pose, virtual display activated, and completed full-frame staging-copy synchronization.
-- Added a 16-byte versioned `PVST` heartbeat on loopback UDP `127.0.0.1:48105`, sent every 250 ms from the driver's `RunFrame()`. Host expires the state after 2.5 seconds. Port `48104` remains reserved for future encoded video transport.
-- Added Host integration and parser tests for valid status flags, frame counter, malformed packets and stale-heartbeat expiry.
-- Implemented D3D11 virtual-display initialization on a hardware DXGI adapter and published its adapter LUID to SteamVR.
-- Implemented `IVRVirtualDisplay::Present` shared-texture opening/caching, bounded keyed-mutex acquisition, full-frame copy into a CPU-readable staging texture and non-blocking frame queueing.
-- Implemented `WaitForPresent` GPU-copy completion using a small 1x1 synchronization staging texture queued after the full-frame staging copy. Only the synchronization texture is mapped, avoiding full-frame CPU readback during P0. `GetTimeSinceLastVsync` derives time-since-vsync and a monotonic frame counter from the 72 Hz virtual display clock and supplied compositor timestamp.
-- Improved the main Host SteamVR pill so it distinguishes driver disconnected, HMD inactive, display initialization error, waiting for a frame, waiting for pose, and healthy display/tracking.
-- Kept the Android LAN protocol unchanged. No encoded video is sent to Android in P0; encoder-owned pixel buffering, hardware encoding and network video transport remain P1.
+- Host connection status uses a loopback `PVST` heartbeat from the OpenVR driver and tracks driver loaded, HMD active, pose valid, display active and completed virtual-display frames.
+- The status heartbeat is sent every 250 ms to `127.0.0.1:48105`; Host state expires after 2.5 seconds.
+- `IVRVirtualDisplay::Present` opens/caches the D3D11 shared compositor backbuffer. `WaitForPresent` waits for the queued small GPU fence readback. `GetTimeSinceLastVsync` returns a monotonic virtual-vsync count at the configured 72 Hz refresh rate.
+- Android video encoding, network transmission, MediaCodec decode and live SBS display remain P1 and are not included in this package.
 
-## Verified in this environment
+## Validation in this environment
 
 - `go test ./...`
 - `go test -race ./...`
@@ -28,12 +28,13 @@
 - GitHub Actions workflow YAML parsing
 - ZIP integrity and SHA-256 verification
 
+
 ## Requires Windows build and SteamVR runtime validation
 
-- Compile `steamvr-driver/` with the pinned OpenVR SDK, Windows SDK, CMake and Visual Studio C++ x64 toolchain. The current Linux environment has no MSVC/Windows SDK, so the new native D3D11 code has not been compiled here.
-- On Windows, launch SteamVR and confirm the Host changes through each live heartbeat state: driver loaded, HMD active, pose valid, display redirect active and completed frame counter increasing.
-- Verify `OpenSharedResource`, keyed-mutex acquisition, full-frame staging copy, synchronization-texture Map / Unmap and `WaitForPresent` on the actual graphics adapter. GPU-driver and SteamVR-version behavior cannot be fully established by source-level checks.
-- Confirm SteamVR VR View remains stable during a sustained session and inspect `vrserver.txt` for any D3D11 initialization, shared-texture, keyed-mutex or Map errors.
-- Confirm the Host top-bar status changes to disconnected within 2.5 seconds after SteamVR closes.
+- Build the native driver with the pinned OpenVR SDK, Windows SDK and Visual Studio C++ x64 toolchain. This Linux environment does not have MSVC/Windows SDK, so the updated D3D11 driver cannot be natively compiled here.
+- Run SteamVR and inspect `vrserver.txt` for the enumerated adapter list, selected LUID, shared backbuffer dimensions/format, keyed-mutex timeout counts and GPU Map/device-removal errors.
+- Confirm Host's completed-frame counter increases continuously during a sustained SteamVR session, and verify the VR View remains stable.
+- Compare the logged adapter LUID with the GPU used by `vrcompositor.exe` in Task Manager/GPU Engine or SteamVR logs. A mismatch would require adapter selection to be corrected for the user's multi-GPU configuration.
+- Confirm Steam Client WebHelper CPU usage with SteamVR dashboard/overlay closed and open separately; do not assume it is caused by the PhoneVR driver without that comparison.
 
-P0 has source implementation and automated Host-side tests, but final runtime acceptance still requires the Windows/SteamVR checks above. P1 Android video streaming and encoder integration are not part of this package.
+P0 source changes are included. Final acceptance requires the user's Windows/SteamVR hardware validation. P1 video streaming remains unimplemented.

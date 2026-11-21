@@ -1,3 +1,12 @@
+## 0.4.9 - SteamVR frame-sync load reduction and diagnostics
+
+- Removed the unused full-resolution D3D11 staging copy from `IVRVirtualDisplay::Present`; P0 has no encoder or frame consumer yet, so the extra 2400x1080 copy was wasted GPU bandwidth and memory traffic.
+- Kept the small synchronization staging texture and GPU completion wait, matching the intended fence path used by Valve's virtual-display sample.
+- Increased bounded keyed-mutex acquisition timeout from 2 ms to 10 ms to reduce compositor frame drops under cross-process scheduling contention.
+- Added diagnostics for enumerated DXGI adapters, selected adapter LUID, shared-backbuffer dimensions/format/sample count, keyed-mutex timeouts and D3D11 Map/device-removal failures. Error logging is rate-limited.
+- Retained the live Host heartbeat and completed-frame state reporting. No Android video encoder or transport was added in this version.
+- Bumped synchronized Android, Windows Host and SteamVR driver version metadata.
+
 ## 0.4.8 - SteamVR driver MSVC compatibility fix
 
 - Removed the invalid `override` specifier from `VirtualDisplayComponent`'s destructor. The pinned OpenVR 2.15.6 `IVRVirtualDisplay` interface has no virtual destructor; the concrete component still runs `Shutdown()` when its owning display device is destroyed.

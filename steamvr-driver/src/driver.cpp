@@ -332,11 +332,23 @@ public:
                 break;
             }
             DXGI_ADAPTER_DESC1 desc{};
-            if (SUCCEEDED(candidate->GetDesc1(&desc)) && !(desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE)) {
-                m_adapterLuid = (static_cast<uint64_t>(static_cast<uint32_t>(desc.AdapterLuid.HighPart)) << 32) |
-                                static_cast<uint32_t>(desc.AdapterLuid.LowPart);
-                adapter = candidate;
-                break;
+            if (SUCCEEDED(candidate->GetDesc1(&desc))) {
+                char adapterName[256]{};
+                WideCharToMultiByte(CP_UTF8, 0, desc.Description, -1, adapterName,
+                                    static_cast<int>(sizeof(adapterName)), nullptr, nullptr);
+                if (vr::VRDriverLog()) {
+                    char line[384]{};
+                    std::snprintf(line, sizeof(line),
+                                  "PhoneVR: DXGI adapter %u: %s (vendor=0x%04X device=0x%04X flags=0x%X)",
+                                  index, adapterName, desc.VendorId, desc.DeviceId, desc.Flags);
+                    vr::VRDriverLog()->Log(line);
+                }
+                if (!(desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) && !adapter) {
+                    m_adapterLuid = (static_cast<uint64_t>(static_cast<uint32_t>(desc.AdapterLuid.HighPart)) << 32) |
+                                    static_cast<uint32_t>(desc.AdapterLuid.LowPart);
+                    adapter = candidate; // Retain the first hardware adapter as the current default.
+                    continue;
+                }
             }
             candidate->Release();
         }
@@ -352,6 +364,13 @@ public:
                                nullptr, 0, D3D11_SDK_VERSION,
                                &m_device, &featureLevel, &m_context);
         adapter->Release();
+        if (SUCCEEDED(hr) && m_device && m_context && vr::VRDriverLog()) {
+            char line[192]{};
+            std::snprintf(line, sizeof(line),
+                          "PhoneVR: D3D11 capture device selected (adapter LUID 0x%016llX)",
+                          static_cast<unsigned long long>(m_adapterLuid));
+            vr::VRDriverLog()->Log(line);
+        }
         if (FAILED(hr) || !m_device || !m_context) {
             LogD3DFailure("D3D11CreateDevice", hr);
             ShutdownUnlocked();
@@ -368,14 +387,15 @@ public:
     }
 
     void Present(const vr::PresentInfo_t* info, uint32_t infoSize) override {
-        if (!info || infoSize < sizeof(vr::PresentInfo_t) || !info->backbufferTextureHandle) return;
         std::lock_guard<std::mutex> lock(m_mutex);
+        if (!info || infoSize < sizeof(vr::PresentInfo_t) || !info->backbufferTextureHandle) {
+            return;
+        }
         if (!m_device || !m_context) return;
 
         HANDLE sharedHandle = reinterpret_cast<HANDLE>(info->backbufferTextureHandle);
         if (sharedHandle != m_sharedHandle) {
             ReleaseTexture(m_sharedTexture);
-            ReleaseTexture(m_stagingTexture);
             ReleaseTexture(m_flushTexture);
             m_sharedHandle = sharedHandle;
             HRESULT openResult = m_device->OpenSharedResource(
@@ -386,29 +406,46 @@ public:
                 return;
             }
             m_loggedOpenFailure = false;
-            if (!EnsureStagingTexture()) return;
+
+            D3D11_TEXTURE2D_DESC source{};
+            m_sharedTexture->GetDesc(&source);
+            if (vr::VRDriverLog()) {
+                char line[256]{};
+                std::snprintf(line, sizeof(line),
+                              "PhoneVR: opened compositor backbuffer %ux%u format=%u samples=%u array=%u mips=%u misc=0x%X",
+                              source.Width, source.Height, static_cast<unsigned>(source.Format),
+                              source.SampleDesc.Count, source.ArraySize, source.MipLevels, source.MiscFlags);
+                vr::VRDriverLog()->Log(line);
+            }
+            if (!EnsureSyncTexture()) return;
         }
-        if (!m_sharedTexture) return;
-        if ((!m_stagingTexture || !m_flushTexture) && !EnsureStagingTexture()) return;
+        if (!m_sharedTexture || !m_flushTexture) return;
 
         IDXGIKeyedMutex* keyedMutex = nullptr;
         const HRESULT mutexQuery = m_sharedTexture->QueryInterface(
             __uuidof(IDXGIKeyedMutex), reinterpret_cast<void**>(&keyedMutex));
         bool mutexAcquired = false;
         if (SUCCEEDED(mutexQuery) && keyedMutex) {
-            const HRESULT acquire = keyedMutex->AcquireSync(0, 2);
+            // Match Valve's virtual_display sample. A 2 ms timeout was too short
+            // for cross-process compositor scheduling on some GPUs and caused
+            // repeated frame drops/black flashes. Do not wait indefinitely.
+            const HRESULT acquire = keyedMutex->AcquireSync(0, 10);
             if (acquire != S_OK) {
+                ++m_mutexAcquireFailures;
+                LogMutexAcquireFailure(acquire);
                 keyedMutex->Release();
-                return; // Drop this frame rather than blocking the compositor.
+                return; // Drop a contended frame instead of hanging the compositor.
             }
             mutexAcquired = true;
+        } else if (FAILED(mutexQuery)) {
+            LogD3DFailureOnce("QueryInterface(IDXGIKeyedMutex)", mutexQuery, m_loggedMutexQueryFailure);
         }
 
-        // Queue the full frame copy for the future encoder, then queue a tiny
-        // readback copy behind it. Mapping only the tiny texture in
-        // WaitForPresent fences all preceding immediate-context work without
-        // forcing a CPU readback of the full 1200x1080-per-eye surface.
-        m_context->CopyResource(m_stagingTexture, m_sharedTexture);
+        // P0 only needs to confirm that the compositor's final backbuffer is
+        // available and that the GPU has completed the submitted frame. There
+        // is no encoder/consumer in this version, so copying the entire 2400x1080
+        // surface into an unused staging texture only burns GPU bandwidth.
+        // Keep the small readback fence used by Valve's virtual-display sample.
         const D3D11_BOX syncBox{0, 0, 0, 1, 1, 1};
         m_context->CopySubresourceRegion(m_flushTexture, 0, 0, 0, 0,
                                          m_sharedTexture, 0, &syncBox);
@@ -425,21 +462,24 @@ public:
 
     void WaitForPresent() override {
         std::lock_guard<std::mutex> lock(m_mutex);
-        if (!m_pendingReadback || !m_context || !m_stagingTexture || !m_flushTexture) return;
+        if (!m_pendingReadback || !m_context || !m_flushTexture) return;
         D3D11_MAPPED_SUBRESOURCE mapped{};
         const HRESULT hr = m_context->Map(m_flushTexture, 0, D3D11_MAP_READ, 0, &mapped);
         if (SUCCEEDED(hr)) {
-            // The tiny readback copy was queued after the full staging copy on
-            // the same immediate context. Mapping it waits for both GPU copies
-            // while avoiding a full-frame CPU/GPU synchronization.
+            // The small staging readback was queued after the shared-backbuffer
+            // fence copy. Mapping it waits for the preceding GPU work to finish.
             m_context->Unmap(m_flushTexture, 0);
             m_pendingReadback = false;
             m_frameCounter = std::max(m_frameCounter + 1, m_lastFrameId);
             m_vsyncOriginTimeSeconds = m_lastVsyncTimeSeconds;
             m_vsyncOriginFrameCounter = m_frameCounter;
-            m_completedFrameCounter.fetch_add(1, std::memory_order_relaxed);
+            const uint64_t completed = m_completedFrameCounter.fetch_add(1, std::memory_order_relaxed) + 1;
+            if (completed == 1 && vr::VRDriverLog())
+                vr::VRDriverLog()->Log("PhoneVR: first virtual display frame synchronized successfully");
         } else {
-            LogD3DFailureOnce("Map(sync texture)", hr, m_loggedMapFailure);
+            m_pendingReadback = false;
+            ++m_mapFailures;
+            LogMapFailure(hr);
         }
     }
 
@@ -479,37 +519,18 @@ private:
         logged = true;
         LogD3DFailure(operation, hr);
     }
-    bool EnsureStagingTexture() {
+    bool EnsureSyncTexture() {
         if (!m_sharedTexture || !m_device) return false;
         D3D11_TEXTURE2D_DESC source{};
         m_sharedTexture->GetDesc(&source);
-        if (source.Width == 0 || source.Height == 0 || source.ArraySize != 1 ||
-            source.MipLevels != 1 || source.SampleDesc.Count != 1) {
-            if (vr::VRDriverLog()) vr::VRDriverLog()->Log("PhoneVR: unsupported virtual display texture layout");
+        if (source.Width == 0 || source.Height == 0 || source.SampleDesc.Count != 1) {
+            if (vr::VRDriverLog()) vr::VRDriverLog()->Log("PhoneVR: unsupported compositor backbuffer dimensions or sample count");
             return false;
         }
-        if (m_stagingTexture) {
-            D3D11_TEXTURE2D_DESC current{};
-            m_stagingTexture->GetDesc(&current);
-            const bool stagingMatches = current.Width == source.Width && current.Height == source.Height &&
-                                        current.Format == source.Format;
-            if (!stagingMatches) ReleaseTexture(m_stagingTexture);
-        }
-        if (!m_stagingTexture) {
-            D3D11_TEXTURE2D_DESC staging = source;
-            staging.Usage = D3D11_USAGE_STAGING;
-            staging.BindFlags = 0;
-            staging.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
-            staging.MiscFlags = 0;
-            const HRESULT hr = m_device->CreateTexture2D(&staging, nullptr, &m_stagingTexture);
-            if (FAILED(hr) || !m_stagingTexture) {
-                LogD3DFailureOnce("CreateTexture2D(staging)", hr, m_loggedStagingFailure);
-                return false;
-            }
-            m_loggedStagingFailure = false;
-        }
-        const UINT syncWidth = std::min<UINT>(32, source.Width);
-        const UINT syncHeight = std::min<UINT>(32, source.Height);
+        // D3D11 staging texture used solely as a GPU completion fence. The
+        // actual source rectangle copied into it is 1x1, as in Valve's sample.
+        constexpr UINT syncWidth = 32;
+        constexpr UINT syncHeight = 32;
         if (m_flushTexture) {
             D3D11_TEXTURE2D_DESC current{};
             m_flushTexture->GetDesc(&current);
@@ -525,20 +546,47 @@ private:
             flush.Format = source.Format;
             flush.SampleDesc.Count = 1;
             flush.Usage = D3D11_USAGE_STAGING;
+            flush.BindFlags = 0;
             flush.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+            flush.MiscFlags = 0;
             const HRESULT hr = m_device->CreateTexture2D(&flush, nullptr, &m_flushTexture);
             if (FAILED(hr) || !m_flushTexture) {
-                LogD3DFailureOnce("CreateTexture2D(sync staging)", hr, m_loggedStagingFailure);
+                LogD3DFailureOnce("CreateTexture2D(sync staging)", hr, m_loggedSyncTextureFailure);
                 return false;
             }
+            m_loggedSyncTextureFailure = false;
         }
-        return m_stagingTexture != nullptr && m_flushTexture != nullptr;
+        return m_flushTexture != nullptr;
+    }
+
+    void LogMutexAcquireFailure(HRESULT hr) {
+        const uint64_t now = MonotonicNowNs();
+        if (now - m_lastMutexFailureLogNs < 2000000000ULL) return;
+        m_lastMutexFailureLogNs = now;
+        char line[192]{};
+        std::snprintf(line, sizeof(line),
+                      "PhoneVR: compositor keyed-mutex acquisition failed %llu times (last HRESULT 0x%08X); frames were dropped",
+                      static_cast<unsigned long long>(m_mutexAcquireFailures), static_cast<unsigned>(hr));
+        if (vr::VRDriverLog()) vr::VRDriverLog()->Log(line);
+        m_mutexAcquireFailures = 0;
+    }
+
+    void LogMapFailure(HRESULT hr) {
+        const uint64_t now = MonotonicNowNs();
+        if (now - m_lastMapFailureLogNs < 2000000000ULL) return;
+        m_lastMapFailureLogNs = now;
+        HRESULT removedReason = m_device ? m_device->GetDeviceRemovedReason() : E_FAIL;
+        char line[224]{};
+        std::snprintf(line, sizeof(line),
+                      "PhoneVR: GPU completion Map failed (HRESULT 0x%08X, device removed reason 0x%08X, failures %llu)",
+                      static_cast<unsigned>(hr), static_cast<unsigned>(removedReason),
+                      static_cast<unsigned long long>(m_mapFailures));
+        if (vr::VRDriverLog()) vr::VRDriverLog()->Log(line);
     }
     void ShutdownUnlocked() {
         m_pendingReadback = false;
         m_sharedHandle = nullptr;
         ReleaseTexture(m_sharedTexture);
-        ReleaseTexture(m_stagingTexture);
         ReleaseTexture(m_flushTexture);
         if (m_context) { m_context->ClearState(); m_context->Flush(); m_context->Release(); m_context = nullptr; }
         if (m_device) { m_device->Release(); m_device = nullptr; }
@@ -555,7 +603,6 @@ private:
     ID3D11Device* m_device = nullptr;
     ID3D11DeviceContext* m_context = nullptr;
     ID3D11Texture2D* m_sharedTexture = nullptr;
-    ID3D11Texture2D* m_stagingTexture = nullptr;
     ID3D11Texture2D* m_flushTexture = nullptr;
     HANDLE m_sharedHandle = nullptr;
     uint64_t m_adapterLuid = 0;
@@ -566,8 +613,12 @@ private:
     uint64_t m_vsyncOriginFrameCounter = 0;
     bool m_pendingReadback = false;
     bool m_loggedOpenFailure = false;
-    bool m_loggedStagingFailure = false;
-    bool m_loggedMapFailure = false;
+    bool m_loggedSyncTextureFailure = false;
+    bool m_loggedMutexQueryFailure = false;
+    uint64_t m_mutexAcquireFailures = 0;
+    uint64_t m_mapFailures = 0;
+    uint64_t m_lastMutexFailureLogNs = 0;
+    uint64_t m_lastMapFailureLogNs = 0;
     std::atomic<uint64_t> m_completedFrameCounter{0};
 };
 
@@ -629,7 +680,7 @@ public:
         if (!host->TrackedDeviceAdded("PHONEVR-DISPLAY-001", vr::TrackedDeviceClass_DisplayRedirect, m_redirect)) {
             Cleanup(); return vr::VRInitError_Driver_Unknown;
         }
-        if (vr::VRDriverLog()) vr::VRDriverLog()->Log("PhoneVR 0.4.8 SteamVR driver initialized");
+        if (vr::VRDriverLog()) vr::VRDriverLog()->Log("PhoneVR 0.4.9 SteamVR driver initialized");
         return vr::VRInitError_None;
     }
     void Cleanup() override {

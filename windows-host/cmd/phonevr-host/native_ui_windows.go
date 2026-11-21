@@ -219,35 +219,40 @@ const (
 )
 
 const (
-	idCenter       = 100
-	idSettings     = 101 // Retained internally for the preset editor; no longer shown in the main menu.
-	idPresets      = 102
-	idNetwork      = 103
-	idLogs         = 104
-	idLanguage     = 105
-	idMenu         = 106
-	idAppearance   = 107
-	idProfile      = 200
-	idApply        = 201
-	idDialogCenter = 202
-	idClose        = 203
-	idPresetList   = 300
-	idPresetName   = 301
-	idPresetSave   = 302
-	idPresetClone  = 303
-	idPresetRename = 304
-	idPresetDelete = 305
-	idPresetApply  = 306
-	idPresetEdit   = 307
-	idPresetNew    = 308
-	idThemeMode    = 600
-	idThemeAccent  = 601
-	idThemePalette = 603
-	idThemeApply   = 602
-	idNetworkApply = 400
-	idNetworkStop  = 401
-	idNetworkStart = 402
-	idLogsRefresh  = 500
+	idCenter               = 100
+	idSettings             = 101 // Retained internally for the preset editor; no longer shown in the main menu.
+	idPresets              = 102
+	idNetwork              = 103
+	idLogs                 = 104
+	idLanguage             = 105
+	idMenu                 = 106
+	idAppearance           = 107
+	idProfile              = 200
+	idApply                = 201
+	idDialogCenter         = 202
+	idClose                = 203
+	idPresetList           = 300
+	idPresetName           = 301
+	idPresetSave           = 302
+	idPresetClone          = 303
+	idPresetRename         = 304
+	idPresetDelete         = 305
+	idPresetApply          = 306
+	idPresetEdit           = 307
+	idPresetNew            = 308
+	idThemeModeDark        = 600
+	idThemeAccent          = 601
+	idThemeApply           = 602
+	idThemePaletteSky      = 603
+	idThemeModeLight       = 604
+	idThemePalettePink     = 605
+	idThemePaletteLavender = 606
+	idThemePaletteMint     = 607
+	idThemePaletteAmber    = 608
+	idNetworkApply         = 400
+	idNetworkStop          = 401
+	idNetworkStart         = 402
+	idLogsRefresh          = 500
 )
 
 type nativePoint struct{ X, Y int32 }
@@ -774,23 +779,6 @@ func nativeDialogWndProc(hwnd uintptr, message uint32, wParam, lParam uintptr) u
 				app.openPresetEditor(dialog, index)
 				return 0
 			}
-			if dialog.kind == "appearance" && commandID == idThemeMode && (notification == cbnSelChange || notification == cbnSelEndOK) {
-				// Apply and persist the mode as soon as the user chooses it. The
-				// Apply button remains available for manually entered HEX colors.
-				app.applyThemeFromDialog(dialog)
-				return 0
-			}
-			if dialog.kind == "appearance" && commandID == idThemePalette && (notification == cbnSelChange || notification == cbnSelEndOK) {
-				index := int(sendNativeMessage(dialog.controls[idThemePalette], 0x0147, 0, 0))
-				colors := []string{"#5BCEFA", "#F5A9B8", "#B39DDB", "#80CBC4", "#FFCC80", ""}
-				if index >= 0 && index < len(colors) && colors[index] != "" {
-					setNativeText(dialog.controls[idThemeAccent], colors[index])
-					app.applyThemeFromDialog(dialog)
-				} else if dialog.status != 0 {
-					setNativeText(dialog.status, app.text("请输入自定义 HEX 颜色后点击应用主题", "Enter a custom HEX color, then click Apply Theme"))
-				}
-				return 0
-			}
 			app.handleDialogCommand(dialog, commandID)
 		}
 		return 0
@@ -1240,39 +1228,24 @@ func (app *nativeUI) createDialogControls(d *nativeDialog) {
 		addButton(idClose, app.text("关闭", "Close"))
 
 	case "appearance":
+		// Use explicit owner-drawn buttons instead of native COMBOBOX controls.
+		// The previous combo boxes were created at a 10x10 placeholder size and
+		// then moved; on some Windows builds their popup list was not reliably
+		// interactive/visible. These buttons always deliver BN_CLICKED through
+		// the dialog WM_COMMAND path.
 		addLabel(d.hwnd, 0, app.text("界面模式", "INTERFACE MODE"))
-		mode := app.createControl(d.hwnd, "COMBOBOX", "", wsChild|wsVisible|wsTabStop|cbDropDownList|wsVScroll, 0, 0, 10, 10, idThemeMode)
-		d.controls[idThemeMode] = mode
-		app.addComboItem(mode, app.text("夜间模式", "Dark mode"))
-		app.addComboItem(mode, app.text("日间模式", "Light mode"))
-		selectedMode := uintptr(0)
-		if app.themeConfig.Mode == "light" {
-			selectedMode = 1
-		}
-		pSendMessage.Call(mode, 0x014E, selectedMode, 0)
+		addButton(idThemeModeDark, app.text("夜间模式", "Dark mode"))
+		addButton(idThemeModeLight, app.text("日间模式", "Light mode"))
 		addLabel(d.hwnd, 1, app.text("主题强调色（HEX）", "ACCENT COLOR (HEX)"))
 		addEdit(d.hwnd, idThemeAccent, app.themeConfig.AccentHex)
 		addLabel(d.hwnd, 2, app.text("快速配色", "COLOR PRESETS"))
-		palette := app.createControl(d.hwnd, "COMBOBOX", "", wsChild|wsVisible|wsTabStop|cbDropDownList|wsVScroll, 0, 0, 10, 10, idThemePalette)
-		d.controls[idThemePalette] = palette
-		paletteOptions := []struct{ label, hex string }{
-			{app.text("天空蓝 · #5BCEFA", "Sky Blue · #5BCEFA"), "#5BCEFA"},
-			{app.text("樱花粉 · #F5A9B8", "Sakura Pink · #F5A9B8"), "#F5A9B8"},
-			{app.text("薰衣草紫 · #B39DDB", "Lavender · #B39DDB"), "#B39DDB"},
-			{app.text("薄荷绿 · #80CBC4", "Mint · #80CBC4"), "#80CBC4"},
-			{app.text("暖琥珀 · #FFCC80", "Amber · #FFCC80"), "#FFCC80"},
-			{app.text("自定义 HEX", "Custom HEX"), ""},
-		}
-		selectedPalette := len(paletteOptions) - 1
-		for index, option := range paletteOptions {
-			app.addComboItem(palette, option.label)
-			if option.hex != "" && strings.EqualFold(option.hex, app.themeConfig.AccentHex) {
-				selectedPalette = index
-			}
-		}
-		pSendMessage.Call(palette, 0x014E, uintptr(selectedPalette), 0)
-		d.status = app.createControl(d.hwnd, "STATIC", app.text("可选预设色或输入自定义 #RRGGBB", "Choose a preset or enter a custom #RRGGBB value"), wsChild|wsVisible, 0, 0, 10, 10, 0)
-		addButton(idThemeApply, app.text("应用主题", "Apply Theme"))
+		addButton(idThemePaletteSky, app.text("天空蓝", "Sky"))
+		addButton(idThemePalettePink, app.text("樱花粉", "Pink"))
+		addButton(idThemePaletteLavender, app.text("薰衣草", "Lavender"))
+		addButton(idThemePaletteMint, app.text("薄荷绿", "Mint"))
+		addButton(idThemePaletteAmber, app.text("暖琥珀", "Amber"))
+		d.status = app.createControl(d.hwnd, "STATIC", app.text("直接点击模式或配色即可立即应用；也可输入自定义 #RRGGBB", "Click a mode or color to apply immediately, or enter a custom #RRGGBB"), wsChild|wsVisible, 0, 0, 10, 10, 0)
+		addButton(idThemeApply, app.text("应用自定义颜色", "Apply Custom Color"))
 		addButton(idClose, app.text("关闭", "Close"))
 
 	case "network":
@@ -1386,11 +1359,14 @@ func (app *nativeUI) layoutDialog(d *nativeDialog) {
 			move(hwnd, r.Left, r.Top, r.Width(), r.Height())
 		}
 		moveRect(d.labels[0], l.ModeLabel)
-		moveRect(d.controls[idThemeMode], l.Mode)
+		moveRect(d.controls[idThemeModeDark], l.ModeDark)
+		moveRect(d.controls[idThemeModeLight], l.ModeLight)
 		moveRect(d.labels[1], l.AccentLabel)
 		moveRect(d.controls[idThemeAccent], l.Accent)
 		moveRect(d.labels[2], l.PaletteLabel)
-		moveRect(d.controls[idThemePalette], l.Palette)
+		for i, id := range []int{idThemePaletteSky, idThemePalettePink, idThemePaletteLavender, idThemePaletteMint, idThemePaletteAmber} {
+			moveRect(d.controls[id], l.PaletteButtons[i])
+		}
 		moveRect(d.status, l.Hint)
 		moveRect(d.controls[idThemeApply], l.Apply)
 		moveRect(d.controls[idClose], l.Close)
@@ -1717,6 +1693,17 @@ func (app *nativeUI) handleDialogCommand(d *nativeDialog, id int) {
 
 	case "appearance":
 		switch id {
+		case idThemeModeDark:
+			// A mode change must not be blocked by an unfinished/invalid HEX edit.
+			setNativeText(d.controls[idThemeAccent], app.themeConfig.AccentHex)
+			app.applyThemeValues(d, "dark", app.themeConfig.AccentHex)
+		case idThemeModeLight:
+			setNativeText(d.controls[idThemeAccent], app.themeConfig.AccentHex)
+			app.applyThemeValues(d, "light", app.themeConfig.AccentHex)
+		case idThemePaletteSky, idThemePalettePink, idThemePaletteLavender, idThemePaletteMint, idThemePaletteAmber:
+			accent := nativeThemePaletteHex(id)
+			setNativeText(d.controls[idThemeAccent], accent)
+			app.applyThemeValues(d, app.themeConfig.Mode, accent)
 		case idThemeApply:
 			app.applyThemeFromDialog(d)
 		case idClose:
@@ -1754,21 +1741,24 @@ func (app *nativeUI) handleDialogCommand(d *nativeDialog, id int) {
 	}
 }
 
-// applyThemeFromDialog validates, saves and immediately redraws every themed
-// surface. It is also used by combo-box selection notifications so users see
-// light/dark and preset-accent changes without an extra click.
+// applyThemeFromDialog applies a user-entered HEX accent while preserving the
+// currently active mode. Mode buttons and preset swatches call applyThemeValues
+// directly, so no combo-box notification or hidden dropdown state is involved.
 func (app *nativeUI) applyThemeFromDialog(d *nativeDialog) {
 	if d == nil {
 		return
 	}
-	modeSelection := int(sendNativeMessage(d.controls[idThemeMode], 0x0147, 0, 0)) // CB_GETCURSEL
-	mode := "dark"
-	if modeSelection == 1 {
-		mode = "light"
-	} else if modeSelection < 0 && app.themeConfig.Mode == "light" {
-		mode = "light"
+	app.applyThemeValues(d, app.themeConfig.Mode, getNativeText(d.controls[idThemeAccent]))
+}
+
+func (app *nativeUI) applyThemeValues(d *nativeDialog, mode, accent string) {
+	if d == nil {
+		return
 	}
-	accent := strings.ToUpper(strings.TrimSpace(getNativeText(d.controls[idThemeAccent])))
+	if mode != "light" {
+		mode = "dark"
+	}
+	accent = strings.ToUpper(strings.TrimSpace(accent))
 	if _, err := parseNativeHexColor(accent); err != nil {
 		setNativeText(d.status, app.text("颜色格式无效，请使用 #RRGGBB", "Invalid color. Use #RRGGBB"))
 		return
@@ -1782,6 +1772,29 @@ func (app *nativeUI) applyThemeFromDialog(d *nativeDialog) {
 	app.rebuildThemeBrushes()
 	app.redrawThemedWindows()
 	setNativeText(d.status, app.text("主题已应用并保存", "Theme applied and saved"))
+	if d.hwnd != 0 {
+		pInvalidateRect.Call(d.hwnd, 0, 1)
+		pUpdateWindow.Call(d.hwnd)
+	}
+}
+
+// nativeThemePaletteHex maps every visible color swatch button to a concrete
+// accent value. Keeping this mapping in one place prevents label/action drift.
+func nativeThemePaletteHex(id int) string {
+	switch id {
+	case idThemePaletteSky:
+		return "#5BCEFA"
+	case idThemePalettePink:
+		return "#F5A9B8"
+	case idThemePaletteLavender:
+		return "#B39DDB"
+	case idThemePaletteMint:
+		return "#80CBC4"
+	case idThemePaletteAmber:
+		return "#FFCC80"
+	default:
+		return ""
+	}
 }
 
 func (app *nativeUI) redrawThemedWindows() {

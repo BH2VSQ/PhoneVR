@@ -1,17 +1,17 @@
-# Build Status - PhoneVR 0.3.12 UI Layout and Theme Fix
+# Build Status - PhoneVR 0.3.13 Theme Selector Interaction Fix
 
-Application version: `0.3.12`  
-Android versionCode: `15`  
-Network protocol: `v1` (additive Android optical-preset capability)
+Application version: `0.3.13`  
+Android versionCode: `16`  
+Network protocol: `v1`
 
-## 0.3.12 changes
+## 0.3.13 changes
 
-- Optical-preset dialog card geometry and child-control geometry now come from `ComputeNativePresetDialogLayout`; both action columns are aligned and use the available card width instead of a fixed 178 px maximum.
-- Preset and appearance content cards stop above the fixed footer, eliminating the card/footer overlap visible in the supplied screenshots.
-- Appearance form geometry comes from `ComputeNativeAppearanceDialogLayout`; the controls expand to the usable width.
-- Light/dark mode and preset accent selections now immediately apply and persist. Manually entered HEX values continue to use the Apply Theme action.
-- Theme refresh recreates brushes, applies the explicit `Explorer` or `DarkMode_Explorer` common-control theme, sends `WM_THEMECHANGED`, and forces an all-children redraw.
-- Added platform-independent regression tests covering preset action-column alignment, card/footer separation, and appearance control bounds.
+- Removed the two native COMBOBOX controls from the Windows Appearance dialog. In the borderless custom dialog they did not reliably display/respond to popup-list interactions on the affected Windows system.
+- Replaced the mode dropdown with two owner-drawn buttons: Dark Mode and Light Mode. Each button uses the dialog's standard `BN_CLICKED` -> `WM_COMMAND` path.
+- Replaced the color dropdown with five directly clickable color swatches (Sky Blue, Sakura Pink, Lavender, Mint and Amber). Selecting a swatch updates the HEX edit and applies/persists the color immediately.
+- Kept custom HEX input; Apply Custom Color applies the current mode plus the entered `#RRGGBB`.
+- Added active-state button styling and expanded appearance-layout regression tests for mode buttons and all palette swatches.
+- Synchronized Host, Android `versionName`, Android `versionCode` and client version identifier to 0.3.13 / 16.
 
 ## Validation completed in this environment
 
@@ -19,10 +19,9 @@ Network protocol: `v1` (additive Android optical-preset capability)
 - `go vet ./...`: passed.
 - `GOOS=windows GOARCH=amd64 go build`: passed.
 - `GOOS=windows GOARCH=amd64 go test -c`: passed.
-- Release script unit tests: 5/5 passed.
-- The 0.3.11 Android CI correction (`Intent` import and test-only JVM `org.json` dependency) is retained. Android versionCode incremented to 15 for 0.3.12.
+- Patch dry-run against the 0.3.12 source: passed.
 
 ## Not run here
 
-- Android Gradle unit tests and APK assembly: not run because Android SDK is unavailable in this container.
-- Interactive Windows desktop verification: not available in this environment. Please check the dropdowns, live theme updates, layout at different window sizes and Windows display scaling on a Windows machine.
+- Android Gradle unit tests and APK assembly: not run in this container; Android SDK is unavailable. No Android functional code changed in this release apart from version metadata; the prior `Intent` and test-only JSON dependency fixes remain.
+- Interactive Windows desktop verification: not available in this environment. The appearance page now uses ordinary owner-drawn buttons rather than native combo boxes, but the actual mouse interaction and visual feedback must still be confirmed on Windows.

@@ -154,11 +154,23 @@ func TestNativeAppearanceDialogLayoutKeepsThemeControlsAndFooterSeparated(t *tes
 			t.Fatalf("appearance panel overlaps footer for %dx%d: panel=%+v footer=%+v", size[0], size[1], layout.Panel, layout.FooterPanel)
 		}
 		for name, rect := range map[string]NativeLayoutRect{
-			"mode": layout.Mode, "accent": layout.Accent, "palette": layout.Palette, "hint": layout.Hint,
+			"dark mode": layout.ModeDark, "light mode": layout.ModeLight,
+			"accent": layout.Accent, "hint": layout.Hint,
 		} {
 			if rect.Left < layout.Panel.Left || rect.Right > layout.Panel.Right || rect.Bottom > layout.Panel.Bottom {
 				t.Fatalf("%s control escapes appearance card for %dx%d: control=%+v panel=%+v", name, size[0], size[1], rect, layout.Panel)
 			}
+		}
+		for index, rect := range layout.PaletteButtons {
+			if rect.Left < layout.Panel.Left || rect.Right > layout.Panel.Right || rect.Top < layout.Panel.Top || rect.Bottom > layout.Panel.Bottom {
+				t.Fatalf("palette swatch %d escapes appearance card for %dx%d: %+v", index, size[0], size[1], rect)
+			}
+			if index > 0 && rect.Left < layout.PaletteButtons[index-1].Right {
+				t.Fatalf("palette swatches overlap for %dx%d: %+v", size[0], size[1], layout.PaletteButtons)
+			}
+		}
+		if layout.ModeDark.Right > layout.ModeLight.Left || layout.ModeDark.Left != layout.ModeLight.Left-layout.ModeDark.Width()-8 {
+			t.Fatalf("mode buttons are not aligned: %+v", layout)
 		}
 		if layout.Apply.Bottom > layout.FooterPanel.Bottom || layout.Close.Bottom > layout.FooterPanel.Bottom {
 			t.Fatalf("appearance action button escapes footer for %dx%d: %+v", size[0], size[1], layout)

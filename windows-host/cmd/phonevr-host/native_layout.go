@@ -109,32 +109,52 @@ func ComputeNativePresetDialogLayout(width, height int) NativePresetDialogLayout
 	return layout
 }
 
-// NativeAppearanceDialogLayout aligns the form card and footer with the
-// controls and leaves a visible separation between the two surfaces.
+// NativeAppearanceDialogLayout uses directly clickable buttons for the mode
+// selector and accent swatches. Native combo boxes are intentionally avoided
+// because their popup list was not reliably interactive in the borderless
+// custom dialog on some Windows versions.
 type NativeAppearanceDialogLayout struct {
-	Panel, FooterPanel                        NativeLayoutRect
-	ModeLabel, Mode, AccentLabel, Accent      NativeLayoutRect
-	PaletteLabel, Palette, Hint, Apply, Close NativeLayoutRect
+	Panel, FooterPanel             NativeLayoutRect
+	ModeLabel, ModeDark, ModeLight NativeLayoutRect
+	AccentLabel, Accent            NativeLayoutRect
+	PaletteLabel                   NativeLayoutRect
+	PaletteButtons                 [5]NativeLayoutRect
+	Hint, Apply, Close             NativeLayoutRect
 }
 
 func ComputeNativeAppearanceDialogLayout(width, height int) NativeAppearanceDialogLayout {
 	const margin = 28
 	controlX := margin + 220
-	controlWidth := width - controlX - margin
+	controlRight := width - margin
+	controlWidth := controlRight - controlX
 	if controlWidth < 180 {
 		controlWidth = 180
+		controlRight = controlX + controlWidth
 	}
-	return NativeAppearanceDialogLayout{
+	buttonGap := 8
+	modeButtonWidth := (controlWidth - buttonGap) / 2
+	paletteGap := 6
+	paletteButtonWidth := (controlWidth - paletteGap*4) / 5
+	layout := NativeAppearanceDialogLayout{
 		Panel:        NativeLayoutRect{16, 84, width - 16, height - 104},
 		FooterPanel:  NativeLayoutRect{12, height - 92, width - 12, height - 10},
 		ModeLabel:    NativeLayoutRect{margin, 112, margin + 210, 140},
-		Mode:         NativeLayoutRect{controlX, 106, controlX + controlWidth, 144},
-		AccentLabel:  NativeLayoutRect{margin, 176, margin + 210, 204},
-		Accent:       NativeLayoutRect{controlX, 170, controlX + controlWidth, 208},
-		PaletteLabel: NativeLayoutRect{margin, 240, margin + 210, 268},
-		Palette:      NativeLayoutRect{controlX, 234, controlX + controlWidth, 272},
-		Hint:         NativeLayoutRect{margin, 286, width - margin, 316},
-		Apply:        NativeLayoutRect{margin, height - 54, margin + 180, height - 14},
+		ModeDark:     NativeLayoutRect{controlX, 106, controlX + modeButtonWidth, 146},
+		ModeLight:    NativeLayoutRect{controlX + modeButtonWidth + buttonGap, 106, controlRight, 146},
+		AccentLabel:  NativeLayoutRect{margin, 180, margin + 210, 208},
+		Accent:       NativeLayoutRect{controlX, 174, controlRight, 212},
+		PaletteLabel: NativeLayoutRect{margin, 246, margin + 210, 274},
+		Hint:         NativeLayoutRect{margin, 292, width - margin, 322},
+		Apply:        NativeLayoutRect{margin, height - 54, margin + 200, height - 14},
 		Close:        NativeLayoutRect{width - margin - 116, height - 54, width - margin, height - 14},
 	}
+	for i := 0; i < len(layout.PaletteButtons); i++ {
+		x := controlX + i*(paletteButtonWidth+paletteGap)
+		right := x + paletteButtonWidth
+		if i == len(layout.PaletteButtons)-1 {
+			right = controlRight
+		}
+		layout.PaletteButtons[i] = NativeLayoutRect{x, 234, right, 278}
+	}
+	return layout
 }

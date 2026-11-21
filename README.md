@@ -1,6 +1,6 @@
 # PhoneVRStream
 
-Repository revision: **0.3.12**. Windows Host: **0.3.12**. Android client: **0.3.12**. Network protocol: **v1**.
+Repository revision: **0.3.13**. Windows Host: **0.3.13**. Android client: **0.3.13**. Network protocol: **v1**.
 
 PhoneVRStream is a two-part project for using an Android phone as a PC VR streaming HMD. Both applications live in one repository and use independent build/test pipelines.
 
@@ -19,7 +19,7 @@ PhoneVRStream/
 └── dist/                       # Local build output (git-ignored)
 ```
 
-## Windows Host 0.3.12
+## Windows Host 0.3.13
 
 The Windows Host has been migrated from an Edge/Chrome app-mode dashboard to a native Windows desktop application.
 

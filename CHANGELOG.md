@@ -1,3 +1,9 @@
+## 0.3.13
+
+- Replaced the non-responsive native appearance dropdowns with explicit dark/light mode buttons and five directly clickable accent-color swatches.
+- Mode and preset-color button clicks immediately save settings and redraw the complete Windows UI; custom HEX remains supported.
+- Added layout regression coverage for the new controls and synchronized platform version metadata.
+
 ## 0.3.12
 
 - Fixed optical-preset dialog alignment by calculating card borders and all controls from one shared responsive layout; the two-button action rows now fill and align with the right-hand card.
@@ -55,3 +61,4 @@
 
 ### Android CI follow-up
 - Fixed JVM unit-test JSON runtime by adding `org.json:json` as a test-only dependency, preventing the mockable Android SDK `org.json` stubs from returning null in `OpticalPresetTest`.
+

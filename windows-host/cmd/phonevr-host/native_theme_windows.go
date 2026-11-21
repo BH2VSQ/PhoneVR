@@ -7,6 +7,7 @@ import (
 	"math"
 	"runtime"
 	"strconv"
+	"strings"
 	"syscall"
 	"unsafe"
 )
@@ -156,21 +157,29 @@ func (app *nativeUI) drawDialogButton(lParam uintptr) uintptr {
 	id := int(item.CtlID)
 	p := app.palette()
 	primary := id == idApply || id == idPresetApply || id == idThemeApply || id == idNetworkApply || id == idNetworkStart
+	if id == idThemeModeDark && app.themeConfig.Mode == "dark" || id == idThemeModeLight && app.themeConfig.Mode == "light" {
+		primary = true
+	}
 	danger := id == idPresetDelete || id == idNetworkStop
 	fill, border, foreground := p.Surface, p.Border, p.Text
 	if primary {
 		fill, border, foreground = p.Accent, p.Accent, p.AccentText
 	}
+	if accentHex := nativeThemePaletteHex(id); accentHex != "" {
+		if accent, err := parseNativeHexColor(accentHex); err == nil {
+			fill, foreground = accent, nativeAccentForeground(accent)
+			border = p.Border
+			if strings.EqualFold(accentHex, app.themeConfig.AccentHex) {
+				border = p.Text
+			}
+		}
+	}
 	if danger {
 		fill, border, foreground = p.DangerBg, p.DangerLine, p.DangerText
 	}
 	if item.ItemState&0x0001 != 0 {
-		fill = p.Panel
-		if primary {
-			fill = p.Accent
-		}
-		if danger {
-			fill = p.DangerBg
+		if !primary && nativeThemePaletteHex(id) == "" && !danger {
+			fill = p.Panel
 		}
 	}
 	drawNativeRoundRect(item.HDC, item.ItemRect, fill, border, 7)

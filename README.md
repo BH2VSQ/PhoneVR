@@ -1,6 +1,6 @@
 # PhoneVRStream
 
-Repository revision: **0.4.22**. Windows Host: **0.4.22**. Android client: **0.4.22**. Control protocol: **v1**; video packet protocol: **v1**.
+Repository revision: **0.4.23**. Windows Host: **0.4.23**. Android client: **0.4.23**. Control protocol: **v1**; video packet protocol: **v1**.
 
 PhoneVRStream is a multi-component project for using an Android phone as a PC VR streaming HMD. Both applications live in one repository and use independent build/test pipelines.
 
@@ -22,7 +22,7 @@ PhoneVRStream/
 └── dist/                       # Local build output (git-ignored)
 ```
 
-## Windows Host 0.4.22 bundled SteamVR driver
+## Windows Host 0.4.23 bundled SteamVR driver
 
 The virtual display timing is fixed at 72 Hz in this revision. The adjustable refresh-rate menu and its configuration file have been removed; this avoids presenting refresh-rate choices before the PC compositor and phone rendering path have been profiled end to end.
 
@@ -49,7 +49,9 @@ The Wi-Fi video path is staged independently from the pose path: SteamVR `IVRVir
 
 The SteamVR driver writes periodic capture counters to `vrserver.txt`: `captured`, `readback`, `sent`, `map-retries` and `skipped`. Android reports `receiver_started`, `udp_wait`, `udp_first_datagram`, `fragment_wait`, `first_access_unit`, `decoder_ready`, `decoded_frame`, `decoder_error` and `surface_frame` over the TCP control channel. Use these stages to identify where the video path stops before changing codecs or network settings.
 
-## Android client 0.4.22
+The DisplayRedirect accessory associates its GPU adapter and virtual-display capability with the active HMD through OpenVR's `vr::k_ulDisplayRedirectContainer`. On startup, `vrserver.txt` reports the accessory-local and HMD-override property-write results. A successful override is necessary for SteamVR to select the virtual-display presentation path; the final runtime confirmation is a non-zero `Present` callback rate followed by the first raw BGRA frame reaching Host.
+
+## Android client 0.4.23
 
 - Landscape immersive display with OpenGL ES 3.0 stereo rendering.
 - Locally stored optical preset selector with Daydream View v2.0 (2017) and Generic Cardboard built-in presets.
@@ -61,7 +63,7 @@ The SteamVR driver writes periodic capture counters to `vrserver.txt`: `captured
 - `CodecCapabilityProbe` enumerates device MediaCodec decoders and advertises only a hardware H.264 decoder that explicitly supports the negotiated 1600×720@60 profile. `MediaCodec` decodes the H.264 SBS stream to a `SurfaceTexture`; the OpenGL stereo renderer applies the optical warp independently to the left and right halves.
 
 
-## SteamVR driver 0.4.22
+## SteamVR driver 0.4.23
 
 The PhoneVR Host contains its own Windows x64 OpenVR driver inside the Host executable. The normal build compiles `steamvr-driver/`, embeds the resulting manifest, DLL and resources into both Host executables, and no longer asks users to download or select a ZIP. On startup, the Host checks whether SteamVR is installed and whether the user has disabled automatic deployment. When enabled, it copies the embedded driver into a content-versioned directory under `%LOCALAPPDATA%\PhoneVR\SteamVRDriver` and registers it with SteamVR's own `vrpathreg.exe`.
 

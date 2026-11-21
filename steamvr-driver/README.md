@@ -1,4 +1,4 @@
-# PhoneVR SteamVR Driver — 0.4.22
+# PhoneVR SteamVR Driver — 0.4.23
 
 Windows x64 OpenVR server driver foundation for the PhoneVR wireless HMD.
 
@@ -83,6 +83,14 @@ with `redirectsDisplay: true` in the driver manifest. This follows Valve's
 `virtual_display` sample, which requires the headset to run in **Extended
 Display Mode**. The PhoneVR HMD therefore returns `true` from
 `IVRDisplayComponent::IsDisplayOnDesktop()`.
+
+The redirect device must also associate its display properties with the active
+HMD. During `PhoneVRDisplayRedirect::Activate()`, PhoneVR writes the selected
+DXGI adapter LUID and `Prop_HasVirtualDisplayComponent_Bool=true` to
+`vr::k_ulDisplayRedirectContainer`. OpenVR defines this as the override
+container whose properties are surfaced through the HMD property container;
+writing the LUID only to the accessory's own property container is not enough
+for a separate HMD + DisplayRedirect topology. Both write results are logged.
 
 Keep **SteamVR → Settings → Developer → Enable Direct Mode** disabled for this
 implementation. PhoneVR does not yet implement `IVRDriverDirectModeComponent`;

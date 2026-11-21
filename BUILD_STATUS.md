@@ -1,5 +1,13 @@
 # Build status
 
+## 0.4.23 DisplayRedirect-to-HMD property association
+
+- Fixed a missing OpenVR property bridge in `PhoneVRDisplayRedirect::Activate()`. The driver previously wrote `Prop_GraphicsAdapterLuid_Uint64` only to the DisplayRedirect accessory's own container.
+- The DisplayRedirect now writes the graphics adapter LUID and `Prop_HasVirtualDisplayComponent_Bool=true` into `vr::k_ulDisplayRedirectContainer`, which the OpenVR SDK defines as the property override container surfaced through the active HMD's property container.
+- Accessory-local LUID metadata remains for diagnostics; logs report both property-write results and warn if either HMD override fails.
+- Added static regression tests for the manifest and required property overrides.
+- This addresses the missing association suspected from the prior `Present`-never-called / no-raw-frame behavior. It is not yet confirmed until the target SteamVR runtime reports `Present` callbacks and the Host receives a raw BGRA frame.
+
 ## Video bridge diagnostics and Wi-Fi-only scope
 
 - USB tether/RNDIS selection and its firewall helper are deferred; the Android connection UI now offers Auto and Wi-Fi discovery only.

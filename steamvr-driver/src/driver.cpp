@@ -1551,16 +1551,41 @@ public:
         properties->SetStringProperty(container, vr::Prop_ModelNumber_String, "PhoneVR Wireless Display Redirect");
         properties->SetStringProperty(container, vr::Prop_SerialNumber_String, "PHONEVR-DISPLAY-001");
         properties->SetStringProperty(container, vr::Prop_RegisteredDeviceType_String, "phonevr/phonevr_display_redirect");
-        // Prop_HasVirtualDisplayComponent_Bool is an HMD property inferred from
-        // the HMD's own GetComponent(). The redirect accessory is identified by
-        // TrackedDeviceClass_DisplayRedirect + redirectsDisplay in the manifest.
-        const auto luidResult = properties->SetUint64Property(container, vr::Prop_GraphicsAdapterLuid_Uint64, adapterLuid);
+        // The HMD's virtual-display capability is surfaced through the special
+        // redirect override container below; writing only to this accessory
+        // container does not update the active HMD's effective display props.
+        // A DisplayRedirect device is a companion to the active HMD, not a
+        // replacement HMD. OpenVR creates k_ulDisplayRedirectContainer before
+        // this Activate() call and merges its properties into the HMD property
+        // container. Writing the adapter LUID only to this accessory's own
+        // container leaves the active HMD pointing at its ordinary display path.
+        // Publish both values into the redirect override container so SteamVR
+        // recognizes the HMD as virtually redirected and uses this GPU adapter
+        // for the final compositor backbuffer handoff.
+        const auto accessoryLuidResult = properties->SetUint64Property(
+            container, vr::Prop_GraphicsAdapterLuid_Uint64, adapterLuid);
+        const auto hmdRedirectLuidResult = properties->SetUint64Property(
+            vr::k_ulDisplayRedirectContainer, vr::Prop_GraphicsAdapterLuid_Uint64, adapterLuid);
+        const auto hmdVirtualDisplayResult = properties->SetBoolProperty(
+            vr::k_ulDisplayRedirectContainer, vr::Prop_HasVirtualDisplayComponent_Bool, true);
         if (vr::VRDriverLog()) {
-            char line[192]{};
+            char line[320]{};
             std::snprintf(line, sizeof(line),
-                          "PhoneVR: DisplayRedirect activated; graphics LUID property result=%d; IVRVirtualDisplay=%s",
-                          static_cast<int>(luidResult), vr::IVRVirtualDisplay_Version);
+                          "PhoneVR: DisplayRedirect activated; accessory LUID=%d, HMD redirect LUID=%d, HMD virtual-display override=%d, adapter=0x%016llX, IVRVirtualDisplay=%s",
+                          static_cast<int>(accessoryLuidResult),
+                          static_cast<int>(hmdRedirectLuidResult),
+                          static_cast<int>(hmdVirtualDisplayResult),
+                          static_cast<unsigned long long>(adapterLuid),
+                          vr::IVRVirtualDisplay_Version);
             vr::VRDriverLog()->Log(line);
+            if (hmdRedirectLuidResult != vr::TrackedProp_Success ||
+                hmdVirtualDisplayResult != vr::TrackedProp_Success) {
+                vr::VRDriverLog()->Log(
+                    "PhoneVR: WARNING: HMD DisplayRedirect property override failed; SteamVR may continue using the regular HMD display path");
+            } else {
+                vr::VRDriverLog()->Log(
+                    "PhoneVR: HMD display properties overridden by PHONEVR-DISPLAY-001 through k_ulDisplayRedirectContainer");
+            }
         }
         return vr::VRInitError_None;
     }

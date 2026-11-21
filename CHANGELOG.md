@@ -1,3 +1,12 @@
+## 0.4.23 - DisplayRedirect HMD property association fix
+
+- Fixed the OpenVR DisplayRedirect-to-HMD association: the driver previously wrote `Prop_GraphicsAdapterLuid_Uint64` only to the accessory's own property container, which does not override the active HMD's display properties.
+- The DisplayRedirect now publishes the compositor adapter LUID to `vr::k_ulDisplayRedirectContainer`, the SDK-defined override container whose properties are surfaced through the HMD property container after the redirect device activates.
+- Explicitly publishes `Prop_HasVirtualDisplayComponent_Bool=true` through the same override container so SteamVR can recognize the active HMD as using the virtual-display path.
+- Retains the accessory-local adapter property and logs both OpenVR property-write results, including a clear warning if the HMD override could not be applied.
+- Added regression tests for manifest redirection and both required HMD override properties.
+- Android versionCode increased to 39. Native MSVC/SteamVR runtime validation is still required; this change must be confirmed by `IVRVirtualDisplay::Present` callback counters on the target PC.
+
 ## 0.4.22 - Virtual display Present bootstrap and mode correction
 
 - Corrected the HMD's `IVRDisplayComponent::IsDisplayOnDesktop()` result to `true` for the current `IVRVirtualDisplay` / `TrackedDeviceClass_DisplayRedirect` architecture. Valve's `virtual_display` sample requires Extended Display Mode; Direct Mode must remain disabled until PhoneVR implements `IVRDriverDirectModeComponent`.

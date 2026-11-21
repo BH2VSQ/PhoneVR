@@ -1,28 +1,29 @@
-# Build Status - Native UI polish
+# Build Status - Windows Host UI redesign
 
-Application version: `0.3.9`  
+Application version: `0.3.10`  
 Network protocol: `v1`
 
-## Changes
+## Changes in this revision
 
-- Reworked the Win32 main window to match the former PhoneVR browser dashboard palette and compact layout.
-- Added GDI+ anti-aliased rounded cards, pills, dots and menu surfaces.
-- Restored green Host/HMD/battery indicators and purple SteamVR state.
-- Kept text in single-line layouts with end ellipsis and responsive positions in English mode.
-- Added Per-Monitor DPI awareness where supported, with legacy fallback.
-- Recessed Daydream optical elements remain behind the rear face foam plane.
-- Kept the native Win32/WGL application model; no Edge, Chrome, WebView or browser runtime is used.
+- Main menu is an independent, non-activating owned popup. It never changes the OpenGL pose-preview viewport; clicks outside the popup and application deactivation close it cleanly.
+- Dashboard, menu, dialog and viewport backgrounds use buffered painting to minimize visible intermediate redraws.
+- Phone Display, Optical Presets, Network Settings and Runtime Logs have been rebuilt as larger, card-based interfaces with clearer grouping.
+- Dialogs are resizable and recalculate their layouts when the window size changes.
+- Phone Display and Network Settings use clipped content viewports with native vertical scroll bars and mouse-wheel support. Footer actions remain visible while content scrolls.
+- Preset lists and runtime logs retain dedicated native scroll bars.
+- Dashboard typography, telemetry values, dialog headings, field labels, input controls and buttons have been enlarged.
+- Existing host networking, phone display settings, optical preset persistence and log actions are preserved.
 
-## Validation completed
+## Validation completed in this environment
 
 - `go test -race -count=1 ./...`: passed.
 - `go vet ./...`: passed.
+- `GOOS=windows GOARCH=amd64 go build ./...`: passed.
 - `GOOS=windows GOARCH=amd64 go vet ./...`: passed.
-- Windows x64 test binary cross-compile: passed.
-- Windows GUI EXE cross-compile: passed.
-- Windows Console EXE cross-compile: passed.
+- `GOOS=windows GOARCH=amd64 go test -c`: passed.
+- Windows x64 host executable cross-build: passed.
 
 ## Not run here
 
-- Native Windows desktop runtime, GDI+ rendering, DPI changes and actual language switching: must be confirmed on a Windows desktop.
-- Android Gradle build: Android source was not changed in this UI polish revision.
+- Interactive Windows desktop verification of GDI+/Win32 popup activation, display scaling, live resizing and scroll-bar behavior. Cross-compilation verifies the Windows code builds but does not replace a desktop runtime test.
+- Android Gradle build; the Android application source was not changed in this revision.

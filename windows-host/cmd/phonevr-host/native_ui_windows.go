@@ -39,6 +39,15 @@ var (
 	pKillTimer                     = user32.NewProc("KillTimer")
 	pInvalidateRect                = user32.NewProc("InvalidateRect")
 	pGetClientRect                 = user32.NewProc("GetClientRect")
+	pGetWindowRect                 = user32.NewProc("GetWindowRect")
+	pGetSystemMetrics              = user32.NewProc("GetSystemMetrics")
+	pGetParent                     = user32.NewProc("GetParent")
+	pCreateCompatibleDC            = gdi32.NewProc("CreateCompatibleDC")
+	pCreateCompatibleBitmap        = gdi32.NewProc("CreateCompatibleBitmap")
+	pBitBlt                        = gdi32.NewProc("BitBlt")
+	pDeleteDC                      = gdi32.NewProc("DeleteDC")
+	pSetScrollInfo                 = user32.NewProc("SetScrollInfo")
+	pGetScrollInfo                 = user32.NewProc("GetScrollInfo")
 	pBeginPaint                    = user32.NewProc("BeginPaint")
 	pEndPaint                      = user32.NewProc("EndPaint")
 	pFillRect                      = user32.NewProc("FillRect")
@@ -103,11 +112,15 @@ var (
 const (
 	wmCreate            = 0x0001
 	wmDestroy           = 0x0002
+	wmActivate          = 0x0006
 	wmSize              = 0x0005
 	wmPaint             = 0x000F
 	wmClose             = 0x0010
 	wmCommand           = 0x0111
 	wmTimer             = 0x0113
+	wmVScroll           = 0x0115
+	wmMouseWheel        = 0x020A
+	wmMouseActivate     = 0x0021
 	wmEraseBkgnd        = 0x0014
 	wmCtlColor          = 0x0138
 	wmNcDestroy         = 0x0082
@@ -116,6 +129,7 @@ const (
 	wmDrawItem          = 0x002B
 	wmSetFont           = 0x0030
 	wsOverlapped        = 0x00000000
+	wsPopup             = 0x80000000
 	wsCaption           = 0x00C00000
 	wsSysMenu           = 0x00080000
 	wsThickFrame        = 0x00040000
@@ -139,7 +153,22 @@ const (
 	lbnSelChange        = 1
 	cbnSelChange        = 1
 	swShow              = 5
+	swShowNoActivate    = 4
 	swHide              = 0
+	sbVert              = 1
+	sbLineUp            = 0
+	sbLineDown          = 1
+	sbPageUp            = 2
+	sbPageDown          = 3
+	sbThumbPosition     = 4
+	sbThumbTrack        = 5
+	sbTop               = 6
+	sbBottom            = 7
+	sifRange            = 0x0001
+	sifPage             = 0x0002
+	sifPos              = 0x0004
+	sifTrackPos         = 0x0010
+	sifAll              = sifRange | sifPage | sifPos | sifTrackPos
 	idcArrow            = 32512
 	colorStatic         = 0x0138
 	transparent         = 1
@@ -228,6 +257,15 @@ type nativePaintStruct struct {
 	IncUpdate int32
 	Reserved  [32]byte
 }
+type nativeScrollInfo struct {
+	Size     uint32
+	Mask     uint32
+	Min      int32
+	Max      int32
+	Page     uint32
+	Pos      int32
+	TrackPos int32
+}
 type nativeWndClassEx struct {
 	Size       uint32
 	Style      uint32
@@ -280,11 +318,16 @@ type nativeDialog struct {
 	kind            string
 	hwnd            uintptr
 	controls        map[int]uintptr
+	labels          map[int]uintptr
+	viewport        uintptr
 	status          uintptr
 	settings        PhoneDisplaySettings
 	pendingSettings *PhoneDisplaySettings
 	presets         []OpticalPreset
 	config          HostConfig
+	scrollOffset    int
+	contentHeight   int
+	viewHeight      int
 }
 type nativeUI struct {
 	service          *HostService
@@ -316,8 +359,10 @@ type nativeUI struct {
 	fontBody         uintptr
 	fontSmall        uintptr
 	fontValue        uintptr
+	fontTitle        uintptr
 	gdiplusToken     uintptr
 	hitTargets       []nativeHitTarget
+	menuHWnd         uintptr
 	menuOpen         bool
 	lastRender       time.Time
 	lastStatus       time.Time
@@ -327,6 +372,8 @@ var activeNativeUI *nativeUI
 var nativeWndProcCallback = syscall.NewCallback(nativeMainWndProc)
 var nativeGLProcCallback = syscall.NewCallback(nativeGLWndProc)
 var nativeDialogProcCallback = syscall.NewCallback(nativeDialogWndProc)
+var nativeMenuProcCallback = syscall.NewCallback(nativeMenuWndProc)
+var nativeViewportProcCallback = syscall.NewCallback(nativeViewportWndProc)
 
 func runNativeDesktopApp(service *HostService, config HostConfig) error {
 	runtime.LockOSThread()
@@ -335,9 +382,10 @@ func runNativeDesktopApp(service *HostService, config HostConfig) error {
 		pSetProcessDPIAware.Call()
 	}
 	app := &nativeUI{service: service, config: config, dialogs: make(map[uintptr]*nativeDialog), buttons: make(map[int]uintptr), currentSettings: DefaultPhoneDisplaySettings(), language: loadNativeLanguage()}
-	app.fontBody = createNativeFont("Segoe UI", 14, 400)
-	app.fontSmall = createNativeFont("Segoe UI", 11, 600)
-	app.fontValue = createNativeFont("Consolas", 21, 700)
+	app.fontBody = createNativeFont("Segoe UI", 18, 400)
+	app.fontSmall = createNativeFont("Segoe UI", 14, 600)
+	app.fontValue = createNativeFont("Consolas", 28, 700)
+	app.fontTitle = createNativeFont("Segoe UI", 26, 600)
 	app.gdiplusToken = startNativeGDIPlus()
 	if model, err := loadNativeHeadsetModel(); err == nil {
 		app.model = model
@@ -347,7 +395,7 @@ func runNativeDesktopApp(service *HostService, config HostConfig) error {
 	activeNativeUI = app
 	defer func() {
 		activeNativeUI = nil
-		for _, object := range []uintptr{app.background, app.dialogBackground, app.editBackground, app.buttonBackground, app.fontBody, app.fontSmall, app.fontValue} {
+		for _, object := range []uintptr{app.background, app.dialogBackground, app.editBackground, app.buttonBackground, app.fontBody, app.fontSmall, app.fontValue, app.fontTitle} {
 			if object != 0 {
 				pDeleteObject.Call(object)
 			}
@@ -369,6 +417,12 @@ func runNativeDesktopApp(service *HostService, config HostConfig) error {
 		return err
 	}
 	if err := registerNativeClass(instance, cursor, "PhoneVRNativeDialog", nativeDialogProcCallback, app.background); err != nil {
+		return err
+	}
+	if err := registerNativeClass(instance, cursor, "PhoneVRNativeMenu", nativeMenuProcCallback, app.background); err != nil {
+		return err
+	}
+	if err := registerNativeClass(instance, cursor, "PhoneVRNativeViewport", nativeViewportProcCallback, app.dialogBackground); err != nil {
 		return err
 	}
 	title, _ := syscall.UTF16PtrFromString("PhoneVR Host " + appVersion)
@@ -488,6 +542,59 @@ func constrainNativeWindowRectAddress(rectAddress uintptr, edge int) {
 	runtime.KeepAlive(&rect)
 }
 
+func constrainNativeDialogRectAddress(rectAddress uintptr, edge, minWidth, minHeight int) {
+	if rectAddress == 0 {
+		return
+	}
+	var rect nativeRect
+	pRtlMoveMemory.Call(uintptr(unsafe.Pointer(&rect)), rectAddress, unsafe.Sizeof(rect))
+	if int(rect.Right-rect.Left) < minWidth {
+		if edge == 1 || edge == 4 || edge == 7 {
+			rect.Left = rect.Right - int32(minWidth)
+		} else {
+			rect.Right = rect.Left + int32(minWidth)
+		}
+	}
+	if int(rect.Bottom-rect.Top) < minHeight {
+		if edge == 3 || edge == 4 || edge == 5 {
+			rect.Top = rect.Bottom - int32(minHeight)
+		} else {
+			rect.Bottom = rect.Top + int32(minHeight)
+		}
+	}
+	pRtlMoveMemory.Call(rectAddress, uintptr(unsafe.Pointer(&rect)), unsafe.Sizeof(rect))
+	runtime.KeepAlive(&rect)
+}
+
+func paintNativeBuffered(targetDC uintptr, width, height int, draw func(uintptr)) {
+	if targetDC == 0 || width <= 0 || height <= 0 {
+		return
+	}
+	memoryDC, _, _ := pCreateCompatibleDC.Call(targetDC)
+	if memoryDC == 0 {
+		draw(targetDC)
+		return
+	}
+	bitmap, _, _ := pCreateCompatibleBitmap.Call(targetDC, uintptr(width), uintptr(height))
+	if bitmap == 0 {
+		pDeleteDC.Call(memoryDC)
+		draw(targetDC)
+		return
+	}
+	oldBitmap, _, _ := pSelectObject.Call(memoryDC, bitmap)
+	draw(memoryDC)
+	pBitBlt.Call(targetDC, 0, 0, uintptr(width), uintptr(height), memoryDC, 0, 0, 0x00CC0020)
+	pSelectObject.Call(memoryDC, oldBitmap)
+	pDeleteObject.Call(bitmap)
+	pDeleteDC.Call(memoryDC)
+}
+
+func clientSize(hwnd uintptr) (int, int) {
+	var rect nativeRect
+	pGetClientRect.Call(hwnd, uintptr(unsafe.Pointer(&rect)))
+	return int(rect.Right - rect.Left), int(rect.Bottom - rect.Top)
+}
+
 func nativeMainWndProc(hwnd uintptr, message uint32, wParam, lParam uintptr) uintptr {
 	app := activeNativeUI
 	if app == nil {
@@ -495,6 +602,10 @@ func nativeMainWndProc(hwnd uintptr, message uint32, wParam, lParam uintptr) uin
 		return result
 	}
 	switch message {
+	case wmActivate:
+		if int(wParam&0xffff) == 0 && app.menuOpen {
+			app.closeMainMenu()
+		}
 	case wmCreate:
 		app.createMainControls(hwnd)
 		pSetTimer.Call(hwnd, 1, 33, 0)
@@ -506,7 +617,8 @@ func nativeMainWndProc(hwnd uintptr, message uint32, wParam, lParam uintptr) uin
 	case wmPaint:
 		var paint nativePaintStruct
 		hdc, _, _ := pBeginPaint.Call(hwnd, uintptr(unsafe.Pointer(&paint)))
-		app.paintMain(hdc)
+		width, height := clientSize(hwnd)
+		paintNativeBuffered(hdc, width, height, app.paintMain)
 		pEndPaint.Call(hwnd, uintptr(unsafe.Pointer(&paint)))
 		return 0
 	case wmEraseBkgnd:
@@ -568,6 +680,10 @@ func nativeGLWndProc(hwnd uintptr, message uint32, wParam, lParam uintptr) uintp
 		return 0
 	case wmEraseBkgnd:
 		return 1
+	case wmLButtonUp:
+		if app.menuOpen {
+			app.closeMainMenu()
+		}
 	case wmDestroy:
 		app.destroyOpenGL()
 		return 0
@@ -582,9 +698,51 @@ func nativeDialogWndProc(hwnd uintptr, message uint32, wParam, lParam uintptr) u
 		result, _, _ := pDefWindowProc.Call(hwnd, uintptr(message), wParam, lParam)
 		return result
 	}
+	dialog := app.dialogs[hwnd]
 	switch message {
+	case wmSize:
+		if dialog != nil {
+			app.layoutDialog(dialog)
+		}
+		return 0
+	case wmSizing:
+		if dialog != nil {
+			minWidth := 640
+			switch dialog.kind {
+			case "settings":
+				minWidth = 720
+			case "presets":
+				minWidth = 700
+			case "network":
+				minWidth = 640
+			case "logs":
+				minWidth = 680
+			}
+			constrainNativeDialogRectAddress(lParam, int(wParam), minWidth, 480)
+		}
+		return 1
+	case wmPaint:
+		var paint nativePaintStruct
+		hdc, _, _ := pBeginPaint.Call(hwnd, uintptr(unsafe.Pointer(&paint)))
+		width, height := clientSize(hwnd)
+		paintNativeBuffered(hdc, width, height, func(buffer uintptr) { app.paintDialog(dialog, buffer) })
+		pEndPaint.Call(hwnd, uintptr(unsafe.Pointer(&paint)))
+		return 0
+	case wmEraseBkgnd:
+		return 1
+	case wmVScroll:
+		if dialog != nil {
+			app.scrollDialog(dialog, int(wParam&0xffff), int((wParam>>16)&0xffff))
+		}
+		return 0
+	case wmMouseWheel:
+		if dialog != nil {
+			delta := int(int16((wParam >> 16) & 0xffff))
+			app.scrollDialogBy(dialog, -delta/120*48)
+		}
+		return 0
 	case wmCommand:
-		if dialog := app.dialogs[hwnd]; dialog != nil {
+		if dialog != nil {
 			app.handleDialogCommand(dialog, int(wParam&0xffff))
 		}
 		return 0
@@ -597,6 +755,83 @@ func nativeDialogWndProc(hwnd uintptr, message uint32, wParam, lParam uintptr) u
 		return 0
 	case wmNcDestroy:
 		delete(app.dialogs, hwnd)
+	}
+	result, _, _ := pDefWindowProc.Call(hwnd, uintptr(message), wParam, lParam)
+	return result
+}
+
+func nativeMenuWndProc(hwnd uintptr, message uint32, wParam, lParam uintptr) uintptr {
+	app := activeNativeUI
+	if app == nil {
+		result, _, _ := pDefWindowProc.Call(hwnd, uintptr(message), wParam, lParam)
+		return result
+	}
+	switch message {
+	case wmPaint:
+		var paint nativePaintStruct
+		hdc, _, _ := pBeginPaint.Call(hwnd, uintptr(unsafe.Pointer(&paint)))
+		width, height := clientSize(hwnd)
+		paintNativeBuffered(hdc, width, height, app.paintMainMenu)
+		pEndPaint.Call(hwnd, uintptr(unsafe.Pointer(&paint)))
+		return 0
+	case wmEraseBkgnd:
+		return 1
+	case wmMouseActivate:
+		// The popup handles clicks without stealing focus from the main window.
+		return 3 // MA_NOACTIVATE
+	case wmActivate:
+		if int(wParam&0xffff) == 0 && app.menuOpen {
+			app.closeMainMenu()
+		}
+		result, _, _ := pDefWindowProc.Call(hwnd, uintptr(message), wParam, lParam)
+		return result
+	case wmLButtonUp:
+		app.handleMenuClick(int(int16((lParam >> 16) & 0xffff)))
+		return 0
+	case wmClose:
+		app.closeMainMenu()
+		return 0
+	case wmNcDestroy:
+		app.menuHWnd = 0
+		app.menuOpen = false
+	}
+	result, _, _ := pDefWindowProc.Call(hwnd, uintptr(message), wParam, lParam)
+	return result
+}
+
+func nativeViewportWndProc(hwnd uintptr, message uint32, wParam, lParam uintptr) uintptr {
+	app := activeNativeUI
+	switch message {
+	case 0x0132, 0x0133, 0x0134, 0x0135, 0x0136, wmCtlColor:
+		if app != nil {
+			return app.controlColor(wParam, message)
+		}
+	case wmMouseWheel:
+		if app != nil {
+			parent, _, _ := pGetParent.Call(hwnd)
+			if dialog := app.dialogs[parent]; dialog != nil {
+				delta := int(int16((wParam >> 16) & 0xffff))
+				app.scrollDialogBy(dialog, -delta/120*48)
+				return 0
+			}
+		}
+	case wmEraseBkgnd:
+		return 1
+	case wmPaint:
+		var paint nativePaintStruct
+		hdc, _, _ := pBeginPaint.Call(hwnd, uintptr(unsafe.Pointer(&paint)))
+		width, height := clientSize(hwnd)
+		paintNativeBuffered(hdc, width, height, func(buffer uintptr) {
+			graphics := beginNativeGraphics(buffer)
+			activeNativeGraphics = graphics
+			drawNativeRoundRect(buffer, nativeRect{0, 0, int32(width), int32(height)}, rgb(12, 24, 36), rgb(35, 55, 75), 12)
+			activeNativeGraphics = 0
+			if graphics != 0 {
+				pGdipDeleteGraphics.Call(graphics)
+			}
+		})
+		pEndPaint.Call(hwnd, uintptr(unsafe.Pointer(&paint)))
+		return 0
 	}
 	result, _, _ := pDefWindowProc.Call(hwnd, uintptr(message), wParam, lParam)
 	return result
@@ -640,12 +875,9 @@ func (app *nativeUI) layoutMain(hwnd uintptr) {
 	if w <= 0 || h <= 0 {
 		return
 	}
+	// The menu is an owned top-level popup, so the OpenGL child keeps the
+	// exact same viewport and pose preview position while the menu is open.
 	viewport := ComputeNativePoseViewport(w, h)
-	if app.menuOpen {
-		// Reserve a right-side rail for the menu so the OpenGL child cannot cover it.
-		viewport = ComputeNativePoseViewport(w-240, h)
-		viewport.Left += 0
-	}
 	pMoveWindow.Call(app.glHWnd, uintptr(viewport.Left), uintptr(viewport.Top), uintptr(viewport.Width), uintptr(viewport.Height), 1)
 	pInvalidateRect.Call(hwnd, 0, 0)
 }
@@ -668,6 +900,85 @@ func (app *nativeUI) updateStatusControls() {
 func setNativeText(hwnd uintptr, text string) {
 	ptr, _ := syscall.UTF16PtrFromString(text)
 	pSetWindowText.Call(hwnd, uintptr(unsafe.Pointer(ptr)))
+}
+
+type nativeMenuItem struct {
+	ID      int
+	Chinese string
+	English string
+}
+
+func (app *nativeUI) mainMenuItems() []nativeMenuItem {
+	return []nativeMenuItem{
+		{ID: idCenter, Chinese: "视角居中", English: "Center View"},
+		{ID: idSettings, Chinese: "手机显示参数", English: "Phone Display"},
+		{ID: idPresets, Chinese: "光学预设", English: "Optical Presets"},
+		{ID: idNetwork, Chinese: "网络设置", English: "Network"},
+		{ID: idLogs, Chinese: "运行日志", English: "Logs"},
+		{ID: idLanguage, Chinese: "切换为 English", English: "Switch to 中文"},
+	}
+}
+
+func (app *nativeUI) closeMainMenu() {
+	app.menuOpen = false
+	if app.menuHWnd != 0 {
+		pShowWindow.Call(app.menuHWnd, swHide)
+	}
+}
+
+func (app *nativeUI) toggleMainMenu() {
+	if app.menuOpen {
+		app.closeMainMenu()
+		return
+	}
+	app.menuOpen = true
+
+	var mainRect nativeRect
+	pGetWindowRect.Call(app.mainHWnd, uintptr(unsafe.Pointer(&mainRect)))
+	const menuWidth, menuHeight = 292, 404
+	x := int(mainRect.Right) - menuWidth - 14
+	y := int(mainRect.Top) + 54
+	screenWidth, _, _ := pGetSystemMetrics.Call(0)
+	screenHeight, _, _ := pGetSystemMetrics.Call(1)
+	x = clampInt(x, 8, maxInt(8, int(screenWidth)-menuWidth-8))
+	y = clampInt(y, 8, maxInt(8, int(screenHeight)-menuHeight-8))
+
+	if app.menuHWnd == 0 {
+		instance, _, _ := pGetModuleHandle.Call(0)
+		class, _ := syscall.UTF16PtrFromString("PhoneVRNativeMenu")
+		hwnd, _, err := pCreateWindowEx.Call(
+			0x00000080|0x08000000, // WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE.
+			uintptr(unsafe.Pointer(class)), 0,
+			uintptr(wsPopup|wsBorder|wsClipChildren),
+			uintptr(x), uintptr(y), menuWidth, menuHeight,
+			app.mainHWnd, 0, instance, 0,
+		)
+		if hwnd == 0 {
+			app.menuOpen = false
+			app.messageBox(fmt.Sprintf("无法打开菜单：%v", err), "PhoneVR")
+			return
+		}
+		app.menuHWnd = hwnd
+		app.applyDarkWindow(hwnd)
+	}
+	pMoveWindow.Call(app.menuHWnd, uintptr(x), uintptr(y), menuWidth, menuHeight, 0)
+	pShowWindow.Call(app.menuHWnd, swShowNoActivate)
+	pInvalidateRect.Call(app.menuHWnd, 0, 0)
+}
+
+func (app *nativeUI) handleMenuClick(y int) {
+	const firstRowTop, rowHeight = 76, 48
+	if y < firstRowTop {
+		return
+	}
+	index := (y - firstRowTop) / rowHeight
+	items := app.mainMenuItems()
+	if index < 0 || index >= len(items) {
+		return
+	}
+	command := items[index].ID
+	app.closeMainMenu()
+	app.handleMainCommand(command)
 }
 
 func (app *nativeUI) handleMainCommand(id int) {
@@ -696,26 +1007,37 @@ func (app *nativeUI) openDialog(kind string) {
 			return
 		}
 	}
-	width, height, title := 600, 470, "PhoneVR"
+	width, height, title := 760, 560, "PhoneVR"
 	switch kind {
 	case "settings":
-		width, height, title = 800, 500, app.text("手机显示参数", "Phone Display Settings")
+		width, height, title = 980, 760, app.text("手机显示参数", "Phone Display Settings")
 	case "presets":
-		width, height, title = 700, 450, app.text("光学预设", "Optical Presets")
+		width, height, title = 900, 660, app.text("光学预设", "Optical Presets")
 	case "network":
-		width, height, title = 520, 350, app.text("网络设置", "Network")
+		width, height, title = 760, 560, app.text("网络设置", "Network Settings")
 	case "logs":
-		width, height, title = 780, 520, app.text("运行日志", "Logs")
+		width, height, title = 980, 680, app.text("运行日志", "Runtime Logs")
 	}
 	instance, _, _ := pGetModuleHandle.Call(0)
 	class, _ := syscall.UTF16PtrFromString("PhoneVRNativeDialog")
 	titlePtr, _ := syscall.UTF16PtrFromString(title)
-	hwnd, _, err := pCreateWindowEx.Call(0x00000001, uintptr(unsafe.Pointer(class)), uintptr(unsafe.Pointer(titlePtr)), uintptr(wsOverlapped|wsCaption|wsSysMenu|wsVisible|wsClipChildren), 0x80000000, 0x80000000, uintptr(width), uintptr(height), app.mainHWnd, 0, instance, 0)
+	screenWidth, _, _ := pGetSystemMetrics.Call(0)
+	screenHeight, _, _ := pGetSystemMetrics.Call(1)
+	width = minInt(width, maxInt(640, int(screenWidth)-64))
+	height = minInt(height, maxInt(500, int(screenHeight)-96))
+	var ownerRect nativeRect
+	pGetWindowRect.Call(app.mainHWnd, uintptr(unsafe.Pointer(&ownerRect)))
+	x := int(ownerRect.Left) + (int(ownerRect.Right-ownerRect.Left)-width)/2
+	y := int(ownerRect.Top) + (int(ownerRect.Bottom-ownerRect.Top)-height)/2
+	x = clampInt(x, 8, maxInt(8, int(screenWidth)-width-8))
+	y = clampInt(y, 8, maxInt(8, int(screenHeight)-height-8))
+	style := uintptr(wsOverlapped | wsCaption | wsSysMenu | wsThickFrame | wsMaximizeBox | wsVScroll | wsVisible | wsClipChildren)
+	hwnd, _, err := pCreateWindowEx.Call(0, uintptr(unsafe.Pointer(class)), uintptr(unsafe.Pointer(titlePtr)), style, uintptr(x), uintptr(y), uintptr(width), uintptr(height), app.mainHWnd, 0, instance, 0)
 	if hwnd == 0 {
 		app.messageBox(fmt.Sprintf("无法打开窗口：%v", err), "PhoneVR")
 		return
 	}
-	dialog := &nativeDialog{kind: kind, hwnd: hwnd, controls: make(map[int]uintptr), settings: app.currentSettings, config: app.config}
+	dialog := &nativeDialog{kind: kind, hwnd: hwnd, controls: make(map[int]uintptr), labels: make(map[int]uintptr), settings: app.currentSettings, config: app.config}
 	app.dialogs[hwnd] = dialog
 	app.applyDarkWindow(hwnd)
 	app.createDialogControls(dialog)
@@ -724,20 +1046,32 @@ func (app *nativeUI) openDialog(kind string) {
 }
 
 func (app *nativeUI) createDialogControls(d *nativeDialog) {
-	addLabel := func(text string, x, y, w, h int) {
-		app.createControl(d.hwnd, "STATIC", text, wsChild|wsVisible, x, y, w, h, 0)
+	addLabel := func(parent uintptr, key int, text string) {
+		hwnd := app.createControl(parent, "STATIC", text, wsChild|wsVisible, 0, 0, 10, 10, 0)
+		d.labels[key] = hwnd
 	}
-	addEdit := func(id int, text string, x, y, w, h int) {
-		d.controls[id] = app.createControl(d.hwnd, "EDIT", text, wsChild|wsVisible|wsBorder|wsTabStop|esAutoHScroll, x, y, w, h, id)
+	addEdit := func(parent uintptr, id int, text string) {
+		d.controls[id] = app.createControl(parent, "EDIT", text, wsChild|wsVisible|wsBorder|wsTabStop|esAutoHScroll, 0, 0, 10, 10, id)
 	}
-	addButton := func(id int, text string, x, y, w, h int) {
+	addButton := func(id int, text string) {
 		d.controls[id] = app.createButton(d.hwnd, text, id)
-		pMoveWindow.Call(d.controls[id], uintptr(x), uintptr(y), uintptr(w), uintptr(h), 1)
 	}
+	addViewport := func() uintptr {
+		class, _ := syscall.UTF16PtrFromString("PhoneVRNativeViewport")
+		instance, _, _ := pGetModuleHandle.Call(0)
+		hwnd, _, _ := pCreateWindowEx.Call(
+			0, uintptr(unsafe.Pointer(class)), 0,
+			uintptr(wsChild|wsVisible|wsClipChildren),
+			0, 0, 100, 100, d.hwnd, 0, instance, 0,
+		)
+		d.viewport = hwnd
+		return hwnd
+	}
+
 	switch d.kind {
 	case "settings":
-		addLabel(app.text("光学配置", "Viewer Profile"), 16, 16, 100, 22)
-		combo := app.createControl(d.hwnd, "COMBOBOX", "", wsChild|wsVisible|wsTabStop|cbDropDownList|wsVScroll, 120, 12, 240, 220, idProfile)
+		addLabel(d.hwnd, 0, app.text("光学配置", "VIEWER PROFILE"))
+		combo := app.createControl(d.hwnd, "COMBOBOX", "", wsChild|wsVisible|wsTabStop|cbDropDownList|wsVScroll, 0, 0, 280, 220, idProfile)
 		d.controls[idProfile] = combo
 		app.addComboItem(combo, app.text("自定义", "Custom"))
 		app.addComboItem(combo, "Daydream View 2017")
@@ -746,61 +1080,331 @@ func (app *nativeUI) createDialogControls(d *nativeDialog) {
 			profileIndex = 1
 		}
 		pSendMessage.Call(combo, 0x014E, profileIndex, 0)
+
+		viewport := addViewport()
 		fields := []struct {
 			id    int
 			label string
 			value float32
-		}{{1001, app.text("IPD (mm)", "IPD (mm)"), d.settings.IPDMm}, {1002, app.text("镜片中心距 (mm)", "Lens spacing (mm)"), d.settings.LensSeparationMm}, {1003, app.text("屏幕至镜片 (mm)", "Screen to lens (mm)"), d.settings.ScreenToLensDistanceMm}, {1004, app.text("托盘偏移 (mm)", "Tray offset (mm)"), d.settings.TrayToLensCenterMm}, {1005, app.text("镜片中心 X", "Lens center X"), d.settings.LensCenterX}, {1006, app.text("镜片中心 Y", "Lens center Y"), d.settings.LensCenterY}, {1007, app.text("畸变 K1", "Distortion K1"), d.settings.DistortionK1}, {1008, app.text("畸变 K2", "Distortion K2"), d.settings.DistortionK2}, {1009, app.text("模糊度", "Blur"), d.settings.Blur}, {1010, app.text("锐化", "Sharpness"), d.settings.Sharpness}, {1011, app.text("FOV (deg)", "FOV (deg)"), d.settings.FOVDegrees}}
-		for index, field := range fields {
-			column := index / 6
-			row := index % 6
-			x := 18 + column*382
-			y := 48 + row*54
-			addLabel(field.label, x, y, 354, 20)
-			addEdit(field.id, strconv.FormatFloat(float64(field.value), 'f', 3, 32), x, y+22, 354, 26)
+		}{
+			{1001, "IPD (mm)", d.settings.IPDMm},
+			{1002, app.text("镜片中心距 (mm)", "Lens spacing (mm)"), d.settings.LensSeparationMm},
+			{1003, app.text("屏幕至镜片 (mm)", "Screen to lens (mm)"), d.settings.ScreenToLensDistanceMm},
+			{1004, app.text("托盘偏移 (mm)", "Tray offset (mm)"), d.settings.TrayToLensCenterMm},
+			{1005, app.text("镜片中心 X", "Lens center X"), d.settings.LensCenterX},
+			{1006, app.text("镜片中心 Y", "Lens center Y"), d.settings.LensCenterY},
+			{1007, app.text("畸变 K1", "Distortion K1"), d.settings.DistortionK1},
+			{1008, app.text("畸变 K2", "Distortion K2"), d.settings.DistortionK2},
+			{1009, app.text("模糊度", "Blur"), d.settings.Blur},
+			{1010, app.text("锐化", "Sharpness"), d.settings.Sharpness},
+			{1011, "FOV (deg)", d.settings.FOVDegrees},
 		}
-		d.status = app.createControl(d.hwnd, "STATIC", "", wsChild|wsVisible, 18, 386, 740, 24, 0)
-		addButton(idApply, app.text("推送到手机", "Apply to Phone"), 18, 424, 140, 34)
-		addButton(idDialogCenter, app.text("视角居中", "Center View"), 170, 424, 120, 34)
-		addButton(idClose, app.text("关闭", "Close"), 658, 424, 100, 34)
+		for index, field := range fields {
+			addLabel(viewport, index+1, field.label)
+			addEdit(viewport, field.id, strconv.FormatFloat(float64(field.value), 'f', 3, 32))
+		}
+		d.status = app.createControl(d.hwnd, "STATIC", "", wsChild|wsVisible, 0, 0, 10, 10, 0)
+		addButton(idApply, app.text("推送到手机", "Apply to Phone"))
+		addButton(idDialogCenter, app.text("视角居中", "Center View"))
+		addButton(idClose, app.text("关闭", "Close"))
+
 	case "presets":
-		addLabel(app.text("配置预设", "Optical Presets"), 16, 14, 120, 20)
+		addLabel(d.hwnd, 0, app.text("已保存的预设", "SAVED PRESETS"))
+		addLabel(d.hwnd, 1, app.text("预设名称", "PRESET NAME"))
 		d.presets = loadNativePresets()
-		list := app.createControl(d.hwnd, "LISTBOX", "", wsChild|wsVisible|wsBorder|wsVScroll|wsTabStop, 16, 42, 300, 300, idPresetList)
+		list := app.createControl(d.hwnd, "LISTBOX", "", wsChild|wsVisible|wsBorder|wsVScroll|wsTabStop, 0, 0, 10, 10, idPresetList)
 		d.controls[idPresetList] = list
 		for _, preset := range d.presets {
 			app.addListItem(list, app.presetDisplayName(preset))
 		}
-		pSendMessage.Call(list, 0x0186, 0, 0)
-		addLabel(app.text("预设名称", "Preset Name"), 338, 46, 180, 20)
-		addEdit(idPresetName, "", 338, 70, 240, 26)
-		addButton(idPresetApply, app.text("应用到手机", "Apply to Phone"), 338, 112, 130, 30)
-		addButton(idPresetSave, app.text("保存当前参数", "Save Current"), 338, 150, 130, 30)
-		addButton(idPresetClone, app.text("克隆", "Clone"), 338, 188, 100, 30)
-		addButton(idPresetRename, app.text("重命名", "Rename"), 446, 188, 100, 30)
-		addButton(idPresetDelete, app.text("删除", "Delete"), 338, 226, 100, 30)
-		d.status = app.createControl(d.hwnd, "STATIC", "", wsChild|wsVisible, 16, 360, 560, 26, 0)
-		addButton(idClose, app.text("关闭", "Close"), 490, 360, 100, 30)
+		if len(d.presets) > 0 {
+			pSendMessage.Call(list, 0x0186, 0, 0)
+		}
+		addEdit(d.hwnd, idPresetName, "")
+		addButton(idPresetApply, app.text("应用到手机", "Apply to Phone"))
+		addButton(idPresetSave, app.text("保存当前参数", "Save Current"))
+		addButton(idPresetClone, app.text("克隆预设", "Clone Preset"))
+		addButton(idPresetRename, app.text("重命名", "Rename"))
+		addButton(idPresetDelete, app.text("删除预设", "Delete Preset"))
+		d.status = app.createControl(d.hwnd, "STATIC", "", wsChild|wsVisible, 0, 0, 10, 10, 0)
+		addButton(idClose, app.text("关闭", "Close"))
+
 	case "network":
-		addLabel(app.text("监听地址", "Bind Address"), 16, 20, 100, 22)
-		addEdit(410, "0.0.0.0", 140, 16, 250, 26)
-		addLabel(app.text("发现 UDP 端口", "Discovery UDP Port"), 16, 66, 120, 22)
-		addEdit(411, strconv.Itoa(d.config.DiscoveryPort), 140, 62, 250, 26)
-		addLabel(app.text("控制 TCP 端口", "Control TCP Port"), 16, 112, 120, 22)
-		addEdit(412, strconv.Itoa(d.config.ControlPort), 140, 108, 250, 26)
-		addLabel(app.text("姿态 UDP 端口", "Pose UDP Port"), 16, 158, 120, 22)
-		addEdit(413, strconv.Itoa(d.config.PosePort), 140, 154, 250, 26)
-		d.status = app.createControl(d.hwnd, "STATIC", "", wsChild|wsVisible, 16, 214, 400, 24, 0)
-		addButton(idNetworkApply, app.text("应用并重启", "Apply & Restart"), 16, 254, 130, 32)
-		addButton(idNetworkStop, app.text("停止服务", "Stop Service"), 156, 254, 110, 32)
-		addButton(idNetworkStart, app.text("启动服务", "Start Service"), 276, 254, 110, 32)
-		addButton(idClose, app.text("关闭", "Close"), 330, 300, 100, 30)
+		viewport := addViewport()
+		labels := []string{
+			app.text("监听地址", "Bind Address"),
+			app.text("发现 UDP 端口", "Discovery UDP Port"),
+			app.text("控制 TCP 端口", "Control TCP Port"),
+			app.text("姿态 UDP 端口", "Pose UDP Port"),
+		}
+		values := []string{
+			"0.0.0.0",
+			strconv.Itoa(d.config.DiscoveryPort),
+			strconv.Itoa(d.config.ControlPort),
+			strconv.Itoa(d.config.PosePort),
+		}
+		for index := range labels {
+			addLabel(viewport, index, labels[index])
+			addEdit(viewport, 410+index, values[index])
+		}
+		d.status = app.createControl(d.hwnd, "STATIC", "", wsChild|wsVisible, 0, 0, 10, 10, 0)
+		addButton(idNetworkApply, app.text("应用并重启", "Apply & Restart"))
+		addButton(idNetworkStop, app.text("停止服务", "Stop Service"))
+		addButton(idNetworkStart, app.text("启动服务", "Start Service"))
+		addButton(idClose, app.text("关闭", "Close"))
+
 	case "logs":
-		edit := app.createControl(d.hwnd, "EDIT", "", wsChild|wsVisible|wsBorder|wsVScroll|esMultiline|esReadOnly|esWantReturn, 12, 12, 680, 420, 501)
+		edit := app.createControl(d.hwnd, "EDIT", "", wsChild|wsVisible|wsBorder|wsVScroll|esMultiline|esReadOnly|esWantReturn, 0, 0, 10, 10, 501)
 		d.controls[501] = edit
-		addButton(idLogsRefresh, app.text("刷新", "Refresh"), 12, 445, 90, 30)
-		addButton(idClose, app.text("关闭", "Close"), 600, 445, 90, 30)
+		addButton(idLogsRefresh, app.text("刷新", "Refresh"))
+		addButton(idClose, app.text("关闭", "Close"))
 		app.refreshLogDialog(d)
+	}
+	app.layoutDialog(d)
+}
+
+func (app *nativeUI) layoutDialog(d *nativeDialog) {
+	if d == nil || d.hwnd == 0 {
+		return
+	}
+	w, h := clientSize(d.hwnd)
+	if w < 1 || h < 1 {
+		return
+	}
+	move := func(hwnd uintptr, x, y, width, height int) {
+		if hwnd != 0 {
+			pMoveWindow.Call(hwnd, uintptr(x), uintptr(y), uintptr(maxInt(1, width)), uintptr(maxInt(1, height)), 1)
+		}
+	}
+	switch d.kind {
+	case "settings":
+		margin := 22
+		move(d.labels[0], margin, 86, 142, 28)
+		move(d.controls[idProfile], margin+148, 82, minInt(360, w-2*margin-148), 36)
+		footerTop := h - 82
+		viewportTop := 128
+		viewportHeight := maxInt(96, footerTop-viewportTop-10)
+		move(d.viewport, 16, viewportTop, w-32, viewportHeight)
+
+		fieldIDs := []int{1001, 1002, 1003, 1004, 1005, 1006, 1007, 1008, 1009, 1010, 1011}
+		columns := 2
+		if w < 760 {
+			columns = 1
+		}
+		rows := (len(fieldIDs) + columns - 1) / columns
+		columnGap := 22
+		contentWidth := maxInt(220, w-32)
+		columnWidth := (contentWidth - 40 - columnGap*(columns-1)) / columns
+		rowHeight := 74
+		for index, id := range fieldIDs {
+			column, row := 0, index
+			if columns == 2 {
+				column, row = index/rows, index%rows
+			}
+			x := 20 + column*(columnWidth+columnGap)
+			y := 12 + row*rowHeight - d.scrollOffset
+			move(d.labels[index+1], x, y, columnWidth-10, 22)
+			move(d.controls[id], x, y+25, columnWidth-10, 36)
+		}
+		d.contentHeight = 16 + rows*rowHeight + 8
+		d.viewHeight = viewportHeight
+		d.scrollOffset = clampInt(d.scrollOffset, 0, maxInt(0, d.contentHeight-d.viewHeight))
+		app.updateDialogScroll(d)
+
+		move(d.status, margin, h-78, w-2*margin, 24)
+		move(d.controls[idApply], margin, h-46, 166, 38)
+		move(d.controls[idDialogCenter], margin+178, h-46, 148, 38)
+		move(d.controls[idClose], w-margin-116, h-46, 116, 38)
+
+	case "presets":
+		margin := 22
+		footerY := h - 78
+		leftWidth := maxInt(260, int(float64(w-3*margin)*0.48))
+		rightX := margin + leftWidth + 24
+		rightWidth := maxInt(220, w-rightX-margin)
+		move(d.labels[0], margin, 88, leftWidth, 26)
+		move(d.controls[idPresetList], margin, 118, leftWidth, maxInt(160, footerY-132))
+		move(d.labels[1], rightX, 88, rightWidth, 24)
+		move(d.controls[idPresetName], rightX, 116, rightWidth, 38)
+		actionWidth := minInt(178, (rightWidth-10)/2)
+		move(d.controls[idPresetApply], rightX, 170, rightWidth, 40)
+		move(d.controls[idPresetSave], rightX, 220, rightWidth, 40)
+		move(d.controls[idPresetClone], rightX, 270, actionWidth, 40)
+		move(d.controls[idPresetRename], rightX+actionWidth+10, 270, actionWidth, 40)
+		move(d.controls[idPresetDelete], rightX, 320, rightWidth, 40)
+		move(d.status, margin, h-70, w-2*margin-130, 28)
+		move(d.controls[idClose], w-margin-116, h-48, 116, 38)
+
+	case "network":
+		margin := 22
+		footerTop := h - 84
+		viewportTop := 80
+		viewportHeight := maxInt(92, footerTop-viewportTop-8)
+		move(d.viewport, 16, viewportTop, w-32, viewportHeight)
+		columns := 2
+		if w < 620 {
+			columns = 1
+		}
+		fieldIDs := []int{410, 411, 412, 413}
+		rows := (len(fieldIDs) + columns - 1) / columns
+		gap := 24
+		colWidth := (w - 32 - 36 - gap*(columns-1)) / columns
+		rowHeight := 112
+		for index, id := range fieldIDs {
+			column, row := 0, index
+			if columns == 2 {
+				column, row = index/rows, index%rows
+			}
+			x := 18 + column*(colWidth+gap)
+			y := 18 + row*rowHeight - d.scrollOffset
+			move(d.labels[index], x, y, colWidth-12, 26)
+			move(d.controls[id], x, y+32, colWidth-12, 38)
+		}
+		d.contentHeight = 28 + rows*rowHeight
+		d.viewHeight = viewportHeight
+		d.scrollOffset = clampInt(d.scrollOffset, 0, maxInt(0, d.contentHeight-d.viewHeight))
+		app.updateDialogScroll(d)
+
+		move(d.status, margin, h-80, w-2*margin, 24)
+		buttonY := h - 46
+		gapX := 10
+		totalWidth := w - 2*margin
+		buttonWidth := (totalWidth - 3*gapX) / 4
+		move(d.controls[idNetworkApply], margin, buttonY, buttonWidth, 38)
+		move(d.controls[idNetworkStart], margin+buttonWidth+gapX, buttonY, buttonWidth, 38)
+		move(d.controls[idNetworkStop], margin+2*(buttonWidth+gapX), buttonY, buttonWidth, 38)
+		move(d.controls[idClose], margin+3*(buttonWidth+gapX), buttonY, buttonWidth, 38)
+
+	case "logs":
+		margin := 18
+		move(d.controls[501], margin, 82, w-2*margin, maxInt(120, h-182))
+		move(d.controls[idLogsRefresh], margin, h-48, 112, 36)
+		move(d.controls[idClose], w-margin-112, h-48, 112, 36)
+	}
+	pInvalidateRect.Call(d.hwnd, 0, 0)
+}
+
+func (app *nativeUI) updateDialogScroll(d *nativeDialog) {
+	if d == nil || d.hwnd == 0 {
+		return
+	}
+	maximum := maxInt(0, d.contentHeight-1)
+	page := maxInt(1, d.viewHeight)
+	d.scrollOffset = clampInt(d.scrollOffset, 0, maxInt(0, d.contentHeight-page))
+	info := nativeScrollInfo{
+		Size: uint32(unsafe.Sizeof(nativeScrollInfo{})),
+		Mask: sifAll,
+		Min:  0,
+		Max:  int32(maximum),
+		Page: uint32(page),
+		Pos:  int32(d.scrollOffset),
+	}
+	pSetScrollInfo.Call(d.hwnd, sbVert, uintptr(unsafe.Pointer(&info)), 1)
+}
+
+func (app *nativeUI) scrollDialog(d *nativeDialog, command, trackPosition int) {
+	if d == nil {
+		return
+	}
+	next := d.scrollOffset
+	switch command {
+	case sbLineUp:
+		next -= 36
+	case sbLineDown:
+		next += 36
+	case sbPageUp:
+		next -= maxInt(48, d.viewHeight-32)
+	case sbPageDown:
+		next += maxInt(48, d.viewHeight-32)
+	case sbThumbPosition, sbThumbTrack:
+		var info nativeScrollInfo
+		info.Size = uint32(unsafe.Sizeof(info))
+		info.Mask = sifTrackPos
+		pGetScrollInfo.Call(d.hwnd, sbVert, uintptr(unsafe.Pointer(&info)))
+		next = int(info.TrackPos)
+		if next == 0 {
+			next = trackPosition
+		}
+	case sbTop:
+		next = 0
+	case sbBottom:
+		next = d.contentHeight - d.viewHeight
+	}
+	app.scrollDialogBy(d, next-d.scrollOffset)
+}
+
+func (app *nativeUI) scrollDialogBy(d *nativeDialog, delta int) {
+	if d == nil || delta == 0 {
+		return
+	}
+	d.scrollOffset = clampInt(d.scrollOffset+delta, 0, maxInt(0, d.contentHeight-d.viewHeight))
+	app.layoutDialog(d)
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+func clampInt(value, minimum, maximum int) int {
+	if value < minimum {
+		return minimum
+	}
+	if value > maximum {
+		return maximum
+	}
+	return value
+}
+
+func (app *nativeUI) paintDialog(d *nativeDialog, hdc uintptr) {
+	if d == nil {
+		fillNativeRect(hdc, nativeRect{0, 0, 8192, 8192}, rgb(9, 17, 27))
+		return
+	}
+	graphics := beginNativeGraphics(hdc)
+	activeNativeGraphics = graphics
+	defer func() {
+		activeNativeGraphics = 0
+		if graphics != 0 {
+			pGdipDeleteGraphics.Call(graphics)
+		}
+	}()
+	w, h := clientSize(d.hwnd)
+	if w <= 0 || h <= 0 {
+		return
+	}
+	fillNativeRect(hdc, nativeRect{0, 0, int32(w), int32(h)}, rgb(9, 17, 27))
+	title, subtitle := "PhoneVR", ""
+	switch d.kind {
+	case "settings":
+		title = app.text("手机显示参数", "Phone Display")
+		subtitle = app.text("根据旧手机屏幕与镜片组合校准双目显示", "Calibrate stereo display for your phone and viewer optics")
+	case "presets":
+		title = app.text("光学预设", "Optical Presets")
+		subtitle = app.text("保存、克隆并管理不同头显的镜片配置", "Save, clone and manage viewer calibration profiles")
+	case "network":
+		title = app.text("网络设置", "Network Settings")
+		subtitle = app.text("配置主机监听地址与手机连接端口", "Configure host binding and phone connection ports")
+	case "logs":
+		title = app.text("运行日志", "Runtime Logs")
+		subtitle = app.text("查看主机连接、姿态数据与控制指令事件", "Inspect host, tracking and control events")
+	}
+	drawNativeText(hdc, title, nativeRect{22, 12, int32(w - 22), 44}, rgb(228, 239, 250), app.fontTitle, dtVCenter|dtSingleLine|dtEndEllipsis|dtNoPrefix)
+	drawNativeText(hdc, subtitle, nativeRect{24, 44, int32(w - 22), 70}, rgb(125, 153, 178), app.fontSmall, dtVCenter|dtSingleLine|dtEndEllipsis|dtNoPrefix)
+	drawNativeLine(hdc, 18, 72, w-18, 72, rgb(38, 59, 80), 1)
+	drawNativeRoundRect(hdc, nativeRect{12, int32(h - 92), int32(w - 12), int32(h - 10)}, rgb(14, 26, 39), rgb(34, 54, 73), 12)
+	if d.kind == "presets" {
+		drawNativeRoundRect(hdc, nativeRect{14, 80, int32(w/2 + 8), int32(h - 82)}, rgb(13, 25, 38), rgb(35, 55, 75), 12)
+		drawNativeRoundRect(hdc, nativeRect{int32(w/2 + 16), 80, int32(w - 14), int32(h - 82)}, rgb(13, 25, 38), rgb(35, 55, 75), 12)
 	}
 }
 
@@ -1232,7 +1836,7 @@ func (app *nativeUI) toggleLanguage() {
 		app.language = "en"
 	}
 	saveNativeLanguage(app.language)
-	app.menuOpen = false
+	app.closeMainMenu()
 	for hwnd := range app.dialogs {
 		pDestroyWindow.Call(hwnd)
 	}

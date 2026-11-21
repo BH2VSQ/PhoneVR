@@ -132,14 +132,21 @@ func (app *nativeUI) drawDialogButton(lParam uintptr) uintptr {
 	runtime.KeepAlive(&item)
 	id := int(item.CtlID)
 	primary := id == idApply || id == idPresetApply || id == idNetworkApply || id == idNetworkStart
-	fill, border, foreground := rgb(20, 38, 56), rgb(45, 70, 93), rgb(195, 214, 232)
+	danger := id == idPresetDelete || id == idNetworkStop
+	fill, border, foreground := rgb(20, 38, 56), rgb(45, 70, 93), rgb(211, 226, 240)
 	if primary {
-		fill, border, foreground = rgb(103, 186, 255), rgb(103, 186, 255), rgb(7, 21, 34)
+		fill, border, foreground = rgb(91, 184, 248), rgb(91, 184, 248), rgb(7, 21, 34)
+	}
+	if danger {
+		fill, border, foreground = rgb(64, 31, 39), rgb(111, 55, 67), rgb(255, 190, 197)
 	}
 	if item.ItemState&0x0001 != 0 {
 		fill = rgb(28, 53, 74)
 		if primary {
-			fill = rgb(130, 199, 255)
+			fill = rgb(130, 207, 255)
+		}
+		if danger {
+			fill = rgb(88, 39, 49)
 		}
 	}
 	drawNativeRoundRect(item.HDC, item.ItemRect, fill, border, 7)
@@ -182,20 +189,22 @@ func (app *nativeUI) paintMain(hdc uintptr) {
 		return
 	}
 	fillNativeRect(hdc, nativeRect{0, 0, int32(w), int32(h)}, rgb(9, 17, 27))
-	// Top status bar mirrors the original browser UI proportions and palette.
+
 	runLabel := app.text("运行中", "RUNNING")
 	if !app.snapshot.Running {
 		runLabel = app.text("已停止", "STOPPED")
 	}
-	drawNativePill(hdc, 12, 8, 112, 34, runLabel, app.snapshot.Running, !app.snapshot.Running, app.fontBody)
-	steamText := app.text("SteamVR 未连接", "SteamVR DISCONNECTED")
-	drawNativeSteamPill(hdc, (w-202)/2, 8, 202, 34, steamText, app.fontBody)
+	drawNativePill(hdc, 14, 10, 122, 36, runLabel, app.snapshot.Running, !app.snapshot.Running, app.fontBody)
+	steamText := app.text("SteamVR 未连接", "STEAMVR DISCONNECTED")
+	drawNativeSteamPill(hdc, (w-232)/2, 10, 232, 36, steamText, app.fontBody)
+
 	connected := len(app.snapshot.ConnectedDevices) > 0
-	right := w - 12
-	menuRect := nativeRect{int32(right - 42), 8, int32(right), 42}
+	right := w - 14
+	menuRect := nativeRect{int32(right - 46), 10, int32(right), 46}
 	drawNativeMenuButton(hdc, menuRect)
 	app.hitTargets = app.hitTargets[:0]
 	app.hitTargets = append(app.hitTargets, nativeHitTarget{ID: idMenu, Rect: menuRect})
+
 	batteryText := "--%"
 	batteryActive, batteryWarning := false, false
 	if connected && app.snapshot.ConnectedDevices[0].BatteryLevel != nil {
@@ -207,20 +216,17 @@ func (app *nativeUI) paintMain(hdc uintptr) {
 		batteryActive = level > 15
 		batteryWarning = level <= 15
 	}
-	drawNativePill(hdc, right-42-8-76, 8, 76, 34, batteryText, batteryActive, batteryWarning, app.fontBody)
-	drawNativeHMDPill(hdc, right-42-8-76-8-84, 8, 84, 34, connected, app.fontBody)
-	// One-pixel separator under the header.
-	drawNativeLine(hdc, 12, 47, w-12, 47, rgb(33, 52, 71), 1)
+	drawNativePill(hdc, right-46-10-96, 10, 96, 36, batteryText, batteryActive, batteryWarning, app.fontBody)
+	drawNativeHMDPill(hdc, right-46-10-96-10-96, 10, 96, 36, connected, app.fontBody)
+	drawNativeLine(hdc, 14, 54, w-14, 54, rgb(33, 52, 71), 1)
 
-	// Main pose card uses the same dark surface and subtle border as the legacy web dashboard.
-	panel := nativeRect{12, 54, int32(w - 12), int32(h - 10)}
-	drawNativeRoundRect(hdc, panel, rgb(16, 29, 42), rgb(38, 59, 80), 10)
+	panel := nativeRect{14, 62, int32(w - 14), int32(h - 12)}
+	drawNativeRoundRect(hdc, panel, rgb(16, 29, 42), rgb(38, 59, 80), 14)
 
-	// Three compact telemetry cards at the bottom of the pose panel.
-	metricW, metricGap, metricH := 166, 8, 56
+	metricW, metricGap, metricH := 180, 12, 72
 	metricTotal := metricW*3 + metricGap*2
 	metricX := (w - metricTotal) / 2
-	metricY := h - metricH - 18
+	metricY := h - metricH - 22
 	values := [3]string{"0.0°", "0.0°", "0.0°"}
 	if app.pose.LatestPose != nil {
 		values = [3]string{
@@ -232,68 +238,57 @@ func (app *nativeUI) paintMain(hdc uintptr) {
 	labels := [3]string{"YAW", "PITCH", "ROLL"}
 	for i := 0; i < 3; i++ {
 		x := metricX + i*(metricW+metricGap)
-		drawNativeRoundRect(hdc, nativeRect{int32(x), int32(metricY), int32(x + metricW), int32(metricY + metricH)}, rgb(12, 24, 36), rgb(38, 62, 84), 8)
-		drawNativeText(hdc, labels[i], nativeRect{int32(x + 4), int32(metricY + 5), int32(x + metricW - 4), int32(metricY + 23)}, rgb(119, 144, 169), app.fontSmall, dtCenter|dtVCenter|dtSingleLine|dtNoPrefix)
-		drawNativeText(hdc, values[i], nativeRect{int32(x + 4), int32(metricY + 23), int32(x + metricW - 4), int32(metricY + 52)}, rgb(185, 221, 249), app.fontValue, dtCenter|dtVCenter|dtSingleLine|dtNoPrefix)
-	}
-
-	if app.menuOpen {
-		app.paintMainMenu(hdc, w)
+		drawNativeRoundRect(hdc, nativeRect{int32(x), int32(metricY), int32(x + metricW), int32(metricY + metricH)}, rgb(12, 24, 36), rgb(38, 62, 84), 10)
+		drawNativeText(hdc, labels[i], nativeRect{int32(x + 4), int32(metricY + 6), int32(x + metricW - 4), int32(metricY + 27)}, rgb(119, 144, 169), app.fontSmall, dtCenter|dtVCenter|dtSingleLine|dtNoPrefix)
+		drawNativeText(hdc, values[i], nativeRect{int32(x + 4), int32(metricY + 26), int32(x + metricW - 4), int32(metricY + 68)}, rgb(185, 221, 249), app.fontValue, dtCenter|dtVCenter|dtSingleLine|dtNoPrefix)
 	}
 }
 
-func (app *nativeUI) paintMainMenu(hdc uintptr, width int) {
-	items := []struct {
-		id     int
-		zh, en string
-	}{
-		{idCenter, "视角居中", "Center View"},
-		{idSettings, "手机显示参数", "Phone Display"},
-		{idPresets, "光学预设", "Optical Presets"},
-		{idNetwork, "网络设置", "Network"},
-		{idLogs, "运行日志", "Logs"},
-		{idLanguage, "切换为 English", "Switch to 中文"},
+func (app *nativeUI) paintMainMenu(hdc uintptr) {
+	graphics := beginNativeGraphics(hdc)
+	activeNativeGraphics = graphics
+	defer func() {
+		activeNativeGraphics = 0
+		if graphics != 0 {
+			pGdipDeleteGraphics.Call(graphics)
+		}
+	}()
+	width, height := clientSize(app.menuHWnd)
+	if width <= 0 || height <= 0 {
+		return
 	}
-	panelW, rowH := 224, 38
-	panelH := 12 + rowH*len(items) + 8
-	left, top := width-panelW-12, 50
-	drawNativeRoundRect(hdc, nativeRect{int32(left), int32(top), int32(left + panelW), int32(top + panelH)}, rgb(13, 25, 38), rgb(48, 75, 100), 10)
-	app.hitTargets = append(app.hitTargets, nativeHitTarget{ID: -1, Rect: nativeRect{int32(left - 8), 0, int32(width), int32(top + panelH + 8)}})
-	for index, item := range items {
-		y := top + 8 + index*rowH
-		r := nativeRect{int32(left + 8), int32(y), int32(left + panelW - 8), int32(y + rowH - 3)}
-		drawNativeRoundRect(hdc, r, rgb(20, 38, 56), rgb(38, 59, 80), 6)
-		drawNativeText(hdc, app.text(item.zh, item.en), nativeRect{r.Left + 10, r.Top, r.Right - 10, r.Bottom}, rgb(195, 214, 232), app.fontBody, dtVCenter|dtSingleLine|dtEndEllipsis|dtNoPrefix)
-		app.hitTargets = append(app.hitTargets, nativeHitTarget{ID: item.id, Rect: r})
+	fillNativeRect(hdc, nativeRect{0, 0, int32(width), int32(height)}, rgb(12, 22, 34))
+	drawNativeRoundRect(hdc, nativeRect{1, 1, int32(width - 1), int32(height - 1)}, rgb(13, 25, 38), rgb(53, 82, 108), 14)
+	drawNativeText(hdc, app.text("PhoneVR 控制中心", "PhoneVR CONTROL"), nativeRect{20, 14, int32(width - 18), 46}, rgb(222, 237, 250), app.fontTitle, dtVCenter|dtSingleLine|dtEndEllipsis|dtNoPrefix)
+	drawNativeText(hdc, app.text("快速操作与主机设置", "Quick actions and host settings"), nativeRect{20, 46, int32(width - 18), 68}, rgb(126, 154, 180), app.fontSmall, dtVCenter|dtSingleLine|dtEndEllipsis|dtNoPrefix)
+	drawNativeLine(hdc, 16, 70, width-16, 70, rgb(42, 65, 86), 1)
+
+	for index, item := range app.mainMenuItems() {
+		y := 76 + index*48
+		r := nativeRect{14, int32(y), int32(width - 14), int32(y + 42)}
+		drawNativeRoundRect(hdc, r, rgb(20, 38, 56), rgb(40, 64, 86), 9)
+		drawNativeEllipse(hdc, nativeRect{26, int32(y + 13), 42, int32(y + 29)}, rgb(80, 177, 238), 0)
+		drawNativeText(hdc, app.text(item.Chinese, item.English), nativeRect{54, int32(y), int32(width - 28), int32(y + 42)}, rgb(207, 224, 240), app.fontBody, dtVCenter|dtSingleLine|dtEndEllipsis|dtNoPrefix)
 	}
+	drawNativeText(hdc, app.text("点击空白区域可关闭菜单", "Click outside to dismiss"), nativeRect{16, int32(height - 31), int32(width - 16), int32(height - 8)}, rgb(105, 132, 157), app.fontSmall, dtCenter|dtVCenter|dtSingleLine|dtNoPrefix)
 }
 
 func (app *nativeUI) handleMainClick(x, y int) {
-	if len(app.hitTargets) == 0 {
-		return
-	}
 	for index := len(app.hitTargets) - 1; index >= 0; index-- {
 		target := app.hitTargets[index]
-		if x >= int(target.Rect.Left) && x <= int(target.Rect.Right) && y >= int(target.Rect.Top) && y <= int(target.Rect.Bottom) {
-			if target.ID == -1 {
-				return
-			}
-			if target.ID == idMenu {
-				app.menuOpen = !app.menuOpen
-				app.layoutMain(app.mainHWnd)
-				pInvalidateRect.Call(app.mainHWnd, 0, 0)
-				return
-			}
-			app.menuOpen = false
-			app.layoutMain(app.mainHWnd)
-			app.handleMainCommand(target.ID)
-			pInvalidateRect.Call(app.mainHWnd, 0, 0)
+		if x < int(target.Rect.Left) || x > int(target.Rect.Right) || y < int(target.Rect.Top) || y > int(target.Rect.Bottom) {
+			continue
+		}
+		if target.ID == idMenu {
+			app.toggleMainMenu()
 			return
 		}
+		app.closeMainMenu()
+		app.handleMainCommand(target.ID)
+		return
 	}
 	if app.menuOpen {
-		app.menuOpen = false
-		pInvalidateRect.Call(app.mainHWnd, 0, 0)
+		app.closeMainMenu()
 	}
 }
 

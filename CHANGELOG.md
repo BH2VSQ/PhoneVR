@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.10
+- Rebuilt the Windows Host main menu as an independent, non-activating owned popup. Opening it never resizes or shifts the OpenGL pose preview; clicking outside or switching applications dismisses it without leaving stale menu state.
+- Added buffered painting for the dashboard, popup menu, scroll viewports and dialogs to reduce intermediate redraw flashing.
+- Redesigned Phone Display, Optical Presets, Network Settings and Runtime Logs with larger card-based layouts, clearer grouping and resizable windows.
+- Added responsive layouts, native vertical scroll bars and mouse-wheel scrolling for long settings pages; action buttons remain pinned in the footer.
+- Increased application typography and control dimensions, including body text, labels, telemetry values, inputs and buttons.
+- Preserved existing settings, preset management, network service and log actions.
+
 ## 0.3.9
 - Reworked native Windows main UI to closely follow the original PhoneVR dark dashboard design: navy surfaces, compact status pills, rounded telemetry cards, centered SteamVR state and compact menu layout.
 - Replaced flat GDI rounded shapes with GDI+ anti-aliased drawing and ClearType Segoe UI typography; enabled Per-Monitor DPI awareness where supported.
@@ -7,10 +15,7 @@
 - Added dark title-bar handling, high-DPI initialization, and improved English single-line layout behavior.
 - Recessed the Daydream optical assemblies into the eye-side face cavity and reduced lens barrel depth.
 
-# Changelog
-
 ## 0.3.8 - Native Windows desktop UI
-
 - Replaced the Edge/Chrome app-mode dashboard and loopback HTTP UI server with a native Win32 desktop application.
 - Added a native WGL/OpenGL HMD viewport that loads the embedded Daydream View 2017 OBJ/MTL mesh and renders a solid 3D model with depth testing and material shading.
 - Kept HMD-local XYZ axes and gaze ray attached to the phone quaternion; the world floor grid remains fixed.

@@ -1,4 +1,4 @@
-# PhoneVR SteamVR Driver — 0.4.19
+# PhoneVR SteamVR Driver — 0.4.19 (DisplayRedirect diagnostics)
 
 Windows x64 OpenVR server driver foundation for the PhoneVR wireless HMD.
 
@@ -114,3 +114,24 @@ installation.
 ## Live video capture
 
 The driver captures the final SBS compositor backbuffer only while a paired Android client has successfully negotiated hardware H.264 decode and Host has validated a hardware H.264 encoder. D3D11 performs GPU scaling to 1600×720; a bounded triple-staging ring and background worker deliver BGRA frames to the Host's loopback TCP bridge on `127.0.0.1:48106`. Host then hardware-encodes and transmits `PVRV` UDP fragments to Android port `48104`. The 72 Hz virtual-display timing is fixed in this revision; the removed refresh-rate menu no longer writes a per-user timing file.
+
+
+## DisplayRedirect diagnostics (0.4.19)
+
+This diagnostic build logs the first `GetComponent` request received by the HMD
+and DisplayRedirect devices, whether the requested interface matches
+`IVRDisplayComponent_003` / `IVRVirtualDisplay_002`, the DisplayRedirect
+activation object index, and the return status of each display-redirection
+property write. The five-second telemetry line includes the DisplayRedirect
+active flag and cumulative `GetComponent=queries/matches` counters.
+
+Interpretation:
+
+- `GetComponent=0/0`: SteamVR has not queried the DisplayRedirect component.
+- `GetComponent=N/0`: SteamVR queried the device, but the requested interface
+  version did not match the implemented `IVRVirtualDisplay_002`.
+- `GetComponent=N/N` with `Present=0Hz`: the component was queried and returned,
+  but the compositor is not submitting frames to it. Confirm that a VR app is
+  actively rendering and inspect compositor routing / HMD property overrides.
+- `Present>0Hz` with `completed=0Hz`: only then inspect D3D11 shared-texture and
+  `WaitForPresent` synchronization.

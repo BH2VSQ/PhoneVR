@@ -1,19 +1,20 @@
-# PhoneVR 0.4.19 Build Status
+# PhoneVR 0.4.19 DisplayRedirect diagnostic build status
 
-## LAN discovery and SteamVR D3D11 compile fix
+This revision adds diagnostic telemetry around SteamVR's DisplayRedirect component selection.
 
-- Included `<d3d11_4.h>` after `<d3d11.h>` so the `ID3D11Multithread` interface used by the D3D11 capture context is declared by the Windows SDK.
-- Android discovery automatically enumerates active, non-loopback IPv4 interfaces, binds discovery sockets to each local address and sends directed broadcasts. The Android connection panel no longer exposes transport selection; manual IPv4 host entry remains available.
-- The Windows Host binds its network services to the configured listen address (default `0.0.0.0`) and logs active IPv4 interface addresses. LAN discovery, TCP control 48101, UDP pose 48102 and outbound H.264 UDP 48104 continue using the existing protocol.
-- Android versionCode is 35. Repository, Host and SteamVR driver version is 0.4.19.
+## Changes in this diagnostic revision
 
-## Validation status
+- Log the first `GetComponent` request received by the PhoneVR HMD and DisplayRedirect devices.
+- Log the exact requested interface name and whether it matches the expected OpenVR interface version.
+- Log successful DisplayRedirect activation, object ID, adapter LUID, and the result of each property write.
+- Report cumulative DisplayRedirect component-query and interface-match counters in the five-second driver telemetry.
+- Use case-insensitive OpenVR component-name matching and an atomic DisplayRedirect active flag.
 
-- Go unit/integration tests, Go Race tests and Go Vet passed before this cleanup. They should be rerun after the interface-classification changes.
-- Windows AMD64 `go vet`, test-binary cross-compilation and Host executable cross-compilation passed before this cleanup. This validates the Go Host only, not the native SteamVR DLL.
-- Python release-tooling and network-discovery regression tests were updated for the simplified discovery flow; they have not yet been rerun.
-- Kotlin discovery/model code was previously compiled using local Kotlin plus minimal Android/JSON/video stubs. This is a source/type check, not a full Android application build.
-- GitHub Actions workflow YAML (CI, release and SteamVR driver) parsed successfully before this cleanup.
-- Full Android Gradle/APK build remains unverified. Gradle Wrapper could not download Gradle 9.6.1 in the prior environment because `services.gradle.org` DNS/network access was unavailable.
-- Full Windows MSVC SteamVR driver build remains unverified here. The reported `ID3D11Multithread` C2065 is addressed by including the Windows SDK header `<d3d11_4.h>`; rerun the native build with the Visual Studio toolchain to confirm.
-- Full end-to-end LAN discovery, hardware H.264 encoder initialization and Android MediaCodec rendering still require testing with the target Windows PC and phone.
+## Verification status
+
+- Source-level validation: performed in the current Linux workspace.
+- Go Host and Python integration tests: unchanged by this driver-only diagnostic patch; rerun before release.
+- Windows x64 MSVC / SteamVR driver build: not run here because this environment does not have the Windows SDK and MSVC toolchain.
+- SteamVR runtime callback verification: requires deploying this diagnostic driver on the target PC.
+
+The version is intentionally identifiable as `PhoneVR 0.4.19 DisplayRedirect diagnostics SteamVR driver initialized` in `vrserver.txt`. Do not infer that the streaming path is fixed from a successful driver build. The purpose of this build is to show whether SteamVR requests and receives `IVRVirtualDisplay_002`.

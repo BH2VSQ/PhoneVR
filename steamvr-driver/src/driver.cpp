@@ -526,7 +526,16 @@ public:
     }
     void EnterStandby() override {}
     void* GetComponent(const char* nameAndVersion) override {
-        if (nameAndVersion && std::strcmp(nameAndVersion, vr::IVRDisplayComponent_Version) == 0) return &m_display;
+        const bool displayMatch = nameAndVersion &&
+            _stricmp(nameAndVersion, vr::IVRDisplayComponent_Version) == 0;
+        if (vr::VRDriverLog() && !m_loggedGetComponent.exchange(true, std::memory_order_relaxed)) {
+            char line[224]{};
+            std::snprintf(line, sizeof(line),
+                          "PhoneVR: HMD GetComponent first query='%s' display-component-match=%s",
+                          nameAndVersion ? nameAndVersion : "<null>", displayMatch ? "yes" : "no");
+            vr::VRDriverLog()->Log(line);
+        }
+        if (displayMatch) return static_cast<void*>(static_cast<vr::IVRDisplayComponent*>(&m_display));
         return nullptr;
     }
     void DebugRequest(const char*, char* response, uint32_t size) override {
@@ -663,6 +672,7 @@ private:
     }
 
     std::atomic<uint32_t> m_objectId{vr::k_unTrackedDeviceIndexInvalid};
+    std::atomic<bool> m_loggedGetComponent{false};
     PoseReceiver m_receiver;
     HmdDisplay m_display;
     std::thread m_posePublisherThread;
@@ -1351,24 +1361,50 @@ public:
             if (vr::VRDriverLog()) vr::VRDriverLog()->Log("PhoneVR: virtual display capture initialization failed; display redirect is inactive");
             return vr::VRInitError_Driver_Unknown;
         }
-        m_active = true;
         const auto container = vr::VRProperties()->TrackedDeviceToPropertyContainer(objectId);
         auto* properties = vr::VRProperties();
-        properties->SetStringProperty(container, vr::Prop_TrackingSystemName_String, "phonevr");
-        properties->SetStringProperty(container, vr::Prop_ModelNumber_String, "PhoneVR Wireless Display Redirect");
-        properties->SetStringProperty(container, vr::Prop_SerialNumber_String, "PHONEVR-DISPLAY-001");
-        properties->SetStringProperty(container, vr::Prop_RegisteredDeviceType_String, "phonevr/phonevr_display_redirect");
-        properties->SetBoolProperty(container, vr::Prop_HasVirtualDisplayComponent_Bool, true);
-        properties->SetUint64Property(container, vr::Prop_GraphicsAdapterLuid_Uint64, adapterLuid);
+        const auto trackingSystemResult = properties->SetStringProperty(container, vr::Prop_TrackingSystemName_String, "phonevr");
+        const auto modelResult = properties->SetStringProperty(container, vr::Prop_ModelNumber_String, "PhoneVR Wireless Display Redirect");
+        const auto serialResult = properties->SetStringProperty(container, vr::Prop_SerialNumber_String, "PHONEVR-DISPLAY-001");
+        const auto typeResult = properties->SetStringProperty(container, vr::Prop_RegisteredDeviceType_String, "phonevr/phonevr_display_redirect");
+        const auto virtualDisplayResult = properties->SetBoolProperty(container, vr::Prop_HasVirtualDisplayComponent_Bool, true);
+        const auto adapterResult = properties->SetUint64Property(container, vr::Prop_GraphicsAdapterLuid_Uint64, adapterLuid);
+        m_active.store(true, std::memory_order_release);
+        if (vr::VRDriverLog()) {
+            char line[512]{};
+            std::snprintf(line, sizeof(line),
+                          "PhoneVR: DisplayRedirect Activate succeeded objectId=%u adapterLuid=0x%016llX property-results tracking=%d model=%d serial=%d type=%d hasVirtualDisplay=%d adapterLuid=%d",
+                          objectId, static_cast<unsigned long long>(adapterLuid),
+                          static_cast<int>(trackingSystemResult), static_cast<int>(modelResult),
+                          static_cast<int>(serialResult), static_cast<int>(typeResult),
+                          static_cast<int>(virtualDisplayResult), static_cast<int>(adapterResult));
+            vr::VRDriverLog()->Log(line);
+        }
         return vr::VRInitError_None;
     }
-    void Deactivate() override { m_active = false; m_display.Shutdown(); }
+    void Deactivate() override { m_active.store(false, std::memory_order_release); m_display.Shutdown(); }
     void EnterStandby() override {}
-    bool IsActive() const { return m_active; }
+    bool IsActive() const { return m_active.load(std::memory_order_acquire); }
     uint64_t PresentCounter() const { return m_display.PresentCounter(); }
+    uint64_t ComponentQueryCount() const { return m_componentQueries.load(std::memory_order_relaxed); }
+    uint64_t ComponentMatchCount() const { return m_componentMatches.load(std::memory_order_relaxed); }
     VirtualDisplayTimingSnapshot TakeTimingSnapshot() { return m_display.TakeTimingSnapshot(); }
     void* GetComponent(const char* nameAndVersion) override {
-        if (nameAndVersion && std::strcmp(nameAndVersion, vr::IVRVirtualDisplay_Version) == 0) return &m_display;
+        m_componentQueries.fetch_add(1, std::memory_order_relaxed);
+        const bool virtualDisplayMatch = nameAndVersion &&
+            _stricmp(nameAndVersion, vr::IVRVirtualDisplay_Version) == 0;
+        if (virtualDisplayMatch) m_componentMatches.fetch_add(1, std::memory_order_relaxed);
+        if (vr::VRDriverLog() && !m_loggedGetComponent.exchange(true, std::memory_order_relaxed)) {
+            char line[256]{};
+            std::snprintf(line, sizeof(line),
+                          "PhoneVR: DisplayRedirect GetComponent first query='%s' expected='%s' match=%s",
+                          nameAndVersion ? nameAndVersion : "<null>",
+                          vr::IVRVirtualDisplay_Version, virtualDisplayMatch ? "yes" : "no");
+            vr::VRDriverLog()->Log(line);
+        }
+        if (virtualDisplayMatch) {
+            return static_cast<void*>(static_cast<vr::IVRVirtualDisplay*>(&m_display));
+        }
         return nullptr;
     }
     void DebugRequest(const char*, char* response, uint32_t size) override { if (response && size) response[0] = '\0'; }
@@ -1384,7 +1420,10 @@ public:
     }
 private:
     VirtualDisplayComponent m_display;
-    bool m_active = false;
+    std::atomic<bool> m_active{false};
+    std::atomic<bool> m_loggedGetComponent{false};
+    std::atomic<uint64_t> m_componentQueries{0};
+    std::atomic<uint64_t> m_componentMatches{0};
 };
 
 class PhoneVRProvider final : public vr::IServerTrackedDeviceProvider {
@@ -1403,7 +1442,7 @@ public:
         if (!host->TrackedDeviceAdded("PHONEVR-DISPLAY-001", vr::TrackedDeviceClass_DisplayRedirect, m_redirect)) {
             Cleanup(); return vr::VRInitError_Driver_Unknown;
         }
-        if (vr::VRDriverLog()) vr::VRDriverLog()->Log("PhoneVR 0.4.19 SteamVR driver initialized");
+        if (vr::VRDriverLog()) vr::VRDriverLog()->Log("PhoneVR 0.4.19 DisplayRedirect diagnostics SteamVR driver initialized");
         return vr::VRInitError_None;
     }
     void Cleanup() override {
@@ -1423,7 +1462,10 @@ public:
             const auto timing = m_redirect->TakeTimingSnapshot();
             char line[384]{};
             std::snprintf(line, sizeof(line),
-                          "PhoneVR: virtual display Present=%.1fHz WaitForPresent=%.1fHz completed=%.1fHz max-Present=%.2fms max-WaitForPresent=%.2fms refresh=%.1fHz",
+                          "PhoneVR: virtual display active=%s GetComponent=%llu/%llu Present=%.1fHz WaitForPresent=%.1fHz completed=%.1fHz max-Present=%.2fms max-WaitForPresent=%.2fms refresh=%.1fHz",
+                          m_redirect->IsActive() ? "yes" : "no",
+                          static_cast<unsigned long long>(m_redirect->ComponentQueryCount()),
+                          static_cast<unsigned long long>(m_redirect->ComponentMatchCount()),
                           timing.presentCalls / intervalSeconds, timing.waitCalls / intervalSeconds,
                           timing.completedFrames / intervalSeconds,
                           timing.maxPresentNs / 1.0e6, timing.maxWaitNs / 1.0e6,

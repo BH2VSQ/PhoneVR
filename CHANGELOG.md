@@ -1,3 +1,11 @@
+## 0.4.19 - SteamVR DisplayRedirect diagnostic refresh
+
+- Added one-time `GetComponent` request logging for the HMD and DisplayRedirect devices, including requested and expected OpenVR interface versions.
+- Added DisplayRedirect activation logging with tracked-device object index, selected graphics-adapter LUID and every display-related property write result.
+- Added cumulative DisplayRedirect `GetComponent` query/match counters and the active state to the five-second virtual-display telemetry.
+- Made the DisplayRedirect active flag atomic and changed interface-name comparisons to case-insensitive matching.
+- This is a diagnostic driver revision. Native MSVC compilation and SteamVR runtime validation are still required on the target Windows machine.
+
 ## 0.4.19 - USB tethered streaming and D3D11 build fix
 
 - Fixed the MSVC C2065 build failure by including the Windows SDK `d3d11_4.h` header that declares `ID3D11Multithread`.

@@ -152,6 +152,9 @@ const (
 	cbDropDownList      = 0x0003
 	lbnSelChange        = 1
 	cbnSelChange        = 1
+	lbnDblClk           = 2
+	wmNcHitTest         = 0x0084
+	htCaption           = 2
 	swShow              = 5
 	swShowNoActivate    = 4
 	swHide              = 0
@@ -215,12 +218,13 @@ const (
 
 const (
 	idCenter       = 100
-	idSettings     = 101
+	idSettings     = 101 // Retained internally for the preset editor; no longer shown in the main menu.
 	idPresets      = 102
 	idNetwork      = 103
 	idLogs         = 104
 	idLanguage     = 105
 	idMenu         = 106
+	idAppearance   = 107
 	idProfile      = 200
 	idApply        = 201
 	idDialogCenter = 202
@@ -232,6 +236,12 @@ const (
 	idPresetRename = 304
 	idPresetDelete = 305
 	idPresetApply  = 306
+	idPresetEdit   = 307
+	idPresetNew    = 308
+	idThemeMode    = 600
+	idThemeAccent  = 601
+	idThemePalette = 603
+	idThemeApply   = 602
 	idNetworkApply = 400
 	idNetworkStop  = 401
 	idNetworkStart = 402
@@ -316,6 +326,7 @@ type nativeHitTarget struct {
 
 type nativeDialog struct {
 	kind            string
+	presetID        string
 	hwnd            uintptr
 	controls        map[int]uintptr
 	labels          map[int]uintptr
@@ -330,42 +341,47 @@ type nativeDialog struct {
 	viewHeight      int
 }
 type nativeUI struct {
-	service          *HostService
-	config           HostConfig
-	mainHWnd         uintptr
-	glHWnd           uintptr
-	glDC             uintptr
-	glRC             uintptr
-	modelList        uintptr
-	model            *nativeHeadsetModel
-	pose             PoseFrameSnapshot
-	snapshot         HostSnapshot
-	statusHost       uintptr
-	statusSteam      uintptr
-	statusHMD        uintptr
-	battery          uintptr
-	yaw              uintptr
-	pitch            uintptr
-	roll             uintptr
-	buttons          map[int]uintptr
-	dialogs          map[uintptr]*nativeDialog
-	currentSettings  PhoneDisplaySettings
-	language         string
-	languageButton   uintptr
-	background       uintptr
-	dialogBackground uintptr
-	editBackground   uintptr
-	buttonBackground uintptr
-	fontBody         uintptr
-	fontSmall        uintptr
-	fontValue        uintptr
-	fontTitle        uintptr
-	gdiplusToken     uintptr
-	hitTargets       []nativeHitTarget
-	menuHWnd         uintptr
-	menuOpen         bool
-	lastRender       time.Time
-	lastStatus       time.Time
+	service           *HostService
+	config            HostConfig
+	mainHWnd          uintptr
+	glHWnd            uintptr
+	glDC              uintptr
+	glRC              uintptr
+	modelList         uintptr
+	model             *nativeHeadsetModel
+	pose              PoseFrameSnapshot
+	snapshot          HostSnapshot
+	statusHost        uintptr
+	statusSteam       uintptr
+	statusHMD         uintptr
+	battery           uintptr
+	yaw               uintptr
+	pitch             uintptr
+	roll              uintptr
+	buttons           map[int]uintptr
+	dialogs           map[uintptr]*nativeDialog
+	currentSettings   PhoneDisplaySettings
+	phonePresets      []OpticalPreset
+	pendingPresetID   string
+	pendingPresetName string
+	pendingPreset     *OpticalPreset
+	themeConfig       NativeThemeConfig
+	language          string
+	languageButton    uintptr
+	background        uintptr
+	dialogBackground  uintptr
+	editBackground    uintptr
+	buttonBackground  uintptr
+	fontBody          uintptr
+	fontSmall         uintptr
+	fontValue         uintptr
+	fontTitle         uintptr
+	gdiplusToken      uintptr
+	hitTargets        []nativeHitTarget
+	menuHWnd          uintptr
+	menuOpen          bool
+	lastRender        time.Time
+	lastStatus        time.Time
 }
 
 var activeNativeUI *nativeUI
@@ -381,7 +397,7 @@ func runNativeDesktopApp(service *HostService, config HostConfig) error {
 	if result, _, _ := pSetProcessDpiAwarenessContext.Call(^uintptr(3)); result == 0 {
 		pSetProcessDPIAware.Call()
 	}
-	app := &nativeUI{service: service, config: config, dialogs: make(map[uintptr]*nativeDialog), buttons: make(map[int]uintptr), currentSettings: DefaultPhoneDisplaySettings(), language: loadNativeLanguage()}
+	app := &nativeUI{service: service, config: config, dialogs: make(map[uintptr]*nativeDialog), buttons: make(map[int]uintptr), currentSettings: DefaultPhoneDisplaySettings(), phonePresets: nativePresetDefaults(), themeConfig: loadNativeThemeConfig(), language: loadNativeLanguage()}
 	app.fontBody = createNativeFont("Segoe UI", 18, 400)
 	app.fontSmall = createNativeFont("Segoe UI", 14, 600)
 	app.fontValue = createNativeFont("Consolas", 28, 700)
@@ -406,10 +422,7 @@ func runNativeDesktopApp(service *HostService, config HostConfig) error {
 	}()
 	instance, _, _ := pGetModuleHandle.Call(0)
 	cursor, _, _ := pLoadCursor.Call(0, idcArrow)
-	app.background, _, _ = pCreateSolidBrush.Call(rgb(9, 17, 27))
-	app.dialogBackground, _, _ = pCreateSolidBrush.Call(rgb(16, 29, 42))
-	app.editBackground, _, _ = pCreateSolidBrush.Call(rgb(9, 21, 33))
-	app.buttonBackground, _, _ = pCreateSolidBrush.Call(rgb(20, 38, 56))
+	app.rebuildThemeBrushes()
 	if err := registerNativeClass(instance, cursor, "PhoneVRNativeMain", nativeWndProcCallback, app.background); err != nil {
 		return err
 	}
@@ -700,6 +713,15 @@ func nativeDialogWndProc(hwnd uintptr, message uint32, wParam, lParam uintptr) u
 	}
 	dialog := app.dialogs[hwnd]
 	switch message {
+	case wmNcHitTest:
+		if dialog != nil {
+			var bounds nativeRect
+			pGetWindowRect.Call(hwnd, uintptr(unsafe.Pointer(&bounds)))
+			screenY := int(int16((lParam >> 16) & 0xffff))
+			if screenY-int(bounds.Top) >= 0 && screenY-int(bounds.Top) < 72 {
+				return htCaption
+			}
+		}
 	case wmSize:
 		if dialog != nil {
 			app.layoutDialog(dialog)
@@ -743,7 +765,22 @@ func nativeDialogWndProc(hwnd uintptr, message uint32, wParam, lParam uintptr) u
 		return 0
 	case wmCommand:
 		if dialog != nil {
-			app.handleDialogCommand(dialog, int(wParam&0xffff))
+			commandID := int(wParam & 0xffff)
+			notification := int((wParam >> 16) & 0xffff)
+			if dialog.kind == "presets" && commandID == idPresetList && notification == lbnDblClk {
+				index := int(sendNativeMessage(dialog.controls[idPresetList], 0x0188, 0, 0))
+				app.openPresetEditor(dialog, index)
+				return 0
+			}
+			if dialog.kind == "appearance" && commandID == idThemePalette && notification == cbnSelChange {
+				index := int(sendNativeMessage(dialog.controls[idThemePalette], 0x0147, 0, 0))
+				colors := []string{"#5BCEFA", "#F5A9B8", "#B39DDB", "#80CBC4", "#FFCC80"}
+				if index >= 0 && index < len(colors) {
+					setNativeText(dialog.controls[idThemeAccent], colors[index])
+				}
+				return 0
+			}
+			app.handleDialogCommand(dialog, commandID)
 		}
 		return 0
 	case wmDrawItem:
@@ -887,9 +924,33 @@ func (app *nativeUI) refreshPoseFrame() {
 }
 func (app *nativeUI) refreshStatusSnapshot() {
 	app.snapshot = app.service.Snapshot()
-	if len(app.snapshot.ConnectedDevices) > 0 && app.snapshot.ConnectedDevices[len(app.snapshot.ConnectedDevices)-1].DisplaySettings != nil {
-		app.currentSettings = *app.snapshot.ConnectedDevices[len(app.snapshot.ConnectedDevices)-1].DisplaySettings
+	if len(app.snapshot.ConnectedDevices) > 0 {
+		device := app.snapshot.ConnectedDevices[len(app.snapshot.ConnectedDevices)-1]
+		if device.DisplaySettings != nil {
+			app.currentSettings = *device.DisplaySettings
+		}
+		if len(device.OpticalPresets) > 0 && !sameOpticalPresets(app.phonePresets, device.OpticalPresets) {
+			app.phonePresets = append([]OpticalPreset(nil), device.OpticalPresets...)
+			for _, dialog := range app.dialogs {
+				if dialog.kind == "presets" {
+					dialog.presets = append([]OpticalPreset(nil), app.phonePresets...)
+					app.refreshPresetList(dialog)
+				}
+			}
+		}
 	}
+}
+
+func sameOpticalPresets(a, b []OpticalPreset) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i].ID != b[i].ID || a[i].Name != b[i].Name || a[i].Builtin != b[i].Builtin || a[i].Settings != b[i].Settings {
+			return false
+		}
+	}
+	return true
 }
 func (app *nativeUI) updateStatusControls() {
 	if app.mainHWnd != 0 {
@@ -911,9 +972,9 @@ type nativeMenuItem struct {
 func (app *nativeUI) mainMenuItems() []nativeMenuItem {
 	return []nativeMenuItem{
 		{ID: idCenter, Chinese: "视角居中", English: "Center View"},
-		{ID: idSettings, Chinese: "手机显示参数", English: "Phone Display"},
 		{ID: idPresets, Chinese: "光学预设", English: "Optical Presets"},
 		{ID: idNetwork, Chinese: "网络设置", English: "Network"},
+		{ID: idAppearance, Chinese: "外观与主题", English: "Appearance & Theme"},
 		{ID: idLogs, Chinese: "运行日志", English: "Logs"},
 		{ID: idLanguage, Chinese: "切换为 English", English: "Switch to 中文"},
 	}
@@ -935,7 +996,7 @@ func (app *nativeUI) toggleMainMenu() {
 
 	var mainRect nativeRect
 	pGetWindowRect.Call(app.mainHWnd, uintptr(unsafe.Pointer(&mainRect)))
-	const menuWidth, menuHeight = 292, 404
+	const menuWidth, menuHeight = 292, 452
 	x := int(mainRect.Right) - menuWidth - 14
 	y := int(mainRect.Top) + 54
 	screenWidth, _, _ := pGetSystemMetrics.Call(0)
@@ -988,7 +1049,9 @@ func (app *nativeUI) handleMainCommand(id int) {
 			app.messageBox(err.Error(), "PhoneVR")
 		}
 	case idSettings:
-		app.openDialog("settings")
+		app.openDialog("presets")
+	case idAppearance:
+		app.openDialog("appearance")
 	case idPresets:
 		app.openDialog("presets")
 	case idNetwork:
@@ -998,6 +1061,34 @@ func (app *nativeUI) handleMainCommand(id int) {
 	case idLanguage:
 		app.toggleLanguage()
 	}
+}
+
+func (app *nativeUI) openPresetEditor(listDialog *nativeDialog, index int) {
+	preset := OpticalPreset{ID: "", Name: app.text("新建预设", "New Preset"), Settings: app.currentSettings.Normalized()}
+	if listDialog != nil && index >= 0 && index < len(listDialog.presets) {
+		preset = listDialog.presets[index]
+	}
+	// Keep a single editor instance so a second double-click always opens the
+	// newly selected preset rather than reusing stale fields.
+	for hwnd, existing := range app.dialogs {
+		if existing.kind == "settings" {
+			pDestroyWindow.Call(hwnd)
+		}
+	}
+	app.pendingPreset = &preset
+	app.pendingPresetName = preset.Name
+	app.openDialog("settings")
+}
+
+func (app *nativeUI) syncPhoneOpticalPresets(d *nativeDialog) error {
+	presets := normalizeOpticalPresets(d.presets)
+	if err := app.service.SendPhoneOpticalPresets(presets); err != nil {
+		return err
+	}
+	app.phonePresets = append([]OpticalPreset(nil), presets...)
+	d.presets = append([]OpticalPreset(nil), presets...)
+	app.refreshPresetList(d)
+	return nil
 }
 
 func (app *nativeUI) openDialog(kind string) {
@@ -1010,13 +1101,15 @@ func (app *nativeUI) openDialog(kind string) {
 	width, height, title := 760, 560, "PhoneVR"
 	switch kind {
 	case "settings":
-		width, height, title = 980, 760, app.text("手机显示参数", "Phone Display Settings")
+		width, height, title = 980, 760, app.text("编辑光学预设", "Edit Optical Preset")
 	case "presets":
 		width, height, title = 900, 660, app.text("光学预设", "Optical Presets")
 	case "network":
 		width, height, title = 760, 560, app.text("网络设置", "Network Settings")
 	case "logs":
 		width, height, title = 980, 680, app.text("运行日志", "Runtime Logs")
+	case "appearance":
+		width, height, title = 660, 460, app.text("外观与主题", "Appearance & Theme")
 	}
 	instance, _, _ := pGetModuleHandle.Call(0)
 	class, _ := syscall.UTF16PtrFromString("PhoneVRNativeDialog")
@@ -1031,13 +1124,24 @@ func (app *nativeUI) openDialog(kind string) {
 	y := int(ownerRect.Top) + (int(ownerRect.Bottom-ownerRect.Top)-height)/2
 	x = clampInt(x, 8, maxInt(8, int(screenWidth)-width-8))
 	y = clampInt(y, 8, maxInt(8, int(screenHeight)-height-8))
-	style := uintptr(wsOverlapped | wsCaption | wsSysMenu | wsThickFrame | wsMaximizeBox | wsVScroll | wsVisible | wsClipChildren)
+	// Custom-drawn title area: deliberately omit WS_CAPTION and WS_SYSMENU so
+	// Windows does not paint a mixed light/dark caption or a native close button.
+	style := uintptr(wsPopup | wsThickFrame | wsVisible | wsClipChildren)
+	if kind == "settings" || kind == "network" {
+		style |= wsVScroll
+	}
 	hwnd, _, err := pCreateWindowEx.Call(0, uintptr(unsafe.Pointer(class)), uintptr(unsafe.Pointer(titlePtr)), style, uintptr(x), uintptr(y), uintptr(width), uintptr(height), app.mainHWnd, 0, instance, 0)
 	if hwnd == 0 {
 		app.messageBox(fmt.Sprintf("无法打开窗口：%v", err), "PhoneVR")
 		return
 	}
 	dialog := &nativeDialog{kind: kind, hwnd: hwnd, controls: make(map[int]uintptr), labels: make(map[int]uintptr), settings: app.currentSettings, config: app.config}
+	if kind == "settings" && app.pendingPreset != nil {
+		dialog.presetID = app.pendingPreset.ID
+		dialog.settings = app.pendingPreset.Settings.Normalized()
+		app.pendingPresetName = app.pendingPreset.Name
+		app.pendingPreset = nil
+	}
 	app.dialogs[hwnd] = dialog
 	app.applyDarkWindow(hwnd)
 	app.createDialogControls(dialog)
@@ -1070,17 +1174,8 @@ func (app *nativeUI) createDialogControls(d *nativeDialog) {
 
 	switch d.kind {
 	case "settings":
-		addLabel(d.hwnd, 0, app.text("光学配置", "VIEWER PROFILE"))
-		combo := app.createControl(d.hwnd, "COMBOBOX", "", wsChild|wsVisible|wsTabStop|cbDropDownList|wsVScroll, 0, 0, 280, 220, idProfile)
-		d.controls[idProfile] = combo
-		app.addComboItem(combo, app.text("自定义", "Custom"))
-		app.addComboItem(combo, "Daydream View 2017")
-		profileIndex := uintptr(0)
-		if d.settings.ViewerProfileID == "daydream_view_2017" {
-			profileIndex = 1
-		}
-		pSendMessage.Call(combo, 0x014E, profileIndex, 0)
-
+		addLabel(d.hwnd, 0, app.text("预设名称", "PRESET NAME"))
+		addEdit(d.hwnd, idPresetName, app.pendingPresetName)
 		viewport := addViewport()
 		fields := []struct {
 			id    int
@@ -1104,14 +1199,17 @@ func (app *nativeUI) createDialogControls(d *nativeDialog) {
 			addEdit(viewport, field.id, strconv.FormatFloat(float64(field.value), 'f', 3, 32))
 		}
 		d.status = app.createControl(d.hwnd, "STATIC", "", wsChild|wsVisible, 0, 0, 10, 10, 0)
-		addButton(idApply, app.text("推送到手机", "Apply to Phone"))
-		addButton(idDialogCenter, app.text("视角居中", "Center View"))
+		addButton(idApply, app.text("保存预设到手机", "Save Preset to Phone"))
+		addButton(idPresetApply, app.text("保存并应用", "Save & Apply"))
 		addButton(idClose, app.text("关闭", "Close"))
 
 	case "presets":
-		addLabel(d.hwnd, 0, app.text("已保存的预设", "SAVED PRESETS"))
+		addLabel(d.hwnd, 0, app.text("手机中的光学预设", "PHONE OPTICAL PRESETS"))
 		addLabel(d.hwnd, 1, app.text("预设名称", "PRESET NAME"))
-		d.presets = loadNativePresets()
+		d.presets = append([]OpticalPreset(nil), app.phonePresets...)
+		if len(d.presets) == 0 {
+			d.presets = nativePresetDefaults()
+		}
 		list := app.createControl(d.hwnd, "LISTBOX", "", wsChild|wsVisible|wsBorder|wsVScroll|wsTabStop, 0, 0, 10, 10, idPresetList)
 		d.controls[idPresetList] = list
 		for _, preset := range d.presets {
@@ -1121,12 +1219,49 @@ func (app *nativeUI) createDialogControls(d *nativeDialog) {
 			pSendMessage.Call(list, 0x0186, 0, 0)
 		}
 		addEdit(d.hwnd, idPresetName, "")
-		addButton(idPresetApply, app.text("应用到手机", "Apply to Phone"))
-		addButton(idPresetSave, app.text("保存当前参数", "Save Current"))
+		addButton(idPresetApply, app.text("应用选中预设", "Apply Selected"))
+		addButton(idPresetEdit, app.text("编辑预设", "Edit Preset"))
+		addButton(idPresetNew, app.text("新建预设", "New Preset"))
 		addButton(idPresetClone, app.text("克隆预设", "Clone Preset"))
 		addButton(idPresetRename, app.text("重命名", "Rename"))
 		addButton(idPresetDelete, app.text("删除预设", "Delete Preset"))
 		d.status = app.createControl(d.hwnd, "STATIC", "", wsChild|wsVisible, 0, 0, 10, 10, 0)
+		addButton(idClose, app.text("关闭", "Close"))
+
+	case "appearance":
+		addLabel(d.hwnd, 0, app.text("界面模式", "INTERFACE MODE"))
+		mode := app.createControl(d.hwnd, "COMBOBOX", "", wsChild|wsVisible|wsTabStop|cbDropDownList|wsVScroll, 0, 0, 10, 10, idThemeMode)
+		d.controls[idThemeMode] = mode
+		app.addComboItem(mode, app.text("夜间模式", "Dark mode"))
+		app.addComboItem(mode, app.text("日间模式", "Light mode"))
+		selectedMode := uintptr(0)
+		if app.themeConfig.Mode == "light" {
+			selectedMode = 1
+		}
+		pSendMessage.Call(mode, 0x014E, selectedMode, 0)
+		addLabel(d.hwnd, 1, app.text("主题强调色（HEX）", "ACCENT COLOR (HEX)"))
+		addEdit(d.hwnd, idThemeAccent, app.themeConfig.AccentHex)
+		addLabel(d.hwnd, 2, app.text("快速配色", "COLOR PRESETS"))
+		palette := app.createControl(d.hwnd, "COMBOBOX", "", wsChild|wsVisible|wsTabStop|cbDropDownList|wsVScroll, 0, 0, 10, 10, idThemePalette)
+		d.controls[idThemePalette] = palette
+		paletteOptions := []struct{ label, hex string }{
+			{app.text("天空蓝 · #5BCEFA", "Sky Blue · #5BCEFA"), "#5BCEFA"},
+			{app.text("樱花粉 · #F5A9B8", "Sakura Pink · #F5A9B8"), "#F5A9B8"},
+			{app.text("薰衣草紫 · #B39DDB", "Lavender · #B39DDB"), "#B39DDB"},
+			{app.text("薄荷绿 · #80CBC4", "Mint · #80CBC4"), "#80CBC4"},
+			{app.text("暖琥珀 · #FFCC80", "Amber · #FFCC80"), "#FFCC80"},
+			{app.text("自定义 HEX", "Custom HEX"), ""},
+		}
+		selectedPalette := len(paletteOptions) - 1
+		for index, option := range paletteOptions {
+			app.addComboItem(palette, option.label)
+			if option.hex != "" && strings.EqualFold(option.hex, app.themeConfig.AccentHex) {
+				selectedPalette = index
+			}
+		}
+		pSendMessage.Call(palette, 0x014E, uintptr(selectedPalette), 0)
+		d.status = app.createControl(d.hwnd, "STATIC", app.text("可选预设色或输入自定义 #RRGGBB", "Choose a preset or enter a custom #RRGGBB value"), wsChild|wsVisible, 0, 0, 10, 10, 0)
+		addButton(idThemeApply, app.text("应用主题", "Apply Theme"))
 		addButton(idClose, app.text("关闭", "Close"))
 
 	case "network":
@@ -1179,10 +1314,10 @@ func (app *nativeUI) layoutDialog(d *nativeDialog) {
 	switch d.kind {
 	case "settings":
 		margin := 22
-		move(d.labels[0], margin, 86, 142, 28)
-		move(d.controls[idProfile], margin+148, 82, minInt(360, w-2*margin-148), 36)
+		move(d.labels[0], margin, 86, 142, 26)
+		move(d.controls[idPresetName], margin+148, 82, minInt(420, w-2*margin-148), 36)
 		footerTop := h - 82
-		viewportTop := 128
+		viewportTop := 132
 		viewportHeight := maxInt(96, footerTop-viewportTop-10)
 		move(d.viewport, 16, viewportTop, w-32, viewportHeight)
 
@@ -1210,10 +1345,10 @@ func (app *nativeUI) layoutDialog(d *nativeDialog) {
 		d.viewHeight = viewportHeight
 		d.scrollOffset = clampInt(d.scrollOffset, 0, maxInt(0, d.contentHeight-d.viewHeight))
 		app.updateDialogScroll(d)
-
-		move(d.status, margin, h-78, w-2*margin, 24)
-		move(d.controls[idApply], margin, h-46, 166, 38)
-		move(d.controls[idDialogCenter], margin+178, h-46, 148, 38)
+		move(d.status, margin, h-78, maxInt(140, w-2*margin-420), 24)
+		buttonWidth := 170
+		move(d.controls[idApply], margin, h-46, buttonWidth, 38)
+		move(d.controls[idPresetApply], margin+buttonWidth+10, h-46, buttonWidth, 38)
 		move(d.controls[idClose], w-margin-116, h-46, 116, 38)
 
 	case "presets":
@@ -1222,18 +1357,32 @@ func (app *nativeUI) layoutDialog(d *nativeDialog) {
 		leftWidth := maxInt(260, int(float64(w-3*margin)*0.48))
 		rightX := margin + leftWidth + 24
 		rightWidth := maxInt(220, w-rightX-margin)
-		move(d.labels[0], margin, 88, leftWidth, 26)
-		move(d.controls[idPresetList], margin, 118, leftWidth, maxInt(160, footerY-132))
-		move(d.labels[1], rightX, 88, rightWidth, 24)
-		move(d.controls[idPresetName], rightX, 116, rightWidth, 38)
+		move(d.labels[0], margin, 86, leftWidth, 26)
+		move(d.controls[idPresetList], margin, 116, leftWidth, maxInt(160, footerY-130))
+		move(d.labels[1], rightX, 86, rightWidth, 24)
+		move(d.controls[idPresetName], rightX, 114, rightWidth, 38)
+		move(d.controls[idPresetApply], rightX, 166, rightWidth, 40)
 		actionWidth := minInt(178, (rightWidth-10)/2)
-		move(d.controls[idPresetApply], rightX, 170, rightWidth, 40)
-		move(d.controls[idPresetSave], rightX, 220, rightWidth, 40)
-		move(d.controls[idPresetClone], rightX, 270, actionWidth, 40)
-		move(d.controls[idPresetRename], rightX+actionWidth+10, 270, actionWidth, 40)
-		move(d.controls[idPresetDelete], rightX, 320, rightWidth, 40)
+		move(d.controls[idPresetEdit], rightX, 216, actionWidth, 40)
+		move(d.controls[idPresetNew], rightX+actionWidth+10, 216, actionWidth, 40)
+		move(d.controls[idPresetClone], rightX, 266, actionWidth, 40)
+		move(d.controls[idPresetRename], rightX+actionWidth+10, 266, actionWidth, 40)
+		move(d.controls[idPresetDelete], rightX, 316, rightWidth, 40)
 		move(d.status, margin, h-70, w-2*margin-130, 28)
 		move(d.controls[idClose], w-margin-116, h-48, 116, 38)
+
+	case "appearance":
+		margin := 28
+		fieldWidth := minInt(320, w-2*margin-220)
+		move(d.labels[0], margin, 112, 210, 28)
+		move(d.controls[idThemeMode], margin+220, 106, fieldWidth, 38)
+		move(d.labels[1], margin, 176, 210, 28)
+		move(d.controls[idThemeAccent], margin+220, 170, fieldWidth, 38)
+		move(d.labels[2], margin, 240, 210, 28)
+		move(d.controls[idThemePalette], margin+220, 234, fieldWidth, 38)
+		move(d.status, margin, 286, w-2*margin, 30)
+		move(d.controls[idThemeApply], margin, h-54, 180, 40)
+		move(d.controls[idClose], w-margin-116, h-54, 116, 40)
 
 	case "network":
 		margin := 22
@@ -1382,29 +1531,36 @@ func (app *nativeUI) paintDialog(d *nativeDialog, hdc uintptr) {
 	if w <= 0 || h <= 0 {
 		return
 	}
-	fillNativeRect(hdc, nativeRect{0, 0, int32(w), int32(h)}, rgb(9, 17, 27))
+	p := app.palette()
+	fillNativeRect(hdc, nativeRect{0, 0, int32(w), int32(h)}, p.Background)
 	title, subtitle := "PhoneVR", ""
 	switch d.kind {
 	case "settings":
-		title = app.text("手机显示参数", "Phone Display")
-		subtitle = app.text("根据旧手机屏幕与镜片组合校准双目显示", "Calibrate stereo display for your phone and viewer optics")
+		title = app.text("编辑光学预设", "Edit Optical Preset")
+		subtitle = app.text("修改参数后保存到手机本地预设库", "Edit parameters and save them to the phone preset library")
 	case "presets":
 		title = app.text("光学预设", "Optical Presets")
-		subtitle = app.text("保存、克隆并管理不同头显的镜片配置", "Save, clone and manage viewer calibration profiles")
+		subtitle = app.text("双击预设即可编辑；预设数据以手机本地存储为准", "Double-click a preset to edit; Android stores the authoritative preset list")
 	case "network":
 		title = app.text("网络设置", "Network Settings")
 		subtitle = app.text("配置主机监听地址与手机连接端口", "Configure host binding and phone connection ports")
 	case "logs":
 		title = app.text("运行日志", "Runtime Logs")
 		subtitle = app.text("查看主机连接、姿态数据与控制指令事件", "Inspect host, tracking and control events")
+	case "appearance":
+		title = app.text("外观与主题", "Appearance & Theme")
+		subtitle = app.text("切换日间/夜间模式，并自定义界面强调色", "Choose light or dark mode and customize the interface accent")
 	}
-	drawNativeText(hdc, title, nativeRect{22, 12, int32(w - 22), 44}, rgb(228, 239, 250), app.fontTitle, dtVCenter|dtSingleLine|dtEndEllipsis|dtNoPrefix)
-	drawNativeText(hdc, subtitle, nativeRect{24, 44, int32(w - 22), 70}, rgb(125, 153, 178), app.fontSmall, dtVCenter|dtSingleLine|dtEndEllipsis|dtNoPrefix)
-	drawNativeLine(hdc, 18, 72, w-18, 72, rgb(38, 59, 80), 1)
-	drawNativeRoundRect(hdc, nativeRect{12, int32(h - 92), int32(w - 12), int32(h - 10)}, rgb(14, 26, 39), rgb(34, 54, 73), 12)
+	drawNativeText(hdc, title, nativeRect{22, 10, int32(w - 22), 42}, p.Text, app.fontTitle, dtVCenter|dtSingleLine|dtEndEllipsis|dtNoPrefix)
+	drawNativeText(hdc, subtitle, nativeRect{24, 42, int32(w - 22), 68}, p.Muted, app.fontSmall, dtVCenter|dtSingleLine|dtEndEllipsis|dtNoPrefix)
+	drawNativeLine(hdc, 18, 72, w-18, 72, p.Border, 1)
+	drawNativeRoundRect(hdc, nativeRect{12, int32(h - 92), int32(w - 12), int32(h - 10)}, p.Panel, p.Border, 12)
 	if d.kind == "presets" {
-		drawNativeRoundRect(hdc, nativeRect{14, 80, int32(w/2 + 8), int32(h - 82)}, rgb(13, 25, 38), rgb(35, 55, 75), 12)
-		drawNativeRoundRect(hdc, nativeRect{int32(w/2 + 16), 80, int32(w - 14), int32(h - 82)}, rgb(13, 25, 38), rgb(35, 55, 75), 12)
+		drawNativeRoundRect(hdc, nativeRect{14, 80, int32(w/2 + 8), int32(h - 82)}, p.Surface, p.Border, 12)
+		drawNativeRoundRect(hdc, nativeRect{int32(w/2 + 16), 80, int32(w - 14), int32(h - 82)}, p.Surface, p.Border, 12)
+	}
+	if d.kind == "appearance" {
+		drawNativeRoundRect(hdc, nativeRect{16, 84, int32(w - 16), int32(h - 74)}, p.Surface, p.Border, 12)
 	}
 }
 
@@ -1412,103 +1568,195 @@ func (app *nativeUI) handleDialogCommand(d *nativeDialog, id int) {
 	switch d.kind {
 	case "settings":
 		switch id {
-		case idApply:
+		case idApply, idPresetApply:
 			settings, err := app.readSettingsDialog(d)
 			if err != nil {
 				setNativeText(d.status, err.Error())
 				return
 			}
-			if err := app.service.SendPhoneDisplaySettings(settings); err != nil {
-				setNativeText(d.status, "推送失败："+err.Error())
+			name := strings.TrimSpace(getNativeText(d.controls[idPresetName]))
+			if name == "" {
+				setNativeText(d.status, app.text("请填写预设名称", "Enter a preset name"))
 				return
 			}
-			app.currentSettings = settings
-			d.settings = settings
-			pending := settings
-			d.pendingSettings = &pending
-			setNativeText(d.status, app.text("参数已发送，等待手机确认", "Sent; waiting for phone confirmation"))
-		case idDialogCenter:
-			if err := app.service.SendPhoneAction("center_view"); err != nil {
-				setNativeText(d.status, err.Error())
+			presetIndex := -1
+			for index := range app.phonePresets {
+				if app.phonePresets[index].ID == d.presetID {
+					presetIndex = index
+					break
+				}
+			}
+			preset := OpticalPreset{ID: d.presetID, Name: name, Settings: settings}
+			if preset.ID == "" {
+				preset.ID = newSessionID()
+			}
+			if presetIndex >= 0 {
+				preset.Builtin = app.phonePresets[presetIndex].Builtin
+				app.phonePresets[presetIndex] = preset
 			} else {
-				setNativeText(d.status, app.text("已发送视角居中指令", "Center view command sent"))
+				app.phonePresets = append(app.phonePresets, preset)
+			}
+			if err := app.service.SendPhoneOpticalPresets(app.phonePresets); err != nil {
+				setNativeText(d.status, app.text("同步失败：", "Sync failed: ")+err.Error())
+				return
+			}
+			d.presetID = preset.ID
+			d.settings = settings
+			app.currentSettings = settings
+			setNativeText(d.status, app.text("预设已保存到手机", "Preset saved to phone"))
+			if id == idPresetApply {
+				if err := app.service.ApplyPhoneOpticalPreset(preset.ID); err != nil {
+					setNativeText(d.status, app.text("应用失败：", "Apply failed: ")+err.Error())
+					return
+				}
+				setNativeText(d.status, app.text("已请求手机应用该预设", "Phone is applying this preset"))
+			}
+			for _, window := range app.dialogs {
+				if window.kind == "presets" {
+					window.presets = append([]OpticalPreset(nil), app.phonePresets...)
+					app.refreshPresetList(window)
+				}
 			}
 		case idClose:
 			pDestroyWindow.Call(d.hwnd)
 		}
+
 	case "presets":
 		switch id {
 		case idPresetApply:
 			index := int(sendNativeMessage(d.controls[idPresetList], 0x0188, 0, 0))
 			if index < 0 || index >= len(d.presets) {
-				setNativeText(d.status, "请选择预设")
+				setNativeText(d.status, app.text("请选择预设", "Select a preset"))
 				return
 			}
-			settings := d.presets[index].Settings.Normalized()
-			if err := app.service.SendPhoneDisplaySettings(settings); err != nil {
-				setNativeText(d.status, "推送失败："+err.Error())
+			if err := app.service.ApplyPhoneOpticalPreset(d.presets[index].ID); err != nil {
+				setNativeText(d.status, app.text("应用失败：", "Apply failed: ")+err.Error())
 				return
 			}
-			app.currentSettings = settings
-			pending := settings
-			d.pendingSettings = &pending
-			setNativeText(d.status, app.text("预设已发送，等待手机确认", "Preset sent; waiting for phone confirmation"))
-		case idPresetSave, idPresetClone:
+			app.currentSettings = d.presets[index].Settings.Normalized()
+			setNativeText(d.status, app.text("已发送应用指令", "Apply command sent to phone"))
+		case idPresetEdit:
+			index := int(sendNativeMessage(d.controls[idPresetList], 0x0188, 0, 0))
+			if index < 0 || index >= len(d.presets) {
+				setNativeText(d.status, app.text("请选择需要编辑的预设", "Select a preset to edit"))
+				return
+			}
+			app.openPresetEditor(d, index)
+		case idPresetNew:
+			app.openPresetEditor(d, -1)
+		case idPresetClone:
+			index := int(sendNativeMessage(d.controls[idPresetList], 0x0188, 0, 0))
+			if index < 0 || index >= len(d.presets) {
+				setNativeText(d.status, app.text("请选择需要克隆的预设", "Select a preset to clone"))
+				return
+			}
 			name := strings.TrimSpace(getNativeText(d.controls[idPresetName]))
 			if name == "" {
-				setNativeText(d.status, "请填写预设名称")
+				name = d.presets[index].Name + " Copy"
+			}
+			clone := OpticalPreset{ID: newSessionID(), Name: name, Settings: d.presets[index].Settings.Normalized()}
+			d.presets = append(d.presets, clone)
+			if err := app.syncPhoneOpticalPresets(d); err != nil {
+				setNativeText(d.status, app.text("同步失败：", "Sync failed: ")+err.Error())
 				return
 			}
-			preset := OpticalPreset{ID: newSessionID(), Name: name, Settings: app.currentSettings.Normalized()}
-			if id == idPresetClone {
-				index := int(sendNativeMessage(d.controls[idPresetList], 0x0188, 0, 0))
-				if index < 0 || index >= len(d.presets) {
-					setNativeText(d.status, "请选择需要克隆的预设")
-					return
-				}
-				preset.Settings = d.presets[index].Settings
-				preset.Name = name
-			}
-			d.presets = append(d.presets, preset)
-			app.persistNativePresets(d)
-			app.refreshPresetList(d)
-			setNativeText(d.status, "预设已保存")
+			setNativeText(d.status, app.text("预设已克隆并保存到手机", "Preset cloned and saved to phone"))
 		case idPresetRename:
 			index := int(sendNativeMessage(d.controls[idPresetList], 0x0188, 0, 0))
 			if index < 0 || index >= len(d.presets) {
-				setNativeText(d.status, "请选择预设")
+				setNativeText(d.status, app.text("请选择预设", "Select a preset"))
 				return
 			}
 			if d.presets[index].Builtin {
-				setNativeText(d.status, "内置预设不能重命名，请先克隆")
+				setNativeText(d.status, app.text("内置预设不能重命名，请先克隆", "Built-in presets cannot be renamed; clone first"))
 				return
 			}
 			name := strings.TrimSpace(getNativeText(d.controls[idPresetName]))
 			if name == "" {
-				setNativeText(d.status, "请填写新名称")
+				setNativeText(d.status, app.text("请填写新名称", "Enter a new name"))
 				return
 			}
 			d.presets[index].Name = name
-			app.persistNativePresets(d)
-			app.refreshPresetList(d)
-			setNativeText(d.status, "预设已重命名")
+			if err := app.syncPhoneOpticalPresets(d); err != nil {
+				setNativeText(d.status, app.text("同步失败：", "Sync failed: ")+err.Error())
+				return
+			}
+			setNativeText(d.status, app.text("预设已重命名并同步", "Preset renamed and synchronized"))
 		case idPresetDelete:
 			index := int(sendNativeMessage(d.controls[idPresetList], 0x0188, 0, 0))
 			if index < 0 || index >= len(d.presets) {
-				setNativeText(d.status, "请选择预设")
+				setNativeText(d.status, app.text("请选择预设", "Select a preset"))
 				return
 			}
 			if d.presets[index].Builtin {
-				setNativeText(d.status, "内置预设不能删除")
+				setNativeText(d.status, app.text("内置预设不能删除", "Built-in presets cannot be deleted"))
 				return
 			}
 			d.presets = append(d.presets[:index], d.presets[index+1:]...)
-			app.persistNativePresets(d)
-			app.refreshPresetList(d)
-			setNativeText(d.status, "预设已删除")
+			if err := app.syncPhoneOpticalPresets(d); err != nil {
+				setNativeText(d.status, app.text("同步失败：", "Sync failed: ")+err.Error())
+				return
+			}
+			setNativeText(d.status, app.text("预设已删除并同步", "Preset deleted and synchronized"))
 		case idClose:
 			pDestroyWindow.Call(d.hwnd)
 		}
+
+	case "appearance":
+		switch id {
+		case idThemeApply:
+			mode := int(sendNativeMessage(d.controls[idThemeMode], 0x0147, 0, 0))
+			accent := strings.TrimSpace(getNativeText(d.controls[idThemeAccent]))
+			if _, err := parseNativeHexColor(accent); err != nil {
+				setNativeText(d.status, app.text("颜色格式无效，请使用 #RRGGBB", "Invalid color. Use #RRGGBB"))
+				return
+			}
+			config := NativeThemeConfig{Mode: "dark", AccentHex: strings.ToUpper(accent)}
+			if mode == 1 {
+				config.Mode = "light"
+			}
+			if err := saveNativeThemeConfig(config); err != nil {
+				setNativeText(d.status, err.Error())
+				return
+			}
+			app.themeConfig = config
+			app.rebuildThemeBrushes()
+			if app.mainHWnd != 0 {
+				app.applyDarkWindow(app.mainHWnd)
+				pInvalidateRect.Call(app.mainHWnd, 0, 1)
+			}
+			if app.glHWnd != 0 {
+				app.applyDarkControl(app.glHWnd)
+			}
+			for hwnd, window := range app.dialogs {
+				app.applyDarkWindow(hwnd)
+				for _, child := range window.controls {
+					app.applyDarkControl(child)
+					pInvalidateRect.Call(child, 0, 1)
+				}
+				for _, child := range window.labels {
+					app.applyDarkControl(child)
+					pInvalidateRect.Call(child, 0, 1)
+				}
+				if window.viewport != 0 {
+					app.applyDarkControl(window.viewport)
+					pInvalidateRect.Call(window.viewport, 0, 1)
+				}
+				if window.status != 0 {
+					app.applyDarkControl(window.status)
+					pInvalidateRect.Call(window.status, 0, 1)
+				}
+				pInvalidateRect.Call(hwnd, 0, 1)
+			}
+			if app.menuHWnd != 0 {
+				app.applyDarkWindow(app.menuHWnd)
+				pInvalidateRect.Call(app.menuHWnd, 0, 1)
+			}
+			setNativeText(d.status, app.text("主题已应用", "Theme applied"))
+		case idClose:
+			pDestroyWindow.Call(d.hwnd)
+		}
+
 	case "network":
 		switch id {
 		case idNetworkApply, idNetworkStart:
@@ -1553,12 +1801,6 @@ func (app *nativeUI) readSettingsDialog(d *nativeDialog) (PhoneDisplaySettings, 
 			return s, fmt.Errorf("参数 %d 格式不正确", field.id)
 		}
 		*field.target = float32(value)
-	}
-	profile := int(sendNativeMessage(d.controls[idProfile], 0x0147, 0, 0))
-	if profile == 1 {
-		s.ViewerProfileID = "daydream_view_2017"
-	} else {
-		s.ViewerProfileID = "custom"
 	}
 	return s.Normalized(), nil
 }
@@ -1615,7 +1857,7 @@ func (app *nativeUI) refreshLogDialog(d *nativeDialog) {
 	text := strings.Join(snapshot.Logs, "\r\n")
 	setNativeText(d.controls[501], text)
 }
-func (app *nativeUI) persistNativePresets(d *nativeDialog) { _ = saveNativePresets(d.presets) }
+func (app *nativeUI) persistNativePresets(d *nativeDialog) { _ = app.syncPhoneOpticalPresets(d) }
 func (app *nativeUI) messageBox(message, title string) {
 	msg, _ := syscall.UTF16PtrFromString(message)
 	caption, _ := syscall.UTF16PtrFromString(title)

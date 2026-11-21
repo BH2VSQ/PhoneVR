@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"net"
+	"strings"
 	"time"
 )
 
@@ -114,7 +115,7 @@ func writeControlJSON(device activeDevice, value any) error {
 
 // SendPhoneAction forwards a supported device-side operation to the active HMD.
 func (s *HostService) SendPhoneAction(action string) error {
-	if action != "center_view" && action != "open_display_calibration" {
+	if action != "center_view" && action != "open_display_calibration" && action != "open_optical_presets" {
 		return fmt.Errorf("unsupported phone action: %s", action)
 	}
 	s.mu.RLock()
@@ -140,4 +141,82 @@ func (s *HostService) SendPhoneAction(action string) error {
 	}
 	s.addLog("Phone action sent: " + action)
 	return nil
+}
+
+// SendPhoneOpticalPresets synchronizes the host-edited list back to Android,
+// where the persistent copy remains the source of truth.
+func (s *HostService) SendPhoneOpticalPresets(presets []OpticalPreset) error {
+	presets = normalizeOpticalPresets(presets)
+	device, err := s.latestReadyDevice()
+	if err != nil {
+		return err
+	}
+	message := map[string]any{
+		"type": "set_optical_presets", "requestId": newSessionID(), "presets": presets,
+	}
+	if err := writeControlJSON(device, message); err != nil {
+		return fmt.Errorf("send optical presets to phone: %w", err)
+	}
+	s.addLog(fmt.Sprintf("Synchronized %d optical presets to %s", len(presets), device.Snapshot.Name))
+	return nil
+}
+
+// ApplyPhoneOpticalPreset asks Android to load the preset by ID from its own
+// local persistent store and apply those display parameters.
+func (s *HostService) ApplyPhoneOpticalPreset(presetID string) error {
+	if strings.TrimSpace(presetID) == "" {
+		return errors.New("optical preset ID is empty")
+	}
+	device, err := s.latestReadyDevice()
+	if err != nil {
+		return err
+	}
+	message := map[string]any{
+		"type": "apply_optical_preset", "requestId": newSessionID(), "presetId": presetID,
+	}
+	if err := writeControlJSON(device, message); err != nil {
+		return fmt.Errorf("apply optical preset on phone: %w", err)
+	}
+	s.addLog("Requested optical preset " + presetID + " on " + device.Snapshot.Name)
+	return nil
+}
+
+func (s *HostService) latestReadyDevice() (activeDevice, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var target activeDevice
+	found := false
+	latest := time.Time{}
+	for _, device := range s.devices {
+		if !device.Ready || device.Conn == nil || device.WriteMu == nil {
+			continue
+		}
+		connectedAt, _ := time.Parse(time.RFC3339, device.Snapshot.ConnectedAt)
+		if !found || connectedAt.After(latest) {
+			target, latest, found = device, connectedAt, true
+		}
+	}
+	if !found {
+		return activeDevice{}, errors.New("no connected Android HMD")
+	}
+	return target, nil
+}
+
+func normalizeOpticalPresets(presets []OpticalPreset) []OpticalPreset {
+	result := make([]OpticalPreset, 0, len(presets))
+	seen := make(map[string]struct{}, len(presets))
+	for _, preset := range presets {
+		preset.ID = strings.TrimSpace(preset.ID)
+		preset.Name = strings.TrimSpace(preset.Name)
+		if preset.ID == "" || preset.Name == "" {
+			continue
+		}
+		if _, exists := seen[preset.ID]; exists {
+			continue
+		}
+		seen[preset.ID] = struct{}{}
+		preset.Settings = preset.Settings.Normalized()
+		result = append(result, preset)
+	}
+	return result
 }

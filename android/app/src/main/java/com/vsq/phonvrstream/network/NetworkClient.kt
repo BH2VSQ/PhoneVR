@@ -1,10 +1,12 @@
 package com.vsq.phonvrstream.network
 
 import android.content.Context
+import android.content.Intent
 import android.net.wifi.WifiManager
 import android.os.BatteryManager
 import android.os.Handler
 import android.os.Looper
+import org.json.JSONArray
 import org.json.JSONObject
 import java.io.BufferedReader
 import java.io.BufferedWriter
@@ -28,6 +30,9 @@ class NetworkClient(
     private val statusListener: (message: String, connected: Boolean) -> Unit,
     private val currentDisplaySettings: () -> JSONObject = { JSONObject() },
     private val applyRemoteDisplaySettings: (JSONObject) -> JSONObject = { it },
+    private val currentOpticalPresets: () -> JSONArray = { JSONArray() },
+    private val applyRemoteOpticalPresets: (JSONArray) -> JSONArray = { it },
+    private val applyRemoteOpticalPreset: (String) -> JSONObject? = { null },
     private val applyRemoteDeviceAction: (String) -> Unit = {},
 ) {
     private val appContext = context.applicationContext
@@ -302,6 +307,82 @@ class NetworkClient(
                 when (message.optString("type")) {
                     "pong" -> lastPongNs = System.nanoTime()
                     "error" -> postStatus("PC：${message.optString("message", "未知错误")}", true)
+                    "get_optical_presets" -> {
+                        val requestId = message.optString("requestId", "")
+                        mainHandler.post {
+                            if (isSessionActive(generation)) {
+                                try {
+                                    writeControlMessage(
+                                        writer,
+                                        JSONObject().put("type", "optical_presets")
+                                            .put("requestId", requestId)
+                                            .put("presets", currentOpticalPresets()),
+                                    )
+                                } catch (error: Exception) {
+                                    postStatus("光学预设读取失败：${error.message ?: error.javaClass.simpleName}", true)
+                                }
+                            }
+                        }
+                    }
+                    "set_optical_presets" -> {
+                        val requestId = message.optString("requestId", "")
+                        val presets = message.optJSONArray("presets") ?: JSONArray()
+                        mainHandler.post {
+                            try {
+                                val applied = applyRemoteOpticalPresets(presets)
+                                if (isSessionActive(generation)) {
+                                    writeControlMessage(
+                                        writer,
+                                        JSONObject().put("type", "optical_presets_ack")
+                                            .put("requestId", requestId).put("status", "applied")
+                                            .put("presets", applied),
+                                    )
+                                    postStatus("PC 已同步光学预设", true)
+                                }
+                            } catch (error: Throwable) {
+                                if (isSessionActive(generation)) {
+                                    try {
+                                        writeControlMessage(
+                                            writer,
+                                            JSONObject().put("type", "optical_presets_ack")
+                                                .put("requestId", requestId).put("status", "rejected")
+                                                .put("message", error.message ?: error.javaClass.simpleName),
+                                        )
+                                    } catch (_: Exception) { }
+                                }
+                            }
+                        }
+                    }
+                    "apply_optical_preset" -> {
+                        val requestId = message.optString("requestId", "")
+                        val presetId = message.optString("presetId", "")
+                        mainHandler.post {
+                            try {
+                                val applied = applyRemoteOpticalPreset(presetId)
+                                    ?: error("手机中不存在该光学预设：$presetId")
+                                if (isSessionActive(generation)) {
+                                    writeControlMessage(
+                                        writer,
+                                        JSONObject().put("type", "display_settings_ack")
+                                            .put("requestId", requestId).put("status", "applied")
+                                            .put("settings", applied),
+                                    )
+                                    postStatus("已应用光学预设", true)
+                                }
+                            } catch (error: Throwable) {
+                                if (isSessionActive(generation)) {
+                                    try {
+                                        writeControlMessage(
+                                            writer,
+                                            JSONObject().put("type", "display_settings_ack")
+                                                .put("requestId", requestId).put("status", "rejected")
+                                                .put("message", error.message ?: error.javaClass.simpleName),
+                                        )
+                                    } catch (_: Exception) { }
+                                }
+                            }
+                        }
+                    }
                     "set_display_settings" -> {
                         val requestId = message.optString("requestId", "")
                         val settingsJson = message.optJSONObject("settings") ?: JSONObject()
@@ -482,7 +563,7 @@ class NetworkClient(
         const val DEFAULT_POSE_PORT = 48102
         const val DISCOVERY_PORT = 48100
         private const val PROTOCOL_VERSION = 1
-        private const val CLIENT_VERSION = "PhoneVRStream-0.3.9"
+        private const val CLIENT_VERSION = "PhoneVRStream-0.3.11"
         private const val DISCOVERY_REQUEST = "PHONEVR_DISCOVER_V1"
         private const val DISCOVERY_RESPONSE_PREFIX = "PHONEVR_HOST_V1 "
         private const val DISCOVERY_WINDOW_MS = 1800L

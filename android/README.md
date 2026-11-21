@@ -55,11 +55,12 @@ The release APK is currently unsigned. A signing configuration should only be ad
 The PC connection overlay is designed for landscape use. The PC address, control port, LAN discovery action, discovered host list and guidance text are inside a vertical ScrollView. The Connect and Disconnect actions remain fixed at the bottom of the panel so they stay available on shorter phone displays.
 
 
-## Remote display settings
+## Local optical presets
 
-When paired with a compatible Windows Host, the Android client publishes its current `DisplaySettings` over the TCP control channel. Host-side edits are validated, persisted in SharedPreferences, and applied to the OpenGL renderer immediately. The local Android calibration panel remains available and publishes changed values after each completed slider interaction.
+Optical presets are persisted in Android app storage. The first launch after upgrading an installation without a preset catalogue migrates the previous `DisplaySettings` values into an `原有显示配置` preset, preserving the user's prior calibration. Built-in Daydream View 2017 and Generic Cardboard presets are also stored locally. The Android overlay is a selector only: it lists available presets and applies the selected entry; it no longer exposes the former manual calibration sliders.
 
+## Windows Host synchronization
 
-## Remote display settings from the Windows Host
+After pairing, the Windows Host sends `get_optical_presets`. Android returns the locally stored catalogue as `optical_presets`. Host-side create/edit/clone/rename/delete operations are sent back with `set_optical_presets`; Android validates the entries, persists them, and acknowledges the normalized list with `optical_presets_ack`. To apply a preset, the Host sends `apply_optical_preset` with only the preset ID. Android resolves that ID from its local store, persists the active preset and effective display settings, updates `StereoRenderer`, and returns `display_settings_ack`.
 
-On successful TCP pairing the app sends its current `DisplaySettings` JSON. A `set_display_settings` control message is parsed on the control reader, applied on the main thread, normalized, saved through `SettingsStore`, and passed to `StereoRenderer.updateSettings`. The app returns `display_settings_ack` with the effective settings. The Daydream View 2017 preset seeds the published baseline coefficients and lens spacing; later manual calibration edits are preserved.
+The `display_settings` report and `set_display_settings` command remain supported for compatibility with earlier Host builds. The current Windows UI manages parameters through optical presets instead of directly editing a separate phone calibration state.

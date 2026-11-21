@@ -11,10 +11,16 @@ func ComputeNativePoseViewport(clientWidth, clientHeight int) NativePoseViewport
 	if clientWidth <= 0 || clientHeight <= 0 {
 		return NativePoseViewport{}
 	}
-	const topBar = 48
-	const metricsArea = 78
-	availableWidth := clientWidth - 36
-	availableHeight := clientHeight - topBar - metricsArea - 22
+	const (
+		panelTop      = 62
+		metricHeight  = 72
+		metricBottom  = 22
+		metricTopGap  = 16
+		horizontalGap = 36
+	)
+	availableWidth := clientWidth - horizontalGap
+	metricTop := clientHeight - metricHeight - metricBottom
+	availableHeight := metricTop - metricTopGap - panelTop
 	size := availableWidth
 	if availableHeight < size {
 		size = availableHeight
@@ -26,12 +32,9 @@ func ComputeNativePoseViewport(clientWidth, clientHeight int) NativePoseViewport
 		size = 920
 	}
 	left := (clientWidth - size) / 2
-	panelTop := topBar + 6
-	panelBottom := clientHeight - 10
-	panelHeight := panelBottom - panelTop
-	top := panelTop + (panelHeight-metricsArea-size)/2
-	if top < panelTop+6 {
-		top = panelTop + 6
+	top := panelTop + (availableHeight-size)/2
+	if top < panelTop {
+		top = panelTop
 	}
 	return NativePoseViewport{Left: left, Top: top, Width: size, Height: size}
 }

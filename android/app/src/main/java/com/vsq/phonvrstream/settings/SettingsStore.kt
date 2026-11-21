@@ -1,6 +1,7 @@
 package com.vsq.phonvrstream.settings
 
 import android.content.Context
+import org.json.JSONArray
 
 class SettingsStore(context: Context) {
     private val prefs = context.getSharedPreferences("phone_vr_display", Context.MODE_PRIVATE)
@@ -22,6 +23,49 @@ class SettingsStore(context: Context) {
         fovDegrees = prefs.getFloat(KEY_FOV, 90.0f),
     ).normalized()
 
+    fun loadOpticalPresets(legacySettings: DisplaySettings = load()): List<OpticalPreset> {
+        val raw = prefs.getString(KEY_OPTICAL_PRESETS, null)
+        if (raw == null) {
+            // Upgrade existing installations by turning their previous manual
+            // calibration into a local preset before hiding the old controls.
+            val defaults = OpticalPreset.defaults().toMutableList()
+            if (legacySettings.normalized() != DisplaySettings().normalized()) {
+                defaults.add(
+                    0,
+                    OpticalPreset(
+                        id = "migrated-existing-settings",
+                        name = "原有显示配置",
+                        builtin = false,
+                        settings = legacySettings.normalized(),
+                    ),
+                )
+                saveActiveOpticalPresetId("migrated-existing-settings")
+            }
+            saveOpticalPresets(defaults)
+            return defaults
+        }
+        return try {
+            val parsed = OpticalPreset.listFromJson(JSONArray(raw))
+            parsed.ifEmpty { OpticalPreset.defaults().also(::saveOpticalPresets) }
+        } catch (_: Exception) {
+            OpticalPreset.defaults().also(::saveOpticalPresets)
+        }
+    }
+
+    fun saveOpticalPresets(presets: List<OpticalPreset>) {
+        val normalized = presets
+            .filter { it.id.isNotBlank() && it.name.isNotBlank() }
+            .distinctBy { it.id }
+        prefs.edit().putString(KEY_OPTICAL_PRESETS, OpticalPreset.listToJson(normalized).toString()).apply()
+    }
+
+    fun loadActiveOpticalPresetId(): String =
+        prefs.getString(KEY_ACTIVE_PRESET, "builtin-cardboard") ?: "builtin-cardboard"
+
+    fun saveActiveOpticalPresetId(id: String) {
+        prefs.edit().putString(KEY_ACTIVE_PRESET, id).apply()
+    }
+
     fun save(settings: DisplaySettings) {
         val value = settings.normalized()
         prefs.edit()
@@ -42,6 +86,8 @@ class SettingsStore(context: Context) {
     }
 
     companion object {
+        private const val KEY_OPTICAL_PRESETS = "optical_presets_json"
+        private const val KEY_ACTIVE_PRESET = "active_optical_preset_id"
         private const val KEY_PROFILE = "viewer_profile_id"
         private const val KEY_IPD = "ipd_mm"
         private const val KEY_LENS_SEPARATION = "lens_separation_mm"

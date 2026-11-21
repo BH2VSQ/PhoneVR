@@ -1,4 +1,4 @@
-# PhoneVR Host 0.3.9
+# PhoneVR Host 0.3.11
 
 Executable version is injected from the repository root `VERSION` file during builds.
 
@@ -6,29 +6,29 @@ Native Windows desktop application and Go networking service for the PhoneVRStre
 
 ## Native desktop UI
 
-`PhoneVRHost.exe` creates a native Win32 top-level application window. Its controls are Win32 child windows; the HMD viewer uses WGL/OpenGL and loads the Daydream View 2017-inspired OBJ/MTL mesh embedded in the executable.
+`PhoneVRHost.exe` creates a native Win32 top-level application window. The UI is drawn with Win32/GDI+ and the HMD pose preview uses WGL/OpenGL. There is no WebView, browser runtime or local HTTP dashboard.
 
-The UI does not use Edge, Chrome, WebView, HTML, JavaScript, Electron, Wails or a local HTTP dashboard. The process running the desktop UI is the PhoneVRHost process itself and is marked as a Windows GUI application.
+The dashboard shows Host/SteamVR/HMD status, phone battery, the 3D HMD model and Yaw/Pitch/Roll. The SteamVR state pill adapts to English and Chinese labels. The preview keeps a reserved gap above the telemetry cards.
 
-The main window contains:
+The main menu provides:
 
-- Host service state
-- SteamVR connection state
-- HMD connection state and phone battery
-- Solid 3D HMD model, local XYZ axes and gaze direction
-- Yaw, Pitch and Roll
-- Native action buttons for center view, phone settings, optical presets, network and logs
+- Optical Presets
+- Network Settings
+- Appearance & Theme
+- Runtime Logs
+- Center View and language switching
 
-Separate native child windows provide:
+### Optical presets
 
-- Phone display settings: IPD, physical lens spacing, screen-to-lens distance, tray offset, optical center, K1/K2, blur, sharpness and FOV
-- Optical presets: built-in Daydream View 2017 and Generic Cardboard profiles; custom presets can be saved, cloned, renamed and deleted
-- Network: listener address and discovery/control/pose ports, service start/stop/restart
-- Logs: Host event log
+The Android device stores the authoritative optical preset catalogue in local app storage. On connection the Host requests the list; it does not maintain a second persistent catalogue. The Windows Optical Presets window supports apply, edit (double-click or Edit), create, clone, rename and delete. The editor contains the display parameters previously found in the separate phone display settings window. Changes are synchronized back to Android over the TCP control channel. Applying a preset sends its ID; Android resolves and loads the corresponding locally stored entry and updates the stereo renderer.
 
-Phone settings are normalized, sent over the existing TCP control channel and confirmed from the Android `display_settings` acknowledgement. The language toggle defaults to Simplified Chinese and supports English; the selection is saved in the user's application data.
+The Android app's optical preset panel is a selector only. It no longer exposes manual calibration sliders. Existing calibration values are migrated into a local preset when upgrading an installation that has no preset catalogue yet.
 
-The main window defaults to 1080 x 900 and keeps a 1.2:1 outer-window ratio while resizing.
+### Appearance and child windows
+
+The appearance panel supports light/dark modes and a custom `#RRGGBB` accent color. The theme is saved in the user's application settings. Child windows use a client-drawn header, without a separate Windows caption close button; the in-app Close button remains available.
+
+Network Settings provides the listener address and discovery/control/pose ports, including service start/stop/restart. Runtime Logs provides the Host event log. Dialog content supports vertical scrolling and mouse-wheel navigation, with action buttons in a fixed footer.
 
 ## Run
 

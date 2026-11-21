@@ -115,8 +115,9 @@ func TestNativePoseViewportRemainsSquareAndKeepsTelemetryFooter(t *testing.T) {
 		if viewport.Left < 0 || viewport.Top < 0 || viewport.Left+viewport.Width > size[0] {
 			t.Fatalf("viewport outside client bounds for %dx%d: %+v", size[0], size[1], viewport)
 		}
-		if viewport.Top+viewport.Height > size[1]-78 {
-			t.Fatalf("viewport overlaps telemetry footer for %dx%d: %+v", size[0], size[1], viewport)
+		metricTop := size[1] - 72 - 22
+		if gap := metricTop - (viewport.Top + viewport.Height); gap < 16 {
+			t.Fatalf("viewport-to-telemetry gap for %dx%d = %d px, want at least 16: %+v", size[0], size[1], gap, viewport)
 		}
 	}
 }

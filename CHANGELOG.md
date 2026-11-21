@@ -1,3 +1,15 @@
+## 0.3.11
+
+- Fixed the Android Kotlin compile error caused by the missing `android.content.Intent` import.
+- Added Android-local optical preset persistence, including migration of existing display calibration into a preset on upgrade.
+- Made the Windows Host request the Android preset catalogue at session startup; the phone remains the source of truth and acknowledges edits synchronized from the Host.
+- Replaced the Android manual display-calibration panel with an optical preset selector.
+- Unified the Windows optical preset editor with phone display parameters; double-clicking a preset opens its editor, and save/apply operations synchronize through the control protocol.
+- Added switchable light/dark themes and a custom `#RRGGBB` accent color, persisted in the user's application settings.
+- Removed native caption close buttons from child dialogs in favor of the in-app Close action, and aligned their client areas with the selected theme.
+- Expanded the SteamVR status pill for English labels and reserved a 16-pixel gap above the Yaw/Pitch/Roll cards.
+- Added Android preset JSON tests, Go preset normalization tests and protocol documentation for Android-owned optical presets.
+
 # Changelog
 
 ## 0.3.10

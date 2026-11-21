@@ -48,6 +48,7 @@ type DeviceSnapshot struct {
 	Address         string                `json:"address"`
 	ConnectedAt     string                `json:"connectedAt"`
 	DisplaySettings *PhoneDisplaySettings `json:"displaySettings,omitempty"`
+	OpticalPresets  []OpticalPreset       `json:"opticalPresets,omitempty"`
 	BatteryLevel    *int                  `json:"batteryLevel,omitempty"`
 	Charging        bool                  `json:"charging,omitempty"`
 }
@@ -115,6 +116,8 @@ type controlMessage struct {
 	Type         string                `json:"type"`
 	RequestID    string                `json:"requestId,omitempty"`
 	Settings     *PhoneDisplaySettings `json:"settings,omitempty"`
+	Presets      []OpticalPreset       `json:"presets,omitempty"`
+	PresetID     string                `json:"presetId,omitempty"`
 	Action       string                `json:"action,omitempty"`
 	Status       string                `json:"status,omitempty"`
 	Message      string                `json:"message,omitempty"`
@@ -461,7 +464,7 @@ func (s *HostService) handleControlConnection(ctx context.Context, conn net.Conn
 	welcome := welcomeMessage{
 		Type: "welcome", Protocol: protocolVersion, SessionID: newSessionID(),
 		ServerName: s.serverName, PosePort: s.config.PosePort,
-		Capabilities: []string{"head-pose-3dof-udp-v1", "control-heartbeat-v1", "display-settings-control-v1"},
+		Capabilities: []string{"head-pose-3dof-udp-v1", "control-heartbeat-v1", "display-settings-control-v1", "android-optical-presets-v1"},
 	}
 	if err := writeJSONLine(conn, welcome); err != nil {
 		s.addLog("Pair response failed: " + err.Error())
@@ -473,6 +476,15 @@ func (s *HostService) handleControlConnection(ctx context.Context, conn net.Conn
 		s.devices[remote] = current
 	}
 	s.mu.Unlock()
+
+	// Ask the Android device for its persistent optical preset catalogue.
+	// The phone remains the source of truth; the host only caches and edits it.
+	if err := writeControlJSON(device, map[string]any{
+		"type": "get_optical_presets", "requestId": newSessionID(),
+	}); err != nil {
+		s.addLog("Optical preset request failed: " + err.Error())
+		return
+	}
 
 	for {
 		// Apply the idle deadline before Scan. Setting it after Scan allowed
@@ -508,6 +520,27 @@ func (s *HostService) handleControlConnection(ctx context.Context, conn net.Conn
 			}
 			if err := writeControlJSON(device, map[string]any{"type": "pong", "timeMs": time.Now().UnixMilli()}); err != nil {
 				return
+			}
+		case "optical_presets":
+			presets := normalizeOpticalPresets(message.Presets)
+			s.mu.Lock()
+			if current, ok := s.devices[remote]; ok && current.Conn == conn {
+				current.Snapshot.OpticalPresets = presets
+				s.devices[remote] = current
+			}
+			s.mu.Unlock()
+			s.addLog(fmt.Sprintf("Received %d optical presets from %s", len(presets), hello.DeviceName))
+		case "optical_presets_ack":
+			if message.Status == "applied" {
+				s.addLog(fmt.Sprintf("Android saved %d optical presets", len(message.Presets)))
+				s.mu.Lock()
+				if current, ok := s.devices[remote]; ok && current.Conn == conn {
+					current.Snapshot.OpticalPresets = normalizeOpticalPresets(message.Presets)
+					s.devices[remote] = current
+				}
+				s.mu.Unlock()
+			} else if message.Status == "rejected" {
+				s.addLog("Android rejected optical presets: " + message.Message)
 			}
 		case "display_settings":
 			if message.Settings == nil {

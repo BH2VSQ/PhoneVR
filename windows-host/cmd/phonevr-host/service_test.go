@@ -43,18 +43,20 @@ func TestHostServiceLifecycleAndPairing(t *testing.T) {
 		t.Fatalf("send hello: %v", err)
 	}
 	reader := bufio.NewReader(conn)
+	decoder := json.NewDecoder(reader)
 	var welcome welcomeMessage
-	if err := json.NewDecoder(reader).Decode(&welcome); err != nil {
+	if err := decoder.Decode(&welcome); err != nil {
 		t.Fatalf("read welcome: %v", err)
 	}
 	if welcome.Type != "welcome" || welcome.PosePort != snapshot.PosePort {
 		t.Fatalf("unexpected welcome response: %+v", welcome)
 	}
+	completeOpticalPresetPull(t, service, decoder, encoder)
 	if err := encoder.Encode(controlMessage{Type: "ping"}); err != nil {
 		t.Fatalf("send ping: %v", err)
 	}
 	var pong map[string]any
-	if err := json.NewDecoder(reader).Decode(&pong); err != nil {
+	if err := decoder.Decode(&pong); err != nil {
 		t.Fatalf("read pong: %v", err)
 	}
 	if pong["type"] != "pong" {
@@ -66,7 +68,7 @@ func TestHostServiceLifecycleAndPairing(t *testing.T) {
 		t.Fatalf("send center-view action: %v", err)
 	}
 	var action map[string]any
-	if err := json.NewDecoder(reader).Decode(&action); err != nil {
+	if err := decoder.Decode(&action); err != nil {
 		t.Fatalf("read device action: %v", err)
 	}
 	if action["type"] != "device_action" || action["action"] != "center_view" {
@@ -128,6 +130,7 @@ func TestHighRatePoseTrafficDoesNotBreakControlHeartbeat(t *testing.T) {
 	if welcome.Type != "welcome" {
 		t.Fatalf("unexpected welcome: %+v", welcome)
 	}
+	completeOpticalPresetPull(t, service, decoder, encoder)
 
 	udp, err := net.DialUDP("udp4", nil, &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: snapshot.PosePort})
 	if err != nil {
@@ -376,6 +379,7 @@ func TestSendPhoneDisplaySettingsAndReceiveAppliedAck(t *testing.T) {
 	if welcome.Type != "welcome" {
 		t.Fatalf("unexpected welcome: %+v", welcome)
 	}
+	completeOpticalPresetPull(t, service, decoder, encoder)
 
 	current := DefaultPhoneDisplaySettings()
 	current.IPDMm = 62.5
@@ -421,6 +425,83 @@ func TestSendPhoneDisplaySettingsAndReceiveAppliedAck(t *testing.T) {
 	})
 }
 
+func TestHostSynchronizesAndroidOpticalPresetsAndAppliesByID(t *testing.T) {
+	config := HostConfig{
+		ListenAddress: "127.0.0.1",
+		DiscoveryPort: reservePort(t, "udp4"),
+		ControlPort:   reservePort(t, "tcp4"),
+		PosePort:      reservePort(t, "udp4"),
+	}
+	service := NewHostService(false)
+	if err := service.Start(config); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	defer service.Stop()
+
+	snapshot := service.Snapshot()
+	conn, err := net.DialTimeout("tcp4", net.JoinHostPort("127.0.0.1", fmt.Sprint(snapshot.ControlPort)), time.Second)
+	if err != nil {
+		t.Fatalf("dial control listener: %v", err)
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(3 * time.Second))
+	encoder := json.NewEncoder(conn)
+	decoder := json.NewDecoder(bufio.NewReader(conn))
+	if err := encoder.Encode(helloMessage{Type: "hello", Protocol: protocolVersion, DeviceName: "Optical Preset Test", Client: "PhoneVR-Test"}); err != nil {
+		t.Fatalf("send hello: %v", err)
+	}
+	var welcome welcomeMessage
+	if err := decoder.Decode(&welcome); err != nil {
+		t.Fatalf("read welcome: %v", err)
+	}
+	if welcome.Type != "welcome" {
+		t.Fatalf("unexpected welcome: %+v", welcome)
+	}
+	foundCapability := false
+	for _, capability := range welcome.Capabilities {
+		if capability == "android-optical-presets-v1" {
+			foundCapability = true
+		}
+	}
+	if !foundCapability {
+		t.Fatalf("welcome missing android optical preset capability: %+v", welcome.Capabilities)
+	}
+	completeOpticalPresetPull(t, service, decoder, encoder)
+
+	presets := nativePresetDefaults()
+	presets = append(presets, OpticalPreset{
+		ID: "test-custom", Name: "Custom Viewer", Settings: DefaultPhoneDisplaySettings(),
+	})
+	if err := service.SendPhoneOpticalPresets(presets); err != nil {
+		t.Fatalf("SendPhoneOpticalPresets() error = %v", err)
+	}
+	var update controlMessage
+	if err := decoder.Decode(&update); err != nil {
+		t.Fatalf("read preset update: %v", err)
+	}
+	if update.Type != "set_optical_presets" || update.RequestID == "" || len(update.Presets) != 3 {
+		t.Fatalf("unexpected preset update: %+v", update)
+	}
+	if err := encoder.Encode(controlMessage{Type: "optical_presets_ack", RequestID: update.RequestID, Status: "applied", Presets: update.Presets}); err != nil {
+		t.Fatalf("send preset acknowledgement: %v", err)
+	}
+	waitUntil(t, time.Second, func() bool {
+		devices := service.Snapshot().ConnectedDevices
+		return len(devices) == 1 && len(devices[0].OpticalPresets) == 3
+	})
+
+	if err := service.ApplyPhoneOpticalPreset("test-custom"); err != nil {
+		t.Fatalf("ApplyPhoneOpticalPreset() error = %v", err)
+	}
+	var apply controlMessage
+	if err := decoder.Decode(&apply); err != nil {
+		t.Fatalf("read apply command: %v", err)
+	}
+	if apply.Type != "apply_optical_preset" || apply.PresetID != "test-custom" || apply.RequestID == "" {
+		t.Fatalf("unexpected apply command: %+v", apply)
+	}
+}
+
 func TestPhoneDisplaySettingsNormalizationClampsValues(t *testing.T) {
 	settings := PhoneDisplaySettings{IPDMm: 100, Blur: -1, Sharpness: 4, FOVDegrees: 10}.Normalized()
 	if settings.IPDMm != 75 || settings.Blur != 0 || settings.Sharpness != 1 || settings.FOVDegrees != 60 {
@@ -437,4 +518,23 @@ func TestDaydreamProfileAllowsManualOpticalCalibration(t *testing.T) {
 		settings.DistortionK1 != .44 || settings.DistortionK2 != -.07 {
 		t.Fatalf("manual Daydream calibration was overwritten: %+v", settings)
 	}
+}
+
+func completeOpticalPresetPull(t *testing.T, service *HostService, decoder *json.Decoder, encoder *json.Encoder) {
+	t.Helper()
+	var request controlMessage
+	if err := decoder.Decode(&request); err != nil {
+		t.Fatalf("read Android optical preset request: %v", err)
+	}
+	if request.Type != "get_optical_presets" || request.RequestID == "" {
+		t.Fatalf("unexpected initial control message, want get_optical_presets: %+v", request)
+	}
+	presets := nativePresetDefaults()
+	if err := encoder.Encode(map[string]any{"type": "optical_presets", "requestId": request.RequestID, "presets": presets}); err != nil {
+		t.Fatalf("reply with local Android optical presets: %v", err)
+	}
+	waitUntil(t, time.Second, func() bool {
+		devices := service.Snapshot().ConnectedDevices
+		return len(devices) == 1 && len(devices[0].OpticalPresets) == len(presets)
+	})
 }

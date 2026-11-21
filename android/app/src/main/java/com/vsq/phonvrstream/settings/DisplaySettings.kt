@@ -2,7 +2,7 @@ package com.vsq.phonvrstream.settings
 
 import org.json.JSONObject
 
-/** User-adjustable display calibration values. Distances are stored in millimetres. */
+/** Optical display parameters stored in a locally persisted optical preset. Distances are millimetres. */
 data class DisplaySettings(
     val viewerProfileId: String = PROFILE_CUSTOM,
     /** User eye separation used by the virtual stereo cameras. */

@@ -33,6 +33,7 @@ import com.vsq.phonvrstream.network.DiscoveredHost
 import com.vsq.phonvrstream.network.HeadPose
 import com.vsq.phonvrstream.network.NetworkClient
 import com.vsq.phonvrstream.settings.DisplaySettings
+import com.vsq.phonvrstream.settings.OpticalPreset
 import com.vsq.phonvrstream.settings.SettingsStore
 import kotlin.math.asin
 import kotlin.math.atan2
@@ -66,6 +67,8 @@ class MainActivity : Activity(), SensorEventListener {
     private lateinit var networkClient: NetworkClient
 
     @Volatile private var settings = DisplaySettings()
+    @Volatile private var opticalPresets = emptyList<OpticalPreset>()
+    @Volatile private var activeOpticalPresetId = "builtin-cardboard"
     @Volatile private var lastRawPose = Quaternion.IDENTITY
     @Volatile private var referencePose: Quaternion? = null
     private var lastPoseUiUpdateMs = 0L
@@ -81,6 +84,17 @@ class MainActivity : Activity(), SensorEventListener {
 
         settingsStore = SettingsStore(this)
         settings = settingsStore.load()
+        opticalPresets = settingsStore.loadOpticalPresets(settings)
+        val storedActivePresetId = settingsStore.loadActiveOpticalPresetId()
+        val selectedPreset = opticalPresets.firstOrNull { it.id == storedActivePresetId }
+            ?: opticalPresets.first()
+        activeOpticalPresetId = selectedPreset.id
+        // The active preset is authoritative. Rehydrate renderer settings from
+        // its persistent record on every launch so a stale legacy settings key
+        // can never disagree with the selected local optical preset.
+        settings = selectedPreset.settings.normalized()
+        settingsStore.saveActiveOpticalPresetId(activeOpticalPresetId)
+        settingsStore.save(settings)
         networkClient = NetworkClient(
             applicationContext,
             statusListener = { message, connected ->
@@ -95,6 +109,48 @@ class MainActivity : Activity(), SensorEventListener {
                 updateTopHud()
             },
             currentDisplaySettings = { settings.toJson() },
+            currentOpticalPresets = { OpticalPreset.listToJson(opticalPresets) },
+            applyRemoteOpticalPresets = { json ->
+                val parsed = OpticalPreset.listFromJson(json).ifEmpty { OpticalPreset.defaults() }
+                opticalPresets = parsed
+                settingsStore.saveOpticalPresets(parsed)
+                val activePreset = parsed.firstOrNull { it.id == activeOpticalPresetId }
+                if (activePreset == null) {
+                    val fallback = parsed.first()
+                    activeOpticalPresetId = fallback.id
+                    settings = fallback.settings.normalized()
+                    settingsStore.saveActiveOpticalPresetId(fallback.id)
+                    settingsStore.save(settings)
+                    updateRendererSettings()
+                } else {
+                    // Saving edits to the currently active preset updates the
+                    // phone's optics immediately; edits to other presets stay
+                    // stored until the user chooses to apply them.
+                    val updatedSettings = activePreset.settings.normalized()
+                    if (settings != updatedSettings) {
+                        settings = updatedSettings
+                        settingsStore.save(settings)
+                        updateRendererSettings()
+                    }
+                }
+                if (::settingsPanel.isInitialized && settingsPanel.visibility == View.VISIBLE) {
+                    recreateSettingsPanelContent()
+                }
+                OpticalPreset.listToJson(parsed)
+            },
+            applyRemoteOpticalPreset = { presetId ->
+                val preset = opticalPresets.firstOrNull { it.id == presetId }
+                    ?: error("未找到光学预设：$presetId")
+                settings = preset.settings.normalized()
+                activeOpticalPresetId = preset.id
+                settingsStore.save(settings)
+                settingsStore.saveActiveOpticalPresetId(preset.id)
+                updateRendererSettings()
+                if (::settingsPanel.isInitialized && settingsPanel.visibility == View.VISIBLE) {
+                    recreateSettingsPanelContent()
+                }
+                settings.toJson()
+            },
             applyRemoteDisplaySettings = { json ->
                 check(!isFinishing && !isDestroyed) { "Activity is no longer active" }
                 settings = DisplaySettings.fromJson(json, settings).normalized()
@@ -111,7 +167,7 @@ class MainActivity : Activity(), SensorEventListener {
                         referencePose = lastRawPose
                         updatePoseText("视角已居中")
                     }
-                    "open_display_calibration" -> {
+                    "open_optical_presets", "open_display_calibration" -> {
                         closeOverlayPanels()
                         settingsPanel.visibility = View.VISIBLE
                         updateDismissLayer()
@@ -278,7 +334,7 @@ class MainActivity : Activity(), SensorEventListener {
             menuPanel.visibility = View.GONE
             updateDismissLayer()
         }.apply { layoutParams = LinearLayout.LayoutParams(-1, dp(42)).apply { bottomMargin = dp(6) } })
-        panel.addView(makeButton("显示校准") {
+        panel.addView(makeButton("光学预设") {
             settingsPanel.visibility = View.VISIBLE
             connectionPanel.visibility = View.GONE
             menuPanel.visibility = View.GONE
@@ -497,192 +553,108 @@ class MainActivity : Activity(), SensorEventListener {
         setStroke(dp(1), Color.argb(120, 110, 145, 180))
     }
 
+    /**
+     * The phone is the source of truth for optical presets. The host manages
+     * preset contents; the Android app only lists local presets and applies one.
+     */
     private fun buildSettingsPanel(): LinearLayout {
         val panel = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(16), dp(12), dp(16), dp(12))
             background = GradientDrawable().apply {
-                setColor(Color.argb(232, 9, 16, 28))
+                setColor(Color.argb(238, 9, 16, 28))
                 cornerRadius = dp(16).toFloat()
                 setStroke(dp(1), Color.argb(100, 110, 145, 180))
             }
+            elevation = dp(14).toFloat()
         }
 
-        val title = TextView(this).apply {
-            text = "显示校准"
+        panel.addView(TextView(this).apply {
+            text = "光学预设"
             setTextColor(Color.WHITE)
-            textSize = 15f
+            textSize = 19f
             typeface = Typeface.DEFAULT_BOLD
-        }
-        panel.addView(title)
-        panel.addView(label("双目测试场景 · 参数自动保存", secondary = true))
+        })
+        panel.addView(label(
+            "预设保存在本机。连接 PhoneVR Host 后，电脑端可管理和更新预设；手机端选择本地预设即可应用。",
+            secondary = true,
+        ).apply { setPadding(0, dp(5), 0, dp(10)) })
+
+        val active = opticalPresets.firstOrNull { it.id == activeOpticalPresetId }
+        panel.addView(label(
+            "当前使用：${active?.name ?: "未知预设"}",
+            secondary = false,
+        ).apply {
+            textSize = 13f
+            setTextColor(Color.rgb(91, 206, 250))
+            setPadding(0, 0, 0, dp(8))
+        })
 
         val scroll = ScrollView(this).apply {
             isFillViewport = false
+            clipToPadding = false
+            isVerticalScrollBarEnabled = true
+            scrollBarStyle = View.SCROLLBARS_INSIDE_OVERLAY
             overScrollMode = View.OVER_SCROLL_IF_CONTENT_SCROLLS
         }
-        val content = LinearLayout(this).apply {
+        val list = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(0, dp(8), 0, dp(8))
+            setPadding(0, dp(2), 0, dp(8))
         }
-        scroll.addView(content, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
-        panel.addView(scroll, LinearLayout.LayoutParams(-1, 0, 1f))
-
-        val profileDescription = if (settings.viewerProfileId == DisplaySettings.PROFILE_DAYDREAM_VIEW_2017) {
-            "当前配置：Google Daydream View 2017"
+        if (opticalPresets.isEmpty()) {
+            list.addView(label("尚无可用预设。请连接电脑端同步。", secondary = true))
         } else {
-            "当前配置：自定义光学参数"
-        }
-        content.addView(label(profileDescription, secondary = true).apply {
-            setPadding(0, dp(4), 0, dp(6))
-        })
-        content.addView(makeButton("应用 Google Daydream View 2017 预设") {
-            settings = settings.withDaydreamView2017Profile()
-            settingsStore.save(settings)
-            updateRendererSettings()
-            networkClient.publishDisplaySettings(settings.toJson())
-            recreateSettingsPanelContent()
-        }.apply {
-            layoutParams = LinearLayout.LayoutParams(-1, dp(42)).apply { bottomMargin = dp(8) }
-        })
-        content.addView(label(
-            "2017 版预设：K1 0.4331、K2 -0.085，镜片中心间距初始值 64 mm。公开实验中记录了 Daydream View v2.0 的 64 mm 镜片间距；仍建议测量自己的头显。个人 IPD、屏幕至镜片距离和垂直对齐需单独校准。此配置不提供屈光矫正。",
-            secondary = true,
-        ).apply { setPadding(0, 0, 0, dp(10)) })
-
-        addSlider(
-            content, "屏幕至镜片距离", "测量手机显示面到镜片光学中心的距离", 1000,
-            ((settings.screenToLensDistanceMm - DisplaySettings.MIN_SCREEN_TO_LENS_MM) /
-                (DisplaySettings.MAX_SCREEN_TO_LENS_MM - DisplaySettings.MIN_SCREEN_TO_LENS_MM) * 1000f).toInt(),
-            { p -> "%.1f mm".format(DisplaySettings.MIN_SCREEN_TO_LENS_MM +
-                p / 1000f * (DisplaySettings.MAX_SCREEN_TO_LENS_MM - DisplaySettings.MIN_SCREEN_TO_LENS_MM)) },
-        ) { p -> settings.copy(screenToLensDistanceMm = DisplaySettings.MIN_SCREEN_TO_LENS_MM +
-            p / 1000f * (DisplaySettings.MAX_SCREEN_TO_LENS_MM - DisplaySettings.MIN_SCREEN_TO_LENS_MM)) }
-
-        content.addView(makeButton("根据屏幕高度和镜片距离估算垂直 FOV") {
-            settings = settings.copy(fovDegrees = estimateVerticalFovDegrees())
-            settingsStore.save(settings)
-            updateRendererSettings()
-            recreateSettingsPanelContent()
-        }.apply {
-            layoutParams = LinearLayout.LayoutParams(-1, dp(40)).apply { topMargin = dp(5) }
-        })
-
-        content.addView(label(
-            "手机在眼镜盒中的垂直定位方式。请根据手机实际抵靠的位置选择，中心、顶部和底部会改变镜片中心的垂直计算基准。",
-            secondary = true,
-        ).apply { setPadding(0, dp(10), 0, dp(5)) })
-        val alignmentRow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-        }
-        val alignmentOptions = listOf(
-            DisplaySettings.ALIGNMENT_CENTER to "屏幕居中",
-            DisplaySettings.ALIGNMENT_BOTTOM to "底边对齐",
-            DisplaySettings.ALIGNMENT_TOP to "顶边对齐",
-        )
-        alignmentOptions.forEachIndexed { index, option ->
-            val selected = settings.screenVerticalAlignment == option.first
-            alignmentRow.addView(makeButton((if (selected) "● " else "") + option.second) {
-                settings = settings.copy(screenVerticalAlignment = option.first)
-                settingsStore.save(settings)
-                updateRendererSettings()
-                recreateSettingsPanelContent()
-            }.apply {
-                textSize = 10f
-                layoutParams = LinearLayout.LayoutParams(0, dp(38), 1f).apply {
-                    if (index > 0) leftMargin = dp(4)
+            opticalPresets.forEach { preset ->
+                val selected = preset.id == activeOpticalPresetId
+                val card = LinearLayout(this).apply {
+                    orientation = LinearLayout.VERTICAL
+                    setPadding(dp(10), dp(8), dp(10), dp(8))
+                    background = GradientDrawable().apply {
+                        setColor(if (selected) Color.argb(210, 24, 60, 82) else Color.argb(185, 23, 37, 54))
+                        cornerRadius = dp(10).toFloat()
+                        setStroke(dp(1), if (selected) Color.rgb(91, 206, 250) else Color.argb(80, 110, 145, 180))
+                    }
                 }
-            })
+                card.addView(TextView(this).apply {
+                    text = (if (selected) "✓  " else "") + preset.name
+                    setTextColor(Color.WHITE)
+                    textSize = 15f
+                    typeface = Typeface.DEFAULT_BOLD
+                })
+                card.addView(label(
+                    if (preset.builtin) "内置预设 · 本地存储" else "自定义预设 · 本地存储",
+                    secondary = true,
+                ).apply { setPadding(0, dp(3), 0, dp(5)) })
+                card.addView(makeButton(if (selected) "当前已应用" else "应用此预设") {
+                    applyLocalOpticalPreset(preset.id)
+                }.apply {
+                    isEnabled = !selected
+                    alpha = if (selected) 0.72f else 1f
+                    layoutParams = LinearLayout.LayoutParams(-1, dp(38))
+                })
+                list.addView(card, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(8) })
+            }
         }
-        content.addView(alignmentRow)
-
-        content.addView(label(
-            "托盘距离默认 35 mm 仅作为初始值，不代表 Daydream View 的官方尺寸。Android 屏幕 DPI 也可能存在设备误差，请优先使用卡尺实测并通过镜片中心标记微调。",
-            secondary = true,
-        ).apply { setPadding(0, dp(5), 0, dp(3)) })
-
-        addSlider(
-            content, "托盘边缘至镜片中心", "仅在底边或顶边对齐时使用", 1000,
-            ((settings.trayToLensCenterMm - DisplaySettings.MIN_TRAY_TO_LENS_CENTER_MM) /
-                (DisplaySettings.MAX_TRAY_TO_LENS_CENTER_MM - DisplaySettings.MIN_TRAY_TO_LENS_CENTER_MM) * 1000f).toInt(),
-            { p -> "%.1f mm".format(DisplaySettings.MIN_TRAY_TO_LENS_CENTER_MM +
-                p / 1000f * (DisplaySettings.MAX_TRAY_TO_LENS_CENTER_MM - DisplaySettings.MIN_TRAY_TO_LENS_CENTER_MM)) },
-        ) { p -> settings.copy(trayToLensCenterMm = DisplaySettings.MIN_TRAY_TO_LENS_CENTER_MM +
-            p / 1000f * (DisplaySettings.MAX_TRAY_TO_LENS_CENTER_MM - DisplaySettings.MIN_TRAY_TO_LENS_CENTER_MM)) }
-
-        addSlider(
-            content, "个人瞳距 IPD", "左右眼虚拟相机的间距，应按使用者瞳距设置", 1000,
-            ((settings.ipdMm - 50f) / 25f * 1000f).toInt(),
-            { p -> "%.1f mm".format(50f + p / 1000f * 25f) },
-        ) { p -> settings.copy(ipdMm = 50f + p / 1000f * 25f) }
-
-        addSlider(
-            content, "头显镜片中心间距", "两片实体镜片中心之间的距离，决定左右屏幕区域的光学中心", 1000,
-            ((settings.lensSeparationMm - DisplaySettings.MIN_LENS_SEPARATION_MM) /
-                (DisplaySettings.MAX_LENS_SEPARATION_MM - DisplaySettings.MIN_LENS_SEPARATION_MM) * 1000f).toInt(),
-            { p -> "%.1f mm".format(DisplaySettings.MIN_LENS_SEPARATION_MM +
-                p / 1000f * (DisplaySettings.MAX_LENS_SEPARATION_MM - DisplaySettings.MIN_LENS_SEPARATION_MM)) },
-        ) { p -> settings.copy(lensSeparationMm = DisplaySettings.MIN_LENS_SEPARATION_MM +
-            p / 1000f * (DisplaySettings.MAX_LENS_SEPARATION_MM - DisplaySettings.MIN_LENS_SEPARATION_MM)) }
-
-        addSlider(
-            content, "镜片中心 X 微调", "在实体镜片间距计算结果上对左右眼作对称微调", 1000,
-            ((settings.lensCenterX - 0.40f) / 0.20f * 1000f).toInt(),
-            { p -> "%.3f".format(0.40f + p / 1000f * 0.20f) },
-        ) { p -> settings.copy(lensCenterX = 0.40f + p / 1000f * 0.20f) }
-
-        addSlider(
-            content, "镜片中心 Y", "每只眼睛区域内的垂直光学中心", 1000,
-            ((settings.lensCenterY - 0.40f) / 0.20f * 1000f).toInt(),
-            { p -> "%.3f".format(0.40f + p / 1000f * 0.20f) },
-        ) { p -> settings.copy(lensCenterY = 0.40f + p / 1000f * 0.20f) }
-
-        addSlider(
-            content, "桶形畸变 K1", "镜片径向畸变的一阶系数", 1000,
-            ((settings.distortionK1 + 0.30f) / 0.90f * 1000f).toInt(),
-            { p -> "%.3f".format(-0.30f + p / 1000f * 0.90f) },
-        ) { p -> settings.copy(distortionK1 = -0.30f + p / 1000f * 0.90f) }
-
-        addSlider(
-            content, "畸变 K2", "镜片径向畸变的二阶系数", 1000,
-            ((settings.distortionK2 + 0.20f) / 0.50f * 1000f).toInt(),
-            { p -> "%.3f".format(-0.20f + p / 1000f * 0.50f) },
-        ) { p -> settings.copy(distortionK2 = -0.20f + p / 1000f * 0.50f) }
-
-        addSlider(
-            content, "视场角 FOV", "测试场景水平/垂直投影视场参数", 1000,
-            ((settings.fovDegrees - 60f) / 55f * 1000f).toInt(),
-            { p -> "%.1f°".format(60f + p / 1000f * 55f) },
-        ) { p -> settings.copy(fovDegrees = 60f + p / 1000f * 55f) }
-
-        addSlider(
-            content, "画面柔化", "当前用于校准预览，串流纹理接入后作用于视频", 1000,
-            (settings.blur * 1000f).toInt(),
-            { p -> "${p / 10}%" },
-        ) { p -> settings.copy(blur = p / 1000f) }
-
-        addSlider(
-            content, "边缘增强", "当前为测试场景对比度预览", 1000,
-            (settings.sharpness * 1000f).toInt(),
-            { p -> "${p / 10}%" },
-        ) { p -> settings.copy(sharpness = p / 1000f) }
-
-        content.addView(label(
-            "校准顺序建议：先调 IPD，使中心标记单一清晰；再调镜片中心 X/Y，使十字落在双眼可视中心；最后微调 K1/K2 和 FOV，直到直线边缘自然。真实屈光度和屏幕到镜片焦距由物理镜片决定。",
-            secondary = true,
-        ).apply { setPadding(0, dp(16), 0, dp(12)) })
-
-        panel.addView(makeButton("恢复默认校准") {
-            settings = DisplaySettings()
-            settingsStore.save(settings)
-            updateRendererSettings()
-            networkClient.publishDisplaySettings(settings.toJson())
-            recreateSettingsPanelContent()
+        scroll.addView(list, FrameLayout.LayoutParams(-1, -2))
+        panel.addView(scroll, LinearLayout.LayoutParams(-1, 0, 1f))
+        panel.addView(makeButton("关闭") {
+            settingsPanel.visibility = View.GONE
+            updateDismissLayer()
         }.apply {
-            layoutParams = LinearLayout.LayoutParams(-1, dp(42))
+            layoutParams = LinearLayout.LayoutParams(-1, dp(42)).apply { topMargin = dp(8) }
         })
         return panel
+    }
+
+    private fun applyLocalOpticalPreset(presetId: String) {
+        val preset = opticalPresets.firstOrNull { it.id == presetId } ?: return
+        settings = preset.settings.normalized()
+        activeOpticalPresetId = preset.id
+        settingsStore.save(settings)
+        settingsStore.saveActiveOpticalPresetId(preset.id)
+        updateRendererSettings()
+        if (pcConnected) networkClient.publishDisplaySettings(settings.toJson())
+        recreateSettingsPanelContent()
     }
 
     private fun recreateSettingsPanelContent() {
@@ -697,7 +669,7 @@ class MainActivity : Activity(), SensorEventListener {
     /**
      * Converts the stored physical viewer alignment into the normalized lens
      * center used by the OpenGL post-process pass. The phone's reported physical
-     * DPI is an estimate, so the manual Y slider remains available for fine tuning.
+     * DPI is an estimate; optical values are now selected from host-managed presets.
      */
     private fun updateRendererSettings() {
         if (!::renderer.isInitialized) return

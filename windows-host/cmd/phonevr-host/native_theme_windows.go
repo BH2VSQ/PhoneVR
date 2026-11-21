@@ -98,17 +98,38 @@ func (app *nativeUI) applyDarkWindow(hwnd uintptr) {
 	if hwnd == 0 {
 		return
 	}
-	// DWMWA_USE_IMMERSIVE_DARK_MODE. Unsupported versions simply ignore it.
-	value := int32(1)
+	// The custom title bar has no native caption; this also keeps non-client
+	// themed borders consistent on Windows versions that support the flag.
+	value := int32(0)
+	if app.themeConfig.Mode != "light" {
+		value = 1
+	}
 	pDwmSetWindowAttr.Call(hwnd, 20, uintptr(unsafe.Pointer(&value)), unsafe.Sizeof(value))
-	pSetWindowTheme.Call(hwnd, uintptr(unsafe.Pointer(syscall.StringToUTF16Ptr("DarkMode_Explorer"))), 0)
+	app.applyDarkControl(hwnd)
 }
 
 func (app *nativeUI) applyDarkControl(hwnd uintptr) {
 	if hwnd == 0 {
 		return
 	}
-	pSetWindowTheme.Call(hwnd, uintptr(unsafe.Pointer(syscall.StringToUTF16Ptr("DarkMode_Explorer"))), 0)
+	theme := "DarkMode_Explorer"
+	if app.themeConfig.Mode == "light" {
+		theme = ""
+	}
+	pSetWindowTheme.Call(hwnd, uintptr(unsafe.Pointer(syscall.StringToUTF16Ptr(theme))), 0)
+}
+
+func (app *nativeUI) rebuildThemeBrushes() {
+	for _, brush := range []uintptr{app.background, app.dialogBackground, app.editBackground, app.buttonBackground} {
+		if brush != 0 {
+			pDeleteObject.Call(brush)
+		}
+	}
+	p := app.palette()
+	app.background, _, _ = pCreateSolidBrush.Call(p.Background)
+	app.dialogBackground, _, _ = pCreateSolidBrush.Call(p.Panel)
+	app.editBackground, _, _ = pCreateSolidBrush.Call(p.Input)
+	app.buttonBackground, _, _ = pCreateSolidBrush.Call(p.Surface)
 }
 
 type nativeDrawItem struct {
@@ -131,22 +152,23 @@ func (app *nativeUI) drawDialogButton(lParam uintptr) uintptr {
 	pRtlMoveMemory.Call(uintptr(unsafe.Pointer(&item)), lParam, unsafe.Sizeof(item))
 	runtime.KeepAlive(&item)
 	id := int(item.CtlID)
-	primary := id == idApply || id == idPresetApply || id == idNetworkApply || id == idNetworkStart
+	p := app.palette()
+	primary := id == idApply || id == idPresetApply || id == idThemeApply || id == idNetworkApply || id == idNetworkStart
 	danger := id == idPresetDelete || id == idNetworkStop
-	fill, border, foreground := rgb(20, 38, 56), rgb(45, 70, 93), rgb(211, 226, 240)
+	fill, border, foreground := p.Surface, p.Border, p.Text
 	if primary {
-		fill, border, foreground = rgb(91, 184, 248), rgb(91, 184, 248), rgb(7, 21, 34)
+		fill, border, foreground = p.Accent, p.Accent, p.AccentText
 	}
 	if danger {
-		fill, border, foreground = rgb(64, 31, 39), rgb(111, 55, 67), rgb(255, 190, 197)
+		fill, border, foreground = p.DangerBg, p.DangerLine, p.DangerText
 	}
 	if item.ItemState&0x0001 != 0 {
-		fill = rgb(28, 53, 74)
+		fill = p.Panel
 		if primary {
-			fill = rgb(130, 207, 255)
+			fill = p.Accent
 		}
 		if danger {
-			fill = rgb(88, 39, 49)
+			fill = p.DangerBg
 		}
 	}
 	drawNativeRoundRect(item.HDC, item.ItemRect, fill, border, 7)
@@ -157,15 +179,16 @@ func (app *nativeUI) drawDialogButton(lParam uintptr) uintptr {
 }
 
 func (app *nativeUI) controlColor(hdc uintptr, message uint32) uintptr {
-	pSetTextColor.Call(hdc, rgb(229, 238, 248))
+	p := app.palette()
+	pSetTextColor.Call(hdc, p.Text)
 	switch message {
 	case 0x0133, 0x0134: // EDIT / LISTBOX
 		pSetBkMode.Call(hdc, 2)
-		pSetBkColor.Call(hdc, rgb(9, 21, 33))
+		pSetBkColor.Call(hdc, p.Input)
 		return app.editBackground
 	case 0x0135: // BUTTON
 		pSetBkMode.Call(hdc, 2)
-		pSetBkColor.Call(hdc, rgb(20, 38, 56))
+		pSetBkColor.Call(hdc, p.Surface)
 		return app.buttonBackground
 	default:
 		pSetBkMode.Call(hdc, transparent)
@@ -188,20 +211,29 @@ func (app *nativeUI) paintMain(hdc uintptr) {
 	if w <= 0 || h <= 0 {
 		return
 	}
-	fillNativeRect(hdc, nativeRect{0, 0, int32(w), int32(h)}, rgb(9, 17, 27))
+	p := app.palette()
+	fillNativeRect(hdc, nativeRect{0, 0, int32(w), int32(h)}, p.Background)
 
 	runLabel := app.text("运行中", "RUNNING")
 	if !app.snapshot.Running {
 		runLabel = app.text("已停止", "STOPPED")
 	}
-	drawNativePill(hdc, 14, 10, 122, 36, runLabel, app.snapshot.Running, !app.snapshot.Running, app.fontBody)
+	drawNativePill(hdc, 14, 10, 122, 36, runLabel, app.snapshot.Running, !app.snapshot.Running, app.fontBody, p)
 	steamText := app.text("SteamVR 未连接", "STEAMVR DISCONNECTED")
-	drawNativeSteamPill(hdc, (w-232)/2, 10, 232, 36, steamText, app.fontBody)
+	// Fit the status into the free space between the left state pill and the
+	// right HMD/battery/menu group. This avoids both truncation and overlap
+	// on narrower desktop windows.
+	leftLimit := 152
+	rightLimit := w - 272
+	center := w / 2
+	freeHalf := minInt(center-leftLimit, rightLimit-center)
+	steamWidth := minInt(320, maxInt(180, freeHalf*2))
+	drawNativeSteamPill(hdc, (w-steamWidth)/2, 10, steamWidth, 36, steamText, app.fontSmall, p)
 
 	connected := len(app.snapshot.ConnectedDevices) > 0
 	right := w - 14
 	menuRect := nativeRect{int32(right - 46), 10, int32(right), 46}
-	drawNativeMenuButton(hdc, menuRect)
+	drawNativeMenuButton(hdc, menuRect, p)
 	app.hitTargets = app.hitTargets[:0]
 	app.hitTargets = append(app.hitTargets, nativeHitTarget{ID: idMenu, Rect: menuRect})
 
@@ -216,12 +248,12 @@ func (app *nativeUI) paintMain(hdc uintptr) {
 		batteryActive = level > 15
 		batteryWarning = level <= 15
 	}
-	drawNativePill(hdc, right-46-10-96, 10, 96, 36, batteryText, batteryActive, batteryWarning, app.fontBody)
-	drawNativeHMDPill(hdc, right-46-10-96-10-96, 10, 96, 36, connected, app.fontBody)
-	drawNativeLine(hdc, 14, 54, w-14, 54, rgb(33, 52, 71), 1)
+	drawNativePill(hdc, right-46-10-96, 10, 96, 36, batteryText, batteryActive, batteryWarning, app.fontBody, p)
+	drawNativeHMDPill(hdc, right-46-10-96-10-96, 10, 96, 36, connected, app.fontBody, p)
+	drawNativeLine(hdc, 14, 54, w-14, 54, p.Border, 1)
 
 	panel := nativeRect{14, 62, int32(w - 14), int32(h - 12)}
-	drawNativeRoundRect(hdc, panel, rgb(16, 29, 42), rgb(38, 59, 80), 14)
+	drawNativeRoundRect(hdc, panel, p.Panel, p.Border, 14)
 
 	metricW, metricGap, metricH := 180, 12, 72
 	metricTotal := metricW*3 + metricGap*2
@@ -238,9 +270,9 @@ func (app *nativeUI) paintMain(hdc uintptr) {
 	labels := [3]string{"YAW", "PITCH", "ROLL"}
 	for i := 0; i < 3; i++ {
 		x := metricX + i*(metricW+metricGap)
-		drawNativeRoundRect(hdc, nativeRect{int32(x), int32(metricY), int32(x + metricW), int32(metricY + metricH)}, rgb(12, 24, 36), rgb(38, 62, 84), 10)
-		drawNativeText(hdc, labels[i], nativeRect{int32(x + 4), int32(metricY + 6), int32(x + metricW - 4), int32(metricY + 27)}, rgb(119, 144, 169), app.fontSmall, dtCenter|dtVCenter|dtSingleLine|dtNoPrefix)
-		drawNativeText(hdc, values[i], nativeRect{int32(x + 4), int32(metricY + 26), int32(x + metricW - 4), int32(metricY + 68)}, rgb(185, 221, 249), app.fontValue, dtCenter|dtVCenter|dtSingleLine|dtNoPrefix)
+		drawNativeRoundRect(hdc, nativeRect{int32(x), int32(metricY), int32(x + metricW), int32(metricY + metricH)}, p.Surface, p.Border, 10)
+		drawNativeText(hdc, labels[i], nativeRect{int32(x + 4), int32(metricY + 6), int32(x + metricW - 4), int32(metricY + 27)}, p.Muted, app.fontSmall, dtCenter|dtVCenter|dtSingleLine|dtNoPrefix)
+		drawNativeText(hdc, values[i], nativeRect{int32(x + 4), int32(metricY + 26), int32(x + metricW - 4), int32(metricY + 68)}, p.Accent, app.fontValue, dtCenter|dtVCenter|dtSingleLine|dtNoPrefix)
 	}
 }
 
@@ -257,18 +289,19 @@ func (app *nativeUI) paintMainMenu(hdc uintptr) {
 	if width <= 0 || height <= 0 {
 		return
 	}
-	fillNativeRect(hdc, nativeRect{0, 0, int32(width), int32(height)}, rgb(12, 22, 34))
-	drawNativeRoundRect(hdc, nativeRect{1, 1, int32(width - 1), int32(height - 1)}, rgb(13, 25, 38), rgb(53, 82, 108), 14)
-	drawNativeText(hdc, app.text("PhoneVR 控制中心", "PhoneVR CONTROL"), nativeRect{20, 14, int32(width - 18), 46}, rgb(222, 237, 250), app.fontTitle, dtVCenter|dtSingleLine|dtEndEllipsis|dtNoPrefix)
-	drawNativeText(hdc, app.text("快速操作与主机设置", "Quick actions and host settings"), nativeRect{20, 46, int32(width - 18), 68}, rgb(126, 154, 180), app.fontSmall, dtVCenter|dtSingleLine|dtEndEllipsis|dtNoPrefix)
-	drawNativeLine(hdc, 16, 70, width-16, 70, rgb(42, 65, 86), 1)
+	p := app.palette()
+	fillNativeRect(hdc, nativeRect{0, 0, int32(width), int32(height)}, p.Background)
+	drawNativeRoundRect(hdc, nativeRect{1, 1, int32(width - 1), int32(height - 1)}, p.Panel, p.Border, 14)
+	drawNativeText(hdc, app.text("PhoneVR 控制中心", "PhoneVR CONTROL"), nativeRect{20, 14, int32(width - 18), 46}, p.Text, app.fontTitle, dtVCenter|dtSingleLine|dtEndEllipsis|dtNoPrefix)
+	drawNativeText(hdc, app.text("快速操作与主机设置", "Quick actions and host settings"), nativeRect{20, 46, int32(width - 18), 68}, p.Muted, app.fontSmall, dtVCenter|dtSingleLine|dtEndEllipsis|dtNoPrefix)
+	drawNativeLine(hdc, 16, 70, width-16, 70, p.Border, 1)
 
 	for index, item := range app.mainMenuItems() {
 		y := 76 + index*48
 		r := nativeRect{14, int32(y), int32(width - 14), int32(y + 42)}
-		drawNativeRoundRect(hdc, r, rgb(20, 38, 56), rgb(40, 64, 86), 9)
-		drawNativeEllipse(hdc, nativeRect{26, int32(y + 13), 42, int32(y + 29)}, rgb(80, 177, 238), 0)
-		drawNativeText(hdc, app.text(item.Chinese, item.English), nativeRect{54, int32(y), int32(width - 28), int32(y + 42)}, rgb(207, 224, 240), app.fontBody, dtVCenter|dtSingleLine|dtEndEllipsis|dtNoPrefix)
+		drawNativeRoundRect(hdc, r, p.Surface, p.Border, 9)
+		drawNativeEllipse(hdc, nativeRect{26, int32(y + 13), 42, int32(y + 29)}, p.Accent, 0)
+		drawNativeText(hdc, app.text(item.Chinese, item.English), nativeRect{54, int32(y), int32(width - 28), int32(y + 42)}, p.Text, app.fontBody, dtVCenter|dtSingleLine|dtEndEllipsis|dtNoPrefix)
 	}
 	drawNativeText(hdc, app.text("点击空白区域可关闭菜单", "Click outside to dismiss"), nativeRect{16, int32(height - 31), int32(width - 16), int32(height - 8)}, rgb(105, 132, 157), app.fontSmall, dtCenter|dtVCenter|dtSingleLine|dtNoPrefix)
 }
@@ -292,33 +325,34 @@ func (app *nativeUI) handleMainClick(x, y int) {
 	}
 }
 
-func drawNativePill(hdc uintptr, x, y, width, height int, text string, active bool, warning bool, font uintptr) {
-	fill, border, foreground, dot := rgb(14, 26, 39), rgb(38, 59, 80), rgb(129, 150, 173), rgb(116, 134, 154)
+func drawNativePill(hdc uintptr, x, y, width, height int, text string, active bool, warning bool, font uintptr, p nativePalette) {
+	fill, border, foreground, dot := p.Panel, p.Border, p.Muted, p.Muted
 	if active {
-		border, foreground, dot = rgb(40, 87, 68), rgb(85, 217, 160), rgb(85, 217, 160)
+		border, foreground, dot = p.Good, p.Good, p.Good
 	}
 	if warning {
-		border, foreground, dot = rgb(91, 72, 45), rgb(231, 183, 110), rgb(231, 183, 110)
+		border, foreground, dot = p.Warning, p.Warning, p.Warning
 	}
 	drawNativeRoundRect(hdc, nativeRect{int32(x), int32(y), int32(x + width), int32(y + height)}, fill, border, height/2)
 	drawNativeDot(hdc, x+10, y+height/2-5, dot)
 	drawNativeText(hdc, text, nativeRect{int32(x + 24), int32(y + 1), int32(x + width - 6), int32(y + height - 1)}, foreground, font, dtVCenter|dtSingleLine|dtEndEllipsis|dtNoPrefix)
 }
 
-func drawNativeSteamPill(hdc uintptr, x, y, width, height int, text string, font uintptr) {
-	drawNativeRoundRect(hdc, nativeRect{int32(x), int32(y), int32(x + width), int32(y + height)}, rgb(21, 21, 42), rgb(60, 58, 98), height/2)
-	drawNativeDot(hdc, x+12, y+height/2-5, rgb(140, 136, 216))
-	drawNativeText(hdc, text, nativeRect{int32(x + 27), int32(y + 1), int32(x + width - 8), int32(y + height - 1)}, rgb(184, 182, 239), font, dtCenter|dtVCenter|dtSingleLine|dtEndEllipsis|dtNoPrefix)
+func drawNativeSteamPill(hdc uintptr, x, y, width, height int, text string, font uintptr, p nativePalette) {
+	drawNativeRoundRect(hdc, nativeRect{int32(x), int32(y), int32(x + width), int32(y + height)}, p.SteamBg, p.SteamLine, height/2)
+	drawNativeDot(hdc, x+12, y+height/2-5, p.Accent)
+	// The adaptive outer width reserves sufficient text area for long English
+	// connection states instead of clipping them to the old fixed 232 px pill.
+	drawNativeText(hdc, text, nativeRect{int32(x + 27), int32(y + 1), int32(x + width - 8), int32(y + height - 1)}, p.SteamText, font, dtCenter|dtVCenter|dtSingleLine|dtEndEllipsis|dtNoPrefix)
 }
 
-func drawNativeHMDPill(hdc uintptr, x, y, width, height int, online bool, font uintptr) {
-	// Keep the compact HMD label and communicate state through the lamp and tint.
-	drawNativePill(hdc, x, y, width, height, "HMD", online, false, font)
+func drawNativeHMDPill(hdc uintptr, x, y, width, height int, online bool, font uintptr, p nativePalette) {
+	drawNativePill(hdc, x, y, width, height, "HMD", online, false, font, p)
 }
 
-func drawNativeMenuButton(hdc uintptr, r nativeRect) {
-	drawNativeRoundRect(hdc, r, rgb(20, 38, 56), rgb(44, 67, 88), 8)
-	pen, _, _ := pCreatePen.Call(0, 2, rgb(185, 214, 238))
+func drawNativeMenuButton(hdc uintptr, r nativeRect, p nativePalette) {
+	drawNativeRoundRect(hdc, r, p.Surface, p.Border, 8)
+	pen, _, _ := pCreatePen.Call(0, 2, p.Text)
 	old, _, _ := pSelectObject.Call(hdc, pen)
 	cx := int((r.Left + r.Right) / 2)
 	for _, yy := range []int{int(r.Top) + 10, int(r.Top) + 17, int(r.Top) + 24} {

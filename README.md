@@ -1,6 +1,6 @@
 # PhoneVRStream
 
-Repository revision: **0.3.9**. Windows Host: **0.3.9**. Android client: **0.3.9**. Network protocol: **v1**.
+Repository revision: **0.3.11**. Windows Host: **0.3.11**. Android client: **0.3.11**. Network protocol: **v1**.
 
 PhoneVRStream is a two-part project for using an Android phone as a PC VR streaming HMD. Both applications live in one repository and use independent build/test pipelines.
 
@@ -19,7 +19,7 @@ PhoneVRStream/
 └── dist/                       # Local build output (git-ignored)
 ```
 
-## Windows Host 0.3.8
+## Windows Host 0.3.11
 
 The Windows Host has been migrated from an Edge/Chrome app-mode dashboard to a native Windows desktop application.
 
@@ -27,8 +27,9 @@ The Windows Host has been migrated from an Edge/Chrome app-mode dashboard to a n
 - The UI is drawn natively with Win32, GDI+ anti-aliased shapes, ClearType Segoe UI typography and custom-drawn status pills/cards. It preserves the former browser dashboard visual language: deep navy background, blue-gray surfaces, subtle borders, green Host/HMD/battery indicators and purple SteamVR state. The HMD pose viewport uses a native WGL/OpenGL context and the embedded Daydream View 2017 OBJ/MTL mesh. There is no WebView, Edge, Chrome, HTML dashboard, local HTTP UI server or browser runtime dependency.
 - The model is rendered as a solid material mesh with depth testing and back-face culling. The local XYZ axes and gaze ray rotate with the received HMD quaternion; the floor grid remains world-aligned.
 - The main window shows Host state, SteamVR state, HMD state, phone battery, the 3D HMD view and Yaw/Pitch/Roll. English labels are rendered as single-line text with end ellipsis and responsive positioning to prevent wrapping and overlap.
-- Native child windows provide phone display settings, optical preset management, network settings and logs. Phone settings are sent through the existing TCP control channel and the UI waits for the phone's applied settings acknowledgement before showing confirmation.
-- Built-in Daydream View 2017 and Generic Cardboard optical presets are available. User presets support save, clone, rename and delete. Built-in presets cannot be renamed or deleted.
+- Native child windows provide Android-owned optical preset management, network settings, logs and appearance controls. The Host pulls the preset catalogue from Android when connected; the phone remains the authoritative persistent store.
+- The Optical Presets list supports double-click editing, save, apply, create, clone, rename and delete. The former phone display settings editor is integrated into the preset editor.
+- Light/dark themes and a custom HEX accent color are supported; child windows use an in-app Close action without a separate native caption close button.
 - Chinese is the default UI language. English/Chinese switching is available and persists in the user's application data.
 - Window sizing is constrained to a 1.2:1 outer-window ratio. The default size is 1080 x 900.
 - The HMD is the only tracked device managed by PhoneVRStream. SlimeVR remains responsible for body tracking through SteamVR.
@@ -38,11 +39,11 @@ The normal `PhoneVRHost.exe` is built with the Windows GUI subsystem and opens t
 ## Android client
 
 - Landscape immersive display with OpenGL ES 3.0 stereo rendering.
-- Virtual IPD, lens-center adjustment, radial K1/K2 distortion correction, blur and sharpening controls.
-- Daydream View v2.0 (2017) optical starting profile, with editable physical lens spacing and distortion values.
+- Locally stored optical preset selector with Daydream View v2.0 (2017) and Generic Cardboard built-in presets.
+- Existing manual display settings are migrated into an Android-local optical preset during the first upgrade; parameter editing is performed in the Windows Host preset editor.
 - IMU sensor processing on a dedicated HandlerThread, quaternion pose transmission over UDP at up to 60 Hz, TCP pairing and heartbeat, battery reporting and bounded auto-reconnect.
 - Automatic LAN discovery and connection to the remembered active Host.
-- Host-to-phone remote display settings and recenter operations over the TCP control channel.
+- Android-owned optical preset synchronization and preset-ID application, plus recenter operations over the TCP control channel.
 - Daydream Controller input provider interface is prepared; actual pairing and input forwarding remain future work.
 
 ## Current limitations

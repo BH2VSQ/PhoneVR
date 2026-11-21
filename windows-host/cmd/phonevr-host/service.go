@@ -882,7 +882,7 @@ func (s *HostService) handleControlConnection(ctx context.Context, conn net.Conn
 	if probeDone != nil {
 		select {
 		case <-probeDone:
-		case <-time.After(6 * time.Second):
+		case <-time.After(8 * time.Second):
 		}
 	}
 	s.mu.RLock()
@@ -890,6 +890,10 @@ func (s *HostService) handleControlConnection(ctx context.Context, conn net.Conn
 	encoderError := s.videoEncoderError
 	s.mu.RUnlock()
 	selectedAndroidDecoder := selectH264DecoderProfile(mediaCapabilities, videoWidth, videoHeight, videoFrameRate)
+	if selectedAndroidDecoder == "" {
+		s.addLog(fmt.Sprintf("Android H.264 decoder negotiation details for %s: %s",
+			hello.DeviceName, describeH264DecoderCapabilities(mediaCapabilities)))
+	}
 	videoEnabled := hardwareEncoderReady && selectedAndroidDecoder != ""
 	if videoEnabled && !h264DecoderClassificationReliable(mediaCapabilities, selectedAndroidDecoder) {
 		s.addLog(fmt.Sprintf("Android decoder %s is on a pre-Android-10 platform; accepting the vendor-codec heuristic after profile capability checks", selectedAndroidDecoder))
@@ -1109,6 +1113,38 @@ func selectH264DecoderProfile(raw json.RawMessage, width, height, fps int) strin
 		}
 	}
 	return ""
+}
+
+func describeH264DecoderCapabilities(raw json.RawMessage) string {
+	var entries []struct {
+		Name                           string  `json:"name"`
+		MimeType                       string  `json:"mimeType"`
+		MaxWidth                       int     `json:"maxWidth"`
+		MaxHeight                      int     `json:"maxHeight"`
+		MaxFrameRate                   float64 `json:"maxFrameRate"`
+		HardwareAccelerated            bool    `json:"hardwareAccelerated"`
+		HardwareClassificationReliable bool    `json:"hardwareClassificationReliable"`
+		SupportsTargetProfile          bool    `json:"supportsSbs1600x720At60"`
+	}
+	if len(raw) == 0 {
+		return "MediaCodec capability array is empty"
+	}
+	if err := json.Unmarshal(raw, &entries); err != nil {
+		return "MediaCodec capability JSON is invalid: " + err.Error()
+	}
+	var reports []string
+	for _, item := range entries {
+		if !strings.EqualFold(item.MimeType, "video/avc") {
+			continue
+		}
+		reports = append(reports, fmt.Sprintf("%s max=%dx%d@%.1f hw=%t hw-classification-reliable=%t supports-1600x720@60=%t",
+			item.Name, item.MaxWidth, item.MaxHeight, item.MaxFrameRate,
+			item.HardwareAccelerated, item.HardwareClassificationReliable, item.SupportsTargetProfile))
+	}
+	if len(reports) == 0 {
+		return "no video/avc decoder advertised"
+	}
+	return strings.Join(reports, "; ")
 }
 
 func supportsH264Profile(raw json.RawMessage, width, height, fps int) bool {

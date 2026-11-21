@@ -814,7 +814,7 @@ class NetworkClient(
         private const val DISCOVERY_WINDOW_MS = 1800L
         private const val DISCOVERY_READ_TIMEOUT_MS = 300
         private const val CONNECT_TIMEOUT_MS = 4000
-        private const val HANDSHAKE_TIMEOUT_MS = 5000
+        private const val HANDSHAKE_TIMEOUT_MS = 10000
         private const val CONTROL_READ_TIMEOUT_MS = 1000
         private const val HEARTBEAT_INTERVAL_NS = 2_000_000_000L
         private const val HEARTBEAT_TIMEOUT_NS = 10_000_000_000L

@@ -20,6 +20,9 @@ func main() {
 	flag.Parse()
 
 	service := NewHostService(*headless)
+	// Start hardware encoder preflight before accepting Android clients. The
+	// control listener must never expose a pairing window with no probe channel.
+	service.ProbeVideoEncoders(*ffmpegPath)
 	config := HostConfig{
 		ListenAddress: *listenAddress,
 		DiscoveryPort: *discovery,
@@ -39,8 +42,6 @@ func main() {
 	} else if driverMessage != "" {
 		service.addLog(driverMessage)
 	}
-
-	service.ProbeVideoEncoders(*ffmpegPath)
 
 	if *headless {
 		fmt.Println("PhoneVR Host running in headless mode. Press Ctrl+C to stop.")

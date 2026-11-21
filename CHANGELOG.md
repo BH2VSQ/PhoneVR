@@ -257,3 +257,10 @@
 - Added amd64/386 structure size and field-offset regression tests.
 - Kept the selected-file buffer and UTF-16 filter/title buffers alive across the native dialog call.
 - Added `CommDlgExtendedError` reporting so a real common-dialog failure is reported in the Host instead of being silently treated as cancellation.
+
+## 0.4.19 diagnostics follow-up (2026-11-22)
+
+- Start hardware H.264 encoder preflight before opening the Host control listener to remove the first-pairing race.
+- Align Android's control handshake timeout with the Host's bounded encoder-preflight wait.
+- Log Android-advertised H.264 decoder names and their exact resolution, frame-rate, hardware and target-profile capabilities when negotiation fails.
+- Add Android Logcat diagnostics for the MediaCodec H.264 decoder inventory, useful for vendor codec stacks such as LineageOS on Redmi K40.

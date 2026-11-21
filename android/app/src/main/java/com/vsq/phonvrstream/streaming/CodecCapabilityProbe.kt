@@ -5,6 +5,7 @@ import android.media.MediaCodecList
 import org.json.JSONArray
 import org.json.JSONObject
 import android.os.Build
+import android.util.Log
 
 /** Android decoder capabilities with a codec-name fallback on APIs before 29. */
 data class VideoDecoderCapability(
@@ -22,6 +23,7 @@ data class VideoDecoderCapability(
 )
 
 object CodecCapabilityProbe {
+    private const val TAG = "PhoneVRCodecProbe"
     private val preferredMimeTypes = listOf(
         "video/avc",   // H.264: baseline interoperability codec
         "video/hevc",  // HEVC: optional bandwidth-saving codec
@@ -74,6 +76,17 @@ object CodecCapabilityProbe {
                 )
             }
         }
+        // Log the exact codec enumeration on device. Vendor ROMs may expose
+        // different component names and size/rate limits for the same SoC.
+        result.filter { it.mimeType == "video/avc" }.forEach { codec ->
+            Log.i(TAG, "H.264 decoder ${codec.name}: hardware=${codec.hardwareAccelerated}, " +
+                "classificationReliable=${codec.hardwareClassificationReliable}, " +
+                "max=${codec.maxWidth}x${codec.maxHeight}@${codec.maxFrameRate}, " +
+                "supports1600x720@60=${codec.supportsSbs1600x720At60}, " +
+                "profiles=${codec.profileLevels.joinToString(",")}")
+        }
+        Log.i(TAG, "MediaCodec probe: SDK=${Build.VERSION.SDK_INT}, H.264 decoders=${result.count { it.mimeType == "video/avc" }}")
+
         // H.264 remains the universal baseline; within each MIME type prefer
         // hardware implementations. Never trust MediaCodecList enumeration order.
         return result.sortedWith(

@@ -831,13 +831,12 @@ func TestPoseUpdateDoesNotWaitForGeneralServiceMutex(t *testing.T) {
 
 func TestClassifyHostInterface(t *testing.T) {
 	cases := map[string]string{
-		"Remote NDIS Compatible Device": "USB/RNDIS",
-		"USB Ethernet/RNDIS Gadget":     "USB/RNDIS",
-		"Wi-Fi":                         "Wi-Fi",
-		"wlan0":                         "Wi-Fi",
-		"Ethernet 3":                    "Ethernet",
-		"eth0":                          "Ethernet",
-		"vEthernet (Default Switch)":    "Network",
+		"Wi-Fi":                      "Wi-Fi",
+		"wlan0":                      "Wi-Fi",
+		"Ethernet 3":                 "Ethernet",
+		"eth0":                       "Ethernet",
+		"vEthernet (Default Switch)": "Network",
+		"Other Adapter":              "Network",
 	}
 	for name, expected := range cases {
 		if actual := classifyHostInterface(name); actual != expected {

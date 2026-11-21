@@ -49,7 +49,7 @@ The normal `PhoneVRHost.exe` is built with the Windows GUI subsystem and opens t
 - Locally stored optical preset selector with Daydream View v2.0 (2017) and Generic Cardboard built-in presets.
 - Existing manual display settings are migrated into an Android-local optical preset during the first upgrade; parameter editing is performed in the Windows Host preset editor.
 - IMU sensor processing on a dedicated HandlerThread, quaternion-continuous pose transmission over UDP at up to 200 Hz, TCP pairing and heartbeat, battery reporting and bounded auto-reconnect.
-- Automatic LAN discovery and connection to the remembered active Host, with selectable Auto / Wi-Fi / USB-RNDIS interface discovery.
+- Automatic LAN discovery across active IPv4 interfaces and connection to the remembered Host.
 - Android-owned optical preset synchronization and preset-ID application, plus recenter operations over the TCP control channel.
 - Daydream Controller input provider interface is prepared; actual pairing and input forwarding remain future work.
 - `CodecCapabilityProbe` enumerates device MediaCodec decoders and advertises only a hardware H.264 decoder that explicitly supports the negotiated 1600×720@60 profile. `MediaCodec` decodes the H.264 SBS stream to a `SurfaceTexture`; the OpenGL stereo renderer applies the optical warp independently to the left and right halves.
@@ -133,7 +133,7 @@ The Windows Host version is injected from the root VERSION file at build time. T
 | 48105 | UDP loopback only | SteamVR driver -> Host runtime heartbeat |
 | 48106 | TCP loopback only | SteamVR driver -> Host raw BGRA capture bridge |
 
-The PC and phone can use the same LAN or a direct Android USB-tether/RNDIS network. Guest Wi-Fi or AP/client isolation may block wireless discovery and direct connections.
+The PC and phone should use the same LAN. Guest Wi-Fi or AP/client isolation may block discovery and direct connections.
 
 ## Continuous integration and releases
 
@@ -148,14 +148,3 @@ The Windows Host executable includes the compiled PhoneVR OpenVR driver. At star
 The in-app manager provides status refresh, **Install / Repair Bundled Driver**, and **Uninstall & Disable Auto Deploy**. Uninstall persists the user's opt-out choice, so a later Host launch does not reinstall the driver unexpectedly. Manual installation clears the opt-out marker. Only files under PhoneVR's own managed directory are deleted; manually registered drivers in other paths are only unregistered. Restart SteamVR after driver changes. No driver ZIP selector or separate Release driver ZIP is required.
 
 
-## USB tethered connection (RNDIS)
-
-PhoneVR 0.4.19 supports a wired connection over Android USB tethering. Connect the phone to the PC with a data-capable USB cable, enable **USB tethering / USB 网络共享** in Android Settings, and wait for Windows to create a USB/RNDIS network adapter. In the Android connection panel select **USB 有线（RNDIS）** and search for the Host. The existing TCP control, UDP pose and H.264 video protocols are reused over the USB network interface; no ADB installation, USB debugging authorization or protocol tunnel is required. The Wi-Fi and USB modes can coexist, and Auto discovery searches all eligible IPv4 interfaces.
-
-If Windows classifies the RNDIS adapter as a Public network, run an elevated PowerShell from the repository root:
-
-```powershell
-.\tools\enable-usb-tethering-firewall.ps1
-```
-
-The script allows inbound TCP 48101 and UDP 48100/48102 only from `LocalSubnet` on all network profiles. Video UDP 48104 is outbound from Host, and the capture/status bridge ports remain loopback-only. Remove the rules with `-Remove`.

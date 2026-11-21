@@ -217,9 +217,8 @@ func (s *HostService) Start(config HostConfig) error {
 	}
 	// Network-interface enumeration can block on virtual adapters and VPN
 	// providers. Resolve addresses once at service start, never in Snapshot(),
-	// Enumerate once before starting real-time workers. This also exposes USB/RNDIS
-	// addresses for tethered Android discovery without doing interface queries in
-	// the hot pose path or while holding the service state lock.
+	// and do it before starting real-time workers so interface queries never run
+	// in the hot pose path or while holding the service state lock.
 	networkAddresses := localIPv4NetworkAddresses()
 	localIPs := make([]string, 0, len(networkAddresses))
 	localIPSet := make(map[string]struct{}, len(networkAddresses))
@@ -1295,8 +1294,6 @@ type HostNetworkAddress struct {
 func classifyHostInterface(name string) string {
 	normalized := strings.ToLower(name)
 	switch {
-	case strings.Contains(normalized, "rndis"), strings.Contains(normalized, "remote ndis"), strings.Contains(normalized, "usb"), strings.Contains(normalized, "tether"):
-		return "USB/RNDIS"
 	case strings.Contains(normalized, "wi-fi"), strings.Contains(normalized, "wifi"), strings.Contains(normalized, "wlan"):
 		return "Wi-Fi"
 	case strings.Contains(normalized, "vethernet"):

@@ -16,6 +16,7 @@ data class VideoDecoderCapability(
     val maxHeight: Int,
     val maxFrameRate: Double,
     val maxInstances: Int?,
+    val supportsSbs1600x720At60: Boolean,
     val profileLevels: List<String>,
     val colorFormats: List<Int>,
 )
@@ -63,6 +64,9 @@ object CodecCapabilityProbe {
                     maxHeight = heightRange.upper,
                     maxFrameRate = frameRateRange.upper.toDouble(),
                     maxInstances = maxInstances,
+                    supportsSbs1600x720At60 = hardware && runCatching {
+                        video.areSizeAndRateSupported(1600, 720, 60.0)
+                    }.getOrDefault(false),
                     profileLevels = capability.profileLevels.take(32).map { "${it.profile}:${it.level}" },
                     colorFormats = capability.colorFormats.take(32).toList(),
                 )
@@ -88,28 +92,12 @@ object CodecCapabilityProbe {
                 .put("maxWidth", capability.maxWidth)
                 .put("maxHeight", capability.maxHeight)
                 .put("maxFrameRate", capability.maxFrameRate)
+                .put("supportsSbs1600x720At60", capability.supportsSbs1600x720At60)
                 .put("maxInstances", capability.maxInstances)
                 .put("profileLevels", JSONArray(capability.profileLevels))
                 .put("colorFormats", JSONArray().also { formats -> capability.colorFormats.forEach { formats.put(it) } }))
         }
     }
 
-    /** True only when the OS codec reports the requested coded frame dimensions/rate. */
-    fun supports(
-        width: Int,
-        height: Int,
-        frameRate: Double,
-        mimeType: String = "video/avc",
-    ): Boolean {
-        if (width <= 0 || height <= 0 || frameRate <= 0.0) return false
-        val list = try { MediaCodecList(MediaCodecList.REGULAR_CODECS) } catch (_: Throwable) { return false }
-        val decoderName = runCatching {
-            val format = android.media.MediaFormat.createVideoFormat(mimeType, width, height)
-            list.findDecoderForFormat(format)
-        }.getOrNull() ?: return false
-        val info = list.codecInfos.firstOrNull { it.name == decoderName } ?: return false
-        val caps = runCatching { info.getCapabilitiesForType(mimeType).videoCapabilities }.getOrNull()
-            ?: return false
-        return runCatching { caps.areSizeAndRateSupported(width, height, frameRate) }.getOrDefault(false)
-    }
+
 }

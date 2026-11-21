@@ -1,6 +1,8 @@
 package com.vsq.phonvrstream.network
 
 import android.content.Context
+import android.view.Surface
+import com.vsq.phonvrstream.streaming.VideoStreamReceiver
 import android.content.Intent
 import android.net.wifi.WifiManager
 import android.os.BatteryManager
@@ -65,6 +67,78 @@ class NetworkClient(
     @Volatile private var poseSocket: DatagramSocket? = null
     @Volatile private var activeControlWriter: BufferedWriter? = null
     @Volatile private var activeControlGeneration: Long = -1L
+    private data class VideoSessionConfig(val host: String, val port: Int, val width: Int, val height: Int, val fps: Int, val decoderName: String, val generation: Long)
+    private val videoLifecycleExecutor = Executors.newSingleThreadExecutor()
+    private val videoLock = Any()
+    @Volatile private var videoSurface: Surface? = null
+    @Volatile private var videoConfig: VideoSessionConfig? = null
+    @Volatile private var videoReceiver: VideoStreamReceiver? = null
+
+    /** Called by the GL renderer whenever its SurfaceTexture-backed Surface is created or recreated. */
+    fun attachVideoSurface(surface: Surface) {
+        videoSurface = surface
+        restartVideoReceiver()
+    }
+
+    private fun configureVideoStream(generation: Long, host: String, welcome: JSONObject) {
+        if (!welcome.optBoolean("videoEnabled", false) ||
+            welcome.optString("videoCodec", "") != "h264" ||
+            welcome.optString("videoMimeType", "") != "video/avc") {
+            videoConfig = null
+            stopVideoReceiverAsync()
+            val reason = welcome.optString("videoReason", "当前未协商到兼容的硬件 H.264 视频档案")
+            postStatus("PC 已连接；视频未启用：$reason", true)
+            return
+        }
+        val config = VideoSessionConfig(
+            host = host,
+            port = welcome.optInt("videoPort", DEFAULT_VIDEO_PORT),
+            width = welcome.optInt("videoWidth", DEFAULT_VIDEO_WIDTH),
+            height = welcome.optInt("videoHeight", DEFAULT_VIDEO_HEIGHT),
+            fps = welcome.optInt("videoFps", DEFAULT_VIDEO_FPS),
+            decoderName = welcome.optString("videoDecoderName", "").trim(),
+            generation = generation,
+        )
+        if (config.width <= 0 || config.height <= 0 || config.fps !in 1..120 || config.port !in 1..65535 || config.decoderName.isBlank()) {
+            postStatus("PC 返回了无效的视频流参数", true)
+            return
+        }
+        videoConfig = config
+        restartVideoReceiver()
+        postStatus("H.264 双目视频已协商：${config.width}×${config.height}@${config.fps} · ${config.decoderName}", true)
+    }
+
+    private fun restartVideoReceiver() {
+        videoLifecycleExecutor.execute {
+            synchronized(videoLock) {
+                videoReceiver?.stop()
+                videoReceiver = null
+                val config = videoConfig ?: return@synchronized
+                if (!isSessionActive(config.generation)) return@synchronized
+                val surface = videoSurface ?: return@synchronized
+                try {
+                    val receiver = VideoStreamReceiver(
+                        config.host, config.port, config.width, config.height, config.fps, config.decoderName, surface,
+                    )
+                    receiver.start()
+                    videoReceiver = receiver
+                } catch (error: Throwable) {
+                    postStatus("视频接收启动失败：${error.message ?: error.javaClass.simpleName}", true)
+                }
+            }
+        }
+    }
+
+    private fun stopVideoReceiverAsync(generation: Long? = null) {
+        videoLifecycleExecutor.execute {
+            synchronized(videoLock) {
+                if (generation != null && videoConfig?.generation != generation) return@synchronized
+                videoReceiver?.stop()
+                videoReceiver = null
+                if (generation == null || videoConfig?.generation == generation) videoConfig = null
+            }
+        }
+    }
 
     fun publishDisplaySettings(settings: JSONObject) {
         val writer = activeControlWriter ?: return
@@ -181,6 +255,7 @@ class NetworkClient(
             running.set(false)
             closeCurrentSockets()
         }
+        stopVideoReceiverAsync()
         postStatus("已断开 PC", false)
     }
 
@@ -190,9 +265,11 @@ class NetworkClient(
             running.set(false)
             closeCurrentSockets()
         }
+        stopVideoReceiverAsync()
         discoveryExecutor.shutdownNow()
         sessionExecutor.shutdownNow()
         poseExecutor.shutdownNow()
+        videoLifecycleExecutor.shutdown()
     }
 
     private fun connectionLoop(generation: Long, address: String, port: Int, deviceName: String) {
@@ -245,6 +322,7 @@ class NetworkClient(
                 if (welcome.optInt("protocol") != PROTOCOL_VERSION) {
                     throw ProtocolMismatchException("PC 通信协议版本不兼容")
                 }
+                configureVideoStream(generation, address, welcome)
 
                 synchronized(socketLock) {
                     activeControlWriter = writer
@@ -292,6 +370,7 @@ class NetworkClient(
                 )
             } finally {
                 closeAttemptSockets(tcp, udp)
+                stopVideoReceiverAsync(generation)
             }
 
             if (!isSessionActive(generation)) return
@@ -586,9 +665,13 @@ class NetworkClient(
     companion object {
         const val DEFAULT_CONTROL_PORT = 48101
         const val DEFAULT_POSE_PORT = 48102
+        const val DEFAULT_VIDEO_PORT = 48104
+        const val DEFAULT_VIDEO_WIDTH = 1600
+        const val DEFAULT_VIDEO_HEIGHT = 720
+        const val DEFAULT_VIDEO_FPS = 60
         const val DISCOVERY_PORT = 48100
         private const val PROTOCOL_VERSION = 1
-        private const val CLIENT_VERSION = "PhoneVRStream-0.4.17"
+        private const val CLIENT_VERSION = "PhoneVRStream-0.4.18"
         private const val DISCOVERY_REQUEST = "PHONEVR_DISCOVER_V1"
         private const val DISCOVERY_RESPONSE_PREFIX = "PHONEVR_HOST_V1 "
         private const val DISCOVERY_WINDOW_MS = 1800L

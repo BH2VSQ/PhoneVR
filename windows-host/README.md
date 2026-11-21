@@ -1,4 +1,4 @@
-# PhoneVR Host 0.4.17 bundled SteamVR driver
+# PhoneVR Host 0.4.18 bundled SteamVR driver and live SBS video
 
 Executable version is injected from the repository root `VERSION` file during builds.
 
@@ -93,7 +93,8 @@ Allow `PhoneVRHost.exe` through Windows Defender Firewall on Private networks wh
 | 48102 | UDP | HMD head pose |
 | 48103 | UDP loopback | Host-to-SteamVR pose bridge |
 | 48105 | UDP loopback | SteamVR driver health / display-frame heartbeat |
-| 48104 | UDP | Reserved for video stream |
+| 48104 | UDP | Host → Android H.264 video fragments |
+| 48106 | TCP loopback | SteamVR driver → Host raw BGRA capture bridge |
 
 
 ## SteamVR local pose bridge and runtime status
@@ -104,7 +105,7 @@ The OpenVR driver sends a versioned `PVST` heartbeat to `127.0.0.1:48105` every 
 
 ## Video encoder capability discovery
 
-`internal/encoder` parses the installed FFmpeg encoder list and recognizes NVENC, AMF, QSV and software H.264/HEVC/AV1 candidates. Hardware selection is runtime/capability based and supports mixed-vendor systems. A listed FFmpeg encoder is a candidate only; actual device initialization and format validation are performed by the encoder session in the next streaming milestone.
+`internal/encoder` parses the installed FFmpeg encoder list and recognizes NVENC, AMF, QSV and software H.264/HEVC/AV1 candidates. Live VR video performs a real hardware H.264 IDR preflight and revalidates the selected encoder when the capture session starts. CPU software encoding is deliberately refused for live VR to avoid competing with SteamVR rendering.
 
 ## SteamVR Driver Manager
 
@@ -114,6 +115,6 @@ At startup, Host checks SteamVR installation and registration. Unless the user h
 
 Open **SteamVR Driver** from the Host main menu to refresh status, install/repair the embedded driver, or uninstall and disable future auto-deployment. The opt-out marker is stored under `%LOCALAPPDATA%\PhoneVR`; a manual Install / Repair action removes it. Host deletes only files inside its managed driver directory. If a PhoneVR manifest is registered from a user-managed location, Host unregisters it but leaves those files untouched. Restart SteamVR after driver changes.
 
-## SteamVR virtual display refresh
+## Live stereo video stream
 
-Use **Display Refresh Rate** in the Host main menu to select 60 Hz, 90 Hz, 120 Hz, or Custom (60–120 Hz in 0.1 Hz steps). The default is Custom 72 Hz to preserve the previous timing. The selection is stored at `%LOCALAPPDATA%\PhoneVR\display-refresh.json` and read by the SteamVR driver when it starts. Fully exit and restart SteamVR after changing this value.
+When the Android client reports a hardware MediaCodec H.264 decoder supporting 1600×720 at 60 FPS, and Host has verified a working PC hardware H.264 encoder, the driver streams the final SBS compositor image to Host over loopback TCP `127.0.0.1:48106`. Host encodes with NVENC, AMF or QSV and sends MTU-safe H.264 Annex-B UDP fragments to the phone on port `48104`. CPU software encoding is disabled for this live path to protect SteamVR rendering performance. The virtual display remains fixed at 72 Hz; the retired Host refresh-rate setting is no longer present.

@@ -185,6 +185,7 @@ class MainActivity : Activity(), SensorEventListener {
             ?: sensorManager.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR)
 
         renderer = StereoRenderer()
+        renderer.setVideoSurfaceListener { surface -> networkClient.attachVideoSurface(surface) }
         glView = GLSurfaceView(this).apply {
             setEGLContextClientVersion(3)
             preserveEGLContextOnPause = true

@@ -1,3 +1,13 @@
+## 0.4.18 - Integrated SBS H.264 streaming
+
+- Removed the Host display-refresh-rate UI and persistence; virtual display timing is fixed at 72 Hz.
+- Added D3D11 GPU scaling and bounded triple-staging capture from the final SteamVR SBS compositor backbuffer, with a loopback-only TCP bridge to Host.
+- Added a hardware-only H.264 encoder preflight (NVENC/AMF/QSV); CPU software encoding is disabled for live VR to avoid increasing load on the PC.
+- Added Host H.264 Annex-B access-unit packetization over UDP 48104 using PVRV v1; raw BGRA input buffer is reused to reduce allocation/GC load.
+- Added Android hardware MediaCodec capability gating, UDP fragment reassembly, bounded decode queue, IDR loss recovery and decoded SBS presentation through the existing per-eye optical warp renderer.
+- Host now selects and returns the exact Android hardware decoder name proven to support 1600×720@60; Android instantiates that exact codec instead of relying on the platform's default MIME-type choice. Hardware classification must be reliable, and a dropped H.264 input access unit triggers IDR resynchronization.
+- Android versionCode is now 34. Windows MSVC driver build, Android Gradle build and target-device end-to-end video tests remain unverified in this environment.
+
 ## 0.4.17 - Pose-state isolation and selectable display refresh
 
 - Moved the high-frequency pose snapshot to a dedicated lock, isolating pose writes from the Host device/status/log mutex.

@@ -1,25 +1,24 @@
-# PhoneVR 0.4.17 Build Status
+# PhoneVR 0.4.18 Build Status
 
-## 0.4.17 pose-state isolation and selectable virtual refresh
+## Integrated SBS H.264 streaming and fixed virtual display timing
 
-- Moved latest pose, pose packet count and last-packet timestamp behind a dedicated `poseStateMu`; the 180 Hz pose writer no longer contends with the general Host service mutex used by device lists, heartbeats and logs. `Snapshot()` releases the general service lock before taking the pose snapshot lock.
-- Added regression tests for display refresh presets and custom-rate validation.
-- Added Host menu item **Display Refresh Rate** with 60 Hz, 90 Hz, 120 Hz and Custom. Custom is bounded to 60–120 Hz in 0.1 Hz increments to stay within the known 120 Hz phone panel ceiling. Default remains 72 Hz (Custom) for backward compatibility; select 90 Hz or 120 Hz explicitly after confirming runtime performance.
-- Host writes `%LOCALAPPDATA%\PhoneVR\display-refresh.json`; the SteamVR driver reads it at provider startup and uses the same rate for `Prop_DisplayFrequency_Float`, timing diagnostics and `GetTimeSinceLastVsync`. A complete SteamVR restart is required after changing the value.
-- Host and SteamVR display timing are deliberately kept separate from the ~180 Hz IMU update rate. Increasing virtual refresh does not create additional source frames; if the PC compositor cannot sustain the selected rate, dropped/reprojected frames may increase.
+- Removed the Host display-refresh UI, persistence file and driver-side dynamic refresh loader. The virtual display remains fixed at 72 Hz while the end-to-end frame pipeline is brought up and profiled.
+- SteamVR `IVRVirtualDisplay` captures the final SBS backbuffer only after a compatible Android client has negotiated video. D3D11 GPU-scales the frame to 1600×720 and uses a bounded three-slot staging ring. A background worker performs CPU readback and loopback TCP delivery to Host port 48106.
+- Host validates a real hardware H.264 encoder session (NVENC/AMF/QSV) with an actual IDR output test. CPU software encoding is intentionally disabled for live VR video to avoid adding load to a CPU-bound SteamVR compositor.
+- Host reuses a single BGRA receive buffer to avoid allocating 4.6 MiB per frame at 60 FPS. The encoder timestamp backlog is bounded to eight frames and H.264 output packets are flushed immediately to avoid accumulating seconds of stale video. Encoded H.264 Annex-B access units are sent as 1200-byte payload fragments using the `PVRV` v1 UDP packet format to Android port 48104. A transient UDP send failure drops the access unit without terminating the encoder; Android requests recovery by waiting for the next IDR after frame loss.
+- Android advertises the exact hardware decoder profile only when a reliably classified hardware MediaCodec decoder supports 1600×720@60. Host selects and sends that exact codec name in the welcome message; Android creates it by name rather than relying on the system's default MIME-type decoder selection. `VideoStreamReceiver` reassembles complete access units into a two-frame bounded queue, decodes on a dedicated thread and releases output buffers to the renderer's SurfaceTexture. A dropped H.264 input access unit triggers IDR resynchronization. `StereoRenderer` samples the decoded SBS stream and then applies the existing optical warp independently per eye.
+- Pose UDP and control TCP remain independent. Video capture, encoding and decoding use their own workers and bounded queues.
 
-## Validation
+## Network ports
 
-- Go unit and integration tests, Race and Vet: run in this revision's validation.
-- Windows AMD64 Host cross-compilation and vet: run in this revision's validation.
-- Python release-tool tests and workflow YAML parse: run in this revision's validation.
-- C++ raw-source checks: config parser, shared setting file path and dynamic VSync interval statically inspected.
-- Native MSVC SteamVR DLL build and real SteamVR timing test: requires the Windows target; not claimed as completed in this environment.
-- Rich Win32 dialog interaction and actual 60/90/120/custom mode switching also require Windows runtime verification.
+- TCP 48101: Host control/pairing.
+- UDP 48102: Android-to-Host IMU pose.
+- TCP 127.0.0.1:48106: SteamVR driver-to-Host raw BGRA capture bridge (loopback only).
+- UDP 48104: Host-to-Android H.264 video fragments.
 
-## How to interpret the next SteamVR log
+## Validation and known limitations
 
-- `driver-rx` and `unique` near 170–180 Hz with low `max-publish-gap` means fresh IMU poses reach OpenVR continuously.
-- `Present` / `WaitForPresent` / `completed` near the selected refresh rate with low callback durations indicates the virtual display is keeping pace.
-- Low `completed` relative to selected refresh or high `max-WaitForPresent` points to compositor/GPU synchronization or PC rendering load.
-- If pose metrics remain healthy but motion still appears uneven, test 60, 90 and 120 Hz one at a time and compare SteamVR frame timing; do not infer that the highest setting is necessarily the smoothest.
+- Go unit/integration tests, Race, Vet, Windows AMD64 Host cross-compilation, Python release tests, raw protocol tests and the local FFmpeg H.264 encoder integration test are the available source-level checks for this revision.
+- Local FFmpeg integration confirms that the encoder session emits Annex-B access units and an IDR with the locally available encoder; Host live streaming explicitly requires a verified hardware backend. Android's pure Kotlin fragment reassembler compiles independently with kotlinc.
+- Windows MSVC SteamVR DLL compilation and D3D11 runtime capture, GPU hardware encoder operation on the target PC, Android Gradle/MediaCodec execution, Wi-Fi packet loss behavior and full end-to-end phone display remain to be verified on target devices.
+- Software H.264 fallback is deliberately disabled for the live stream because the reported PC CPU utilization already reaches 100% during SteamVR movement. If NVENC/AMF/QSV cannot initialize, Host will disable video and log the exact reason while pose/control remain operational.

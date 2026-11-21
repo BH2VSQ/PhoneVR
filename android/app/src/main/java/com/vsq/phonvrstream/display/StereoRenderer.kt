@@ -1,11 +1,17 @@
 package com.vsq.phonvrstream.display
 
 import android.opengl.GLES30
+import android.opengl.GLES11Ext
+import android.graphics.SurfaceTexture
+import android.os.Handler
+import android.os.Looper
+import android.view.Surface
 import android.opengl.GLSurfaceView
 import com.vsq.phonvrstream.settings.DisplaySettings
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.FloatBuffer
+import java.util.concurrent.atomic.AtomicBoolean
 import javax.microedition.khronos.egl.EGLConfig
 import javax.microedition.khronos.opengles.GL10
 import kotlin.math.tan
@@ -25,6 +31,16 @@ class StereoRenderer : GLSurfaceView.Renderer {
 
     private var sceneProgram = 0
     private var postProgram = 0
+    private var videoProgram = 0
+    private var videoTextureId = 0
+    private var videoSurfaceTexture: SurfaceTexture? = null
+    private var videoSurface: Surface? = null
+    private val videoFramePending = AtomicBoolean(false)
+    @Volatile private var videoSurfaceListener: ((Surface) -> Unit)? = null
+    private var hasVideoFrame = false
+    private val videoTextureMatrix = FloatArray(16)
+    private data class VideoLocations(val position: Int, val texture: Int, val transform: Int)
+    private lateinit var video: VideoLocations
     private var width = 1
     private var height = 1
     private var sceneTexture = 0
@@ -41,6 +57,37 @@ class StereoRenderer : GLSurfaceView.Renderer {
     )
     private lateinit var scene: SceneLocations
     private lateinit var post: PostLocations
+
+    fun setVideoSurfaceListener(listener: (Surface) -> Unit) {
+        videoSurfaceListener = listener
+        videoSurface?.let(listener)
+    }
+
+    private fun createVideoInputSurface() {
+        videoSurface?.release()
+        videoSurfaceTexture?.release()
+        videoSurface = null
+        videoSurfaceTexture = null
+        val ids = IntArray(1)
+        GLES30.glGenTextures(1, ids, 0)
+        videoTextureId = ids[0]
+        GLES30.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, videoTextureId)
+        GLES30.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES30.GL_TEXTURE_MIN_FILTER, GLES30.GL_LINEAR)
+        GLES30.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES30.GL_TEXTURE_MAG_FILTER, GLES30.GL_LINEAR)
+        GLES30.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES30.GL_TEXTURE_WRAP_S, GLES30.GL_CLAMP_TO_EDGE)
+        GLES30.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES30.GL_TEXTURE_WRAP_T, GLES30.GL_CLAMP_TO_EDGE)
+        GLES30.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, 0)
+        val texture = SurfaceTexture(videoTextureId).apply {
+            setDefaultBufferSize(VIDEO_WIDTH, VIDEO_HEIGHT)
+            setOnFrameAvailableListener({ videoFramePending.set(true) }, Handler(Looper.getMainLooper()))
+        }
+        val surface = Surface(texture)
+        videoSurfaceTexture = texture
+        videoSurface = surface
+        videoFramePending.set(false)
+        hasVideoFrame = false
+        videoSurfaceListener?.invoke(surface)
+    }
 
     fun updateSettings(value: DisplaySettings, physicalScreenWidthMm: Float) {
         val normalized = value.normalized()
@@ -74,6 +121,13 @@ class StereoRenderer : GLSurfaceView.Renderer {
 
         sceneProgram = createProgram(VERTEX_SHADER, SCENE_FRAGMENT_SHADER)
         postProgram = createProgram(VERTEX_SHADER, POST_FRAGMENT_SHADER)
+        videoProgram = createProgram(VERTEX_SHADER, VIDEO_FRAGMENT_SHADER)
+        video = VideoLocations(
+            position = GLES30.glGetAttribLocation(videoProgram, "aPosition"),
+            texture = GLES30.glGetUniformLocation(videoProgram, "uVideoTexture"),
+            transform = GLES30.glGetUniformLocation(videoProgram, "uTextureMatrix"),
+        )
+        createVideoInputSurface()
 
         scene = SceneLocations(
             position = GLES30.glGetAttribLocation(sceneProgram, "aPosition"),
@@ -118,26 +172,47 @@ class StereoRenderer : GLSurfaceView.Renderer {
         val halfWidth = width / 2
         val tanHalfFov = tan(Math.toRadians(settings.fovDegrees.toDouble() * 0.5)).toFloat()
 
-        // Pass 1: render the two perspective eye views into a side-by-side texture.
-        GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, framebuffer)
-        GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT)
-        GLES30.glUseProgram(sceneProgram)
-        bindPosition(scene.position)
-        GLES30.glUniform2f(scene.resolution, halfWidth.toFloat(), height.toFloat())
-        GLES30.glUniform1f(scene.ipd, settings.ipdMm * 0.0005f)
-        GLES30.glUniform1f(scene.fov, tanHalfFov)
-        GLES30.glUniform4f(
-            scene.orientation,
-            orientationX, orientationY, orientationZ, orientationW,
-        )
+        val inputTexture = videoSurfaceTexture
+        if (inputTexture != null && videoFramePending.getAndSet(false)) {
+            try {
+                inputTexture.updateTexImage()
+                inputTexture.getTransformMatrix(videoTextureMatrix)
+                hasVideoFrame = true
+            } catch (_: RuntimeException) {
+                hasVideoFrame = false
+            }
+        }
 
-        GLES30.glViewport(0, 0, halfWidth, height)
-        GLES30.glUniform1f(scene.eyeSign, -1f)
-        GLES30.glDrawArrays(GLES30.GL_TRIANGLE_STRIP, 0, 4)
-        GLES30.glViewport(halfWidth, 0, width - halfWidth, height)
-        GLES30.glUniform1f(scene.eyeSign, 1f)
-        GLES30.glDrawArrays(GLES30.GL_TRIANGLE_STRIP, 0, 4)
-        GLES30.glDisableVertexAttribArray(scene.position)
+        // Pass 1: use the live decoded SBS stream when available. Before the
+        // first complete decoder frame, retain the built-in test scene.
+        GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, framebuffer)
+        GLES30.glViewport(0, 0, width, height)
+        GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT)
+        if (hasVideoFrame && videoProgram != 0 && videoTextureId != 0) {
+            GLES30.glUseProgram(videoProgram)
+            bindPosition(video.position)
+            GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
+            GLES30.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, videoTextureId)
+            GLES30.glUniform1i(video.texture, 0)
+            GLES30.glUniformMatrix4fv(video.transform, 1, false, videoTextureMatrix, 0)
+            GLES30.glDrawArrays(GLES30.GL_TRIANGLE_STRIP, 0, 4)
+            GLES30.glDisableVertexAttribArray(video.position)
+            GLES30.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, 0)
+        } else {
+            GLES30.glUseProgram(sceneProgram)
+            bindPosition(scene.position)
+            GLES30.glUniform2f(scene.resolution, halfWidth.toFloat(), height.toFloat())
+            GLES30.glUniform1f(scene.ipd, settings.ipdMm * 0.0005f)
+            GLES30.glUniform1f(scene.fov, tanHalfFov)
+            GLES30.glUniform4f(scene.orientation, orientationX, orientationY, orientationZ, orientationW)
+            GLES30.glViewport(0, 0, halfWidth, height)
+            GLES30.glUniform1f(scene.eyeSign, -1f)
+            GLES30.glDrawArrays(GLES30.GL_TRIANGLE_STRIP, 0, 4)
+            GLES30.glViewport(halfWidth, 0, width - halfWidth, height)
+            GLES30.glUniform1f(scene.eyeSign, 1f)
+            GLES30.glDrawArrays(GLES30.GL_TRIANGLE_STRIP, 0, 4)
+            GLES30.glDisableVertexAttribArray(scene.position)
+        }
 
         // Pass 2: warp each eye independently and apply a real multi-sample blur filter.
         GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
@@ -238,6 +313,8 @@ class StereoRenderer : GLSurfaceView.Renderer {
     }
 
     companion object {
+        private const val VIDEO_WIDTH = 1600
+        private const val VIDEO_HEIGHT = 720
         private const val VERTEX_SHADER = """
             #version 300 es
             layout(location = 0) in vec2 aPosition;
@@ -245,6 +322,20 @@ class StereoRenderer : GLSurfaceView.Renderer {
             void main() {
                 vUv = aPosition * 0.5 + 0.5;
                 gl_Position = vec4(aPosition, 0.0, 1.0);
+            }
+        """
+
+        private const val VIDEO_FRAGMENT_SHADER = """
+            #version 300 es
+            #extension GL_OES_EGL_image_external_essl3 : require
+            precision highp float;
+            in vec2 vUv;
+            out vec4 outColor;
+            uniform samplerExternalOES uVideoTexture;
+            uniform mat4 uTextureMatrix;
+            void main() {
+                vec2 uv = (uTextureMatrix * vec4(vUv, 0.0, 1.0)).xy;
+                outColor = texture(uVideoTexture, uv);
             }
         """
 

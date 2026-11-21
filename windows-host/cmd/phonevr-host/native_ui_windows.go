@@ -237,11 +237,6 @@ const (
 	idMenu           = 106
 	idAppearance     = 107
 	idDriverManager  = 108
-	idRefreshRate    = 109
-	idRefreshApply   = 810
-	idRefreshMode    = 811
-	idRefreshCustom  = 812
-	idRefreshStatus  = 813
 	idProfile        = 200
 	idApply          = 201
 	idDialogCenter   = 202
@@ -351,7 +346,6 @@ type nativeDialog struct {
 	viewport        uintptr
 	status          uintptr
 	settings        PhoneDisplaySettings
-	refreshConfig   DisplayRefreshConfig
 	pendingSettings *PhoneDisplaySettings
 	presets         []OpticalPreset
 	config          HostConfig
@@ -381,7 +375,6 @@ type nativeUI struct {
 	buttons           map[int]uintptr
 	dialogs           map[uintptr]*nativeDialog
 	currentSettings   PhoneDisplaySettings
-	displayRefresh    DisplayRefreshConfig
 	phonePresets      []OpticalPreset
 	pendingPresetID   string
 	pendingPresetName string
@@ -421,7 +414,7 @@ func runNativeDesktopApp(service *HostService, config HostConfig) error {
 	if result, _, _ := pSetProcessDpiAwarenessContext.Call(^uintptr(3)); result == 0 {
 		pSetProcessDPIAware.Call()
 	}
-	app := &nativeUI{service: service, config: config, dialogs: make(map[uintptr]*nativeDialog), buttons: make(map[int]uintptr), currentSettings: DefaultPhoneDisplaySettings(), phonePresets: nativePresetDefaults(), themeConfig: loadNativeThemeConfig(), displayRefresh: loadDisplayRefreshConfig(), language: loadNativeLanguage()}
+	app := &nativeUI{service: service, config: config, dialogs: make(map[uintptr]*nativeDialog), buttons: make(map[int]uintptr), currentSettings: DefaultPhoneDisplaySettings(), phonePresets: nativePresetDefaults(), themeConfig: loadNativeThemeConfig(), language: loadNativeLanguage()}
 	if dllName, err := syscall.UTF16PtrFromString("Msftedit.dll"); err == nil {
 		module, _, _ := pLoadLibrary.Call(uintptr(unsafe.Pointer(dllName)))
 		app.richEditAvailable = module != 0
@@ -773,8 +766,6 @@ func nativeDialogWndProc(hwnd uintptr, message uint32, wParam, lParam uintptr) u
 				minWidth = 640
 			case "logs":
 				minWidth = 680
-			case "refresh":
-				minWidth = 560
 			}
 			constrainNativeDialogRectAddress(lParam, int(wParam), minWidth, 480)
 		}
@@ -824,10 +815,6 @@ func nativeDialogWndProc(hwnd uintptr, message uint32, wParam, lParam uintptr) u
 		if dialog != nil {
 			commandID := int(wParam & 0xffff)
 			notification := int((wParam >> 16) & 0xffff)
-			if dialog.kind == "refresh" && commandID == idRefreshMode && notification == cbnSelChange {
-				app.updateRefreshCustomControl(dialog)
-				return 0
-			}
 			if dialog.kind == "presets" && commandID == idPresetList && notification == lbnDblClk {
 				index := int(sendNativeMessage(dialog.controls[idPresetList], 0x0188, 0, 0))
 				app.openPresetEditor(dialog, index)
@@ -1031,7 +1018,6 @@ func (app *nativeUI) mainMenuItems() []nativeMenuItem {
 		{ID: idAppearance, Chinese: "外观与主题", English: "Appearance & Theme"},
 		{ID: idLogs, Chinese: "运行日志", English: "Logs"},
 		{ID: idDriverManager, Chinese: "SteamVR 驱动管理", English: "SteamVR Driver"},
-		{ID: idRefreshRate, Chinese: "显示刷新率", English: "Display Refresh Rate"},
 		{ID: idLanguage, Chinese: "切换为 English", English: "Switch to 中文"},
 	}
 }
@@ -1116,8 +1102,6 @@ func (app *nativeUI) handleMainCommand(id int) {
 		app.openDialog("logs")
 	case idDriverManager:
 		app.openDialog("driver")
-	case idRefreshRate:
-		app.openDialog("refresh")
 	case idLanguage:
 		app.toggleLanguage()
 	}
@@ -1172,8 +1156,6 @@ func (app *nativeUI) openDialog(kind string) {
 		width, height, title = 660, 460, app.text("外观与主题", "Appearance & Theme")
 	case "driver":
 		width, height, title = 760, 500, app.text("SteamVR 驱动管理", "SteamVR Driver Manager")
-	case "refresh":
-		width, height, title = 640, 460, app.text("显示刷新率", "Display Refresh Rate")
 	}
 	instance, _, _ := pGetModuleHandle.Call(0)
 	class, _ := syscall.UTF16PtrFromString("PhoneVRNativeDialog")
@@ -1199,7 +1181,7 @@ func (app *nativeUI) openDialog(kind string) {
 		app.messageBox(fmt.Sprintf("无法打开窗口：%v", err), "PhoneVR")
 		return
 	}
-	dialog := &nativeDialog{kind: kind, hwnd: hwnd, controls: make(map[int]uintptr), labels: make(map[int]uintptr), settings: app.currentSettings, refreshConfig: app.displayRefresh, config: app.config}
+	dialog := &nativeDialog{kind: kind, hwnd: hwnd, controls: make(map[int]uintptr), labels: make(map[int]uintptr), settings: app.currentSettings, config: app.config}
 	if kind == "settings" && app.pendingPreset != nil {
 		dialog.presetID = app.pendingPreset.ID
 		dialog.settings = app.pendingPreset.Settings.Normalized()
@@ -1308,33 +1290,6 @@ func (app *nativeUI) createDialogControls(d *nativeDialog) {
 		addButton(idDriverRefresh, app.text("检查状态", "Check Status"))
 		addButton(idDriverInstall, app.text("安装 / 修复内置驱动", "Install / Repair Bundled Driver"))
 		addButton(idDriverRemove, app.text("卸载并停用自动部署", "Uninstall & Disable Auto Deploy"))
-		addButton(idClose, app.text("关闭", "Close"))
-
-	case "refresh":
-		addLabel(d.hwnd, 0, app.text("选择 SteamVR 虚拟头显刷新率", "Select the SteamVR virtual HMD refresh rate"))
-		combo := app.createControl(d.hwnd, "COMBOBOX", "", wsChild|wsVisible|wsTabStop|cbDropDownList|wsVScroll, 0, 0, 10, 10, idRefreshMode)
-		d.controls[idRefreshMode] = combo
-		app.addComboItem(combo, "60 Hz")
-		app.addComboItem(combo, "90 Hz")
-		app.addComboItem(combo, "120 Hz")
-		app.addComboItem(combo, app.text("自定义", "Custom"))
-		selected := 1
-		switch d.refreshConfig.Mode {
-		case displayRefreshMode60:
-			selected = 0
-		case displayRefreshMode90:
-			selected = 1
-		case displayRefreshMode120:
-			selected = 2
-		case displayRefreshModeCustom:
-			selected = 3
-		}
-		sendNativeMessage(combo, 0x014E, uintptr(selected), 0) // CB_SETCURSEL
-		addLabel(d.hwnd, 1, app.text("自定义刷新率 (60–120 Hz)", "Custom refresh rate (60–120 Hz)"))
-		d.controls[idRefreshCustom] = app.createControl(d.hwnd, "EDIT", strconv.FormatFloat(d.refreshConfig.RefreshRateHz, 'f', 1, 64), wsChild|wsVisible|wsBorder|wsTabStop|esAutoHScroll, 0, 0, 10, 10, idRefreshCustom)
-		d.status = app.createControl(d.hwnd, "STATIC", app.text("更改后需要完全退出并重新启动 SteamVR 才会生效。", "Fully exit and restart SteamVR after applying this setting."), wsChild|wsVisible, 0, 0, 10, 10, idRefreshStatus)
-		app.updateRefreshCustomControl(d)
-		addButton(idRefreshApply, app.text("保存并应用", "Save & Apply"))
 		addButton(idClose, app.text("关闭", "Close"))
 
 	case "appearance":
@@ -1471,16 +1426,6 @@ func (app *nativeUI) layoutDialog(d *nativeDialog) {
 		move(d.controls[idDriverRemove], margin, 318, w-2*margin, 42)
 		// Keep the footer compact so the status area has more usable room.
 		move(d.controls[idClose], w-margin-124, h-46, 124, 34)
-
-	case "refresh":
-		margin := 28
-		move(d.labels[0], margin, 88, w-2*margin, 30)
-		move(d.controls[idRefreshMode], margin, 128, 240, 38)
-		move(d.labels[1], margin, 190, w-2*margin, 26)
-		move(d.controls[idRefreshCustom], margin, 224, 180, 38)
-		move(d.status, margin, 292, w-2*margin, 48)
-		move(d.controls[idRefreshApply], margin, h-48, 160, 38)
-		move(d.controls[idClose], w-margin-116, h-48, 116, 38)
 
 	case "appearance":
 		l := ComputeNativeAppearanceDialogLayout(w, h)
@@ -1652,8 +1597,6 @@ func (app *nativeUI) paintDialog(d *nativeDialog, hdc uintptr) {
 		title = app.text("运行日志", "Runtime Logs")
 	case "appearance":
 		title = app.text("外观与主题", "Appearance & Theme")
-	case "refresh":
-		title = app.text("显示刷新率", "Display Refresh Rate")
 	}
 	drawNativeText(hdc, title, nativeRect{22, 10, int32(w - 22), 48}, p.Text, app.fontTitle, dtVCenter|dtSingleLine|dtEndEllipsis|dtNoPrefix)
 	drawNativeLine(hdc, 18, 64, w-18, 64, p.Border, 1)
@@ -1832,25 +1775,6 @@ func (app *nativeUI) handleDialogCommand(d *nativeDialog, id int) {
 			if app.confirmMessage(app.text("确定卸载 PhoneVR SteamVR 驱动并停用自动部署？\n重新启用需要手动点击安装 / 修复内置驱动。", "Uninstall the PhoneVR SteamVR driver and disable automatic deployment?\nUse Install / Repair Bundled Driver to enable it again."), app.text("卸载驱动", "Uninstall Driver")) {
 				app.runDriverTask(d, app.text("正在卸载 PhoneVR 驱动并停用自动部署...", "Uninstalling PhoneVR driver and disabling auto deploy..."), uninstallPhoneVRDriver)
 			}
-		case idClose:
-			pDestroyWindow.Call(d.hwnd)
-		}
-
-	case "refresh":
-		switch id {
-		case idRefreshApply:
-			config, err := app.readDisplayRefreshDialog(d)
-			if err != nil {
-				setNativeText(d.status, err.Error())
-				return
-			}
-			if err := saveDisplayRefreshConfig(config); err != nil {
-				setNativeText(d.status, app.text("保存失败：", "Save failed: ")+err.Error())
-				return
-			}
-			app.displayRefresh = config
-			d.refreshConfig = config
-			setNativeText(d.status, fmt.Sprintf(app.text("已保存 %.1f Hz。请完全退出并重新启动 SteamVR 后生效。", "Saved %.1f Hz. Fully exit and restart SteamVR to apply."), config.RefreshRateHz))
 		case idClose:
 			pDestroyWindow.Call(d.hwnd)
 		}
@@ -2043,47 +1967,6 @@ func (app *nativeUI) redrawThemedWindows() {
 		refresh(dialog.status, false)
 	}
 	refresh(app.menuHWnd, true)
-}
-
-func (app *nativeUI) updateRefreshCustomControl(d *nativeDialog) {
-	if d == nil || d.controls[idRefreshMode] == 0 || d.controls[idRefreshCustom] == 0 {
-		return
-	}
-	selected := int(sendNativeMessage(d.controls[idRefreshMode], 0x0147, 0, 0)) // CB_GETCURSEL
-	enabled := selected == 3
-	pEnableWindow.Call(d.controls[idRefreshCustom], boolToUintptr(enabled))
-	if d.labels[1] != 0 {
-		pEnableWindow.Call(d.labels[1], boolToUintptr(enabled))
-	}
-}
-
-func boolToUintptr(value bool) uintptr {
-	if value {
-		return 1
-	}
-	return 0
-}
-
-func (app *nativeUI) readDisplayRefreshDialog(d *nativeDialog) (DisplayRefreshConfig, error) {
-	selected := int(sendNativeMessage(d.controls[idRefreshMode], 0x0147, 0, 0)) // CB_GETCURSEL
-	config := DisplayRefreshConfig{}
-	switch selected {
-	case 0:
-		config = DisplayRefreshConfig{Mode: displayRefreshMode60, RefreshRateHz: 60}
-	case 1:
-		config = DisplayRefreshConfig{Mode: displayRefreshMode90, RefreshRateHz: 90}
-	case 2:
-		config = DisplayRefreshConfig{Mode: displayRefreshMode120, RefreshRateHz: 120}
-	case 3:
-		rate, err := strconv.ParseFloat(strings.TrimSpace(getNativeText(d.controls[idRefreshCustom])), 64)
-		if err != nil {
-			return config, fmt.Errorf("%s", app.text("自定义刷新率不是有效数字", "Custom refresh rate is not a valid number"))
-		}
-		config = DisplayRefreshConfig{Mode: displayRefreshModeCustom, RefreshRateHz: rate}
-	default:
-		return config, fmt.Errorf("%s", app.text("请选择刷新率档位", "Select a refresh-rate mode"))
-	}
-	return NormalizeDisplayRefreshConfig(config)
 }
 
 func (app *nativeUI) readSettingsDialog(d *nativeDialog) (PhoneDisplaySettings, error) {

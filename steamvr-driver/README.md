@@ -1,4 +1,4 @@
-# PhoneVR SteamVR Driver — 0.4.17
+# PhoneVR SteamVR Driver — 0.4.18
 
 Windows x64 OpenVR server driver foundation for the PhoneVR wireless HMD.
 
@@ -25,9 +25,7 @@ pose publications and `RunFrame()` callbacks, plus sequence gaps, drained
 packets, maximum pose publish gap and maximum sample age. The virtual-display
 component separately reports `Present` / `WaitForPresent` callback rates and
 maximum callback durations, so tracking-rate problems can be distinguished
-from compositor/GPU synchronization stalls. The current virtual display timing
-uses the refresh rate selected in the Host (60/90/120 Hz or Custom 60–120 Hz); sensor input frequency is not the display
-refresh frequency.
+from compositor/GPU synchronization stalls. The virtual display timing is fixed at 72 Hz in this revision; sensor input frequency is not the display refresh frequency.
 
 ## Build
 
@@ -59,19 +57,17 @@ The output is `dist/steamvr-driver`. The `tools/install-steamvr-driver.ps1` help
 ## Current implementation boundary
 
 `IVRVirtualDisplay::Present` opens and caches SteamVR's D3D11 shared backbuffer,
-uses a bounded keyed-mutex acquire (10 ms maximum), and queues only a small
-staging-texture copy as a GPU-completion fence. `WaitForPresent` maps this small
-synchronization texture. Because P0 has no encoder or frame consumer, it
-intentionally does not copy the unused full-resolution image into staging
-memory. `GetTimeSinceLastVsync` advances a configurable virtual-vsync clock from the
-last supplied compositor timestamp and keeps its frame counter monotonic. The
-driver logs all enumerated DXGI adapters, the selected adapter LUID, opened
-backbuffer dimensions/format, mutex contention and GPU synchronization errors
-with rate limiting. This is the P0 synchronization foundation only: it does
-**not** yet copy pixels into an encoder-owned buffer, submit to NVENC/AMF/QSV,
-or send video packets. The HMD projection/distortion values and eye geometry
-are initial SBS defaults; final optical-profile handoff from Android is a
-subsequent integration step.
+uses a bounded keyed-mutex acquire (10 ms maximum), and queues a small staging
+texture copy as a GPU-completion fence. `WaitForPresent` maps this synchronization
+texture. When a compatible phone and hardware encoder are ready, the driver also
+GPU-scales the final SBS compositor image to 1600×720 and queues it in a bounded
+triple-staging ring. A background worker reads BGRA frames and forwards them to
+the Host over loopback TCP `127.0.0.1:48106`; it never performs CPU readback,
+encoding or socket I/O inside `Present`. Host performs hardware-only H.264
+encoding and sends Annex-B access units as `PVRV` UDP fragments to Android
+port `48104`. `GetTimeSinceLastVsync` uses a fixed 72 Hz virtual-vsync clock.
+The HMD projection/distortion values and eye geometry remain initial SBS defaults;
+final optical-profile handoff from Android remains a separate calibration task.
 
 The driver exposes only the phone's 3DoF orientation. No room-scale position
 or 6DoF tracking is synthesized.
@@ -113,6 +109,6 @@ first-run onboarding independently of this driver property. Windows/SteamVR
 runtime testing is required to confirm the prompt disappears on the target
 installation.
 
-## Display refresh configuration
+## Live video capture
 
-The Host menu item **Display Refresh Rate** writes `%LOCALAPPDATA%/PhoneVR/display-refresh.json`. The SteamVR driver reads the selected 60/90/120 Hz or custom 60–120 Hz value during provider initialization and applies it to `Prop_DisplayFrequency_Float` and its virtual VSync clock. Fully exit and restart SteamVR after changing the setting. The Host uses 72 Hz (Custom) by default when no valid file exists, preserving the previous virtual timing until a new mode is selected.
+The driver captures the final SBS compositor backbuffer only while a paired Android client has successfully negotiated hardware H.264 decode and Host has validated a hardware H.264 encoder. D3D11 performs GPU scaling to 1600×720; a bounded triple-staging ring and background worker deliver BGRA frames to the Host's loopback TCP bridge on `127.0.0.1:48106`. Host then hardware-encodes and transmits `PVRV` UDP fragments to Android port `48104`. The 72 Hz virtual-display timing is fixed in this revision; the removed refresh-rate menu no longer writes a per-user timing file.

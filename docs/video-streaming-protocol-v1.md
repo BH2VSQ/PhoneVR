@@ -1,34 +1,63 @@
-# PhoneVR Low-Latency Video Protocol v1 (0.4.0 foundation)
+# PhoneVR Low-Latency Video Protocol v1 (0.4.18)
 
 This protocol is additive to control protocol v1. It does not alter the existing
-`PVSP` 36-byte Android HMD pose datagram. The initial implementation defines
-packet framing and validation; frame capture, hardware encoding, packet
-reassembly, hardware decoding and presentation are separate milestones.
+`PVSP` 36-byte Android HMD pose datagram. The 0.4.18 implementation wires the
+SteamVR backbuffer capture, Host hardware H.264 encode, `PVRV` UDP fragments,
+Android reassembly, MediaCodec decode and SBS stereo rendering. Full real-device
+latency and Wi-Fi loss qualification remain required.
 
-## Initial transport layout
+## Transport layout
 
 | Port | Transport | Direction | Purpose |
 |---|---|---|---|
-| 48100 | UDP broadcast | Android -> Host / Host -> Android | Discovery (existing) |
-| 48101 | TCP | Bidirectional | Pairing, capabilities, control (existing) |
-| 48102 | UDP | Android -> Host | HMD pose (existing `PVSP`) |
-| 48103 | UDP loopback only | Host -> SteamVR driver | Forward validated `PVSP` pose to `vrserver.exe` |
-| 48104 | UDP | PC -> Android | Encoded video fragments (reserved for streaming) |
+| 48100 | UDP broadcast | Android ↔ Host | Discovery |
+| 48101 | TCP | Bidirectional | Pairing, codec capability negotiation and control |
+| 48102 | UDP | Android → Host | HMD pose (`PVSP`) |
+| 48103 | UDP loopback only | Host → SteamVR driver | Validated pose forwarding to `vrserver.exe` |
+| 48104 | UDP | Host → Android | Encoded H.264 video fragments |
+| 48105 | UDP loopback only | SteamVR driver → Host | Driver heartbeat and display diagnostics |
+| 48106 | TCP loopback only | SteamVR driver → Host | Raw BGRA compositor capture bridge (`PVRC`) |
 
-The PC should preferably use Ethernet to the Wi-Fi 6 access point while the
-phone uses its dedicated 5 GHz WLAN. The video port is not exposed as an
-internet-facing service. Guest network/client isolation must be disabled.
+The PC should preferably use Ethernet to a Wi-Fi 6 access point while the phone
+uses a dedicated 5 GHz WLAN. Guest network/client isolation must be disabled.
+Ports 48103, 48105 and 48106 bind only to loopback; the video UDP sender targets
+the phone's paired control-session IP.
 
-## Video frame format
+## Negotiated streaming profile
 
-The encoder produces one side-by-side (SBS) frame per presentation timestamp:
-left eye occupies the left half, right eye the right half. H.264 is the required
-interoperability baseline. HEVC is optional. AV1 is optional and must only be
-selected when the phone reports a suitable decoder and measured performance.
+- Codec: H.264/AVC Annex-B.
+- Packed image: side-by-side stereo, 1600×720 (800×720 per eye).
+- Capture and encode ceiling: 60 FPS. Source virtual-display timing is 72 Hz;
+  capture is rate-limited independently to 60 FPS.
+- H.264 B-frames are disabled. Encoder GOP is one second, with SPS/PPS repeated
+  at keyframes and AUD boundaries inserted for access-unit framing.
+- Host requires a verified hardware H.264 encoder (NVIDIA NVENC, AMD AMF or
+  Intel QSV). CPU software encoding is disabled for live VR streaming to avoid
+  competing with SteamVR rendering on CPU-bound systems.
+- Android must report a reliably classified hardware MediaCodec decoder
+  supporting the exact 1600×720@60 profile. Host selects that decoder by its
+  advertised codec name and includes the name in the `welcome` message so the
+  client creates the exact codec that passed capability validation. If either
+  hardware side is unavailable, Host does not enable video; pose and control
+  continue independently.
 
-Each encoded access unit is fragmented into UDP datagrams. The 32-byte header
-is big-endian; the current maximum datagram size is 1232 bytes (1200 payload
-bytes), avoiding IP fragmentation on common IPv6 paths.
+## Driver-to-Host capture bridge (`PVRC`)
+
+After both codec sides are validated during the control handshake, the driver
+connects to `127.0.0.1:48106`. Host sends a one-byte activation marker (`0x01`).
+The driver uses D3D11 to GPU-scale the final SBS compositor backbuffer to
+1600×720, copies into a three-slot staging ring, and a background worker sends
+frames over this loopback TCP connection. The 32-byte `PVRC` header contains
+magic/version/pixel format, frame ID, PC monotonic capture timestamp, width,
+height, BGRA stride and payload size. BGRA bytes follow immediately.
+
+The compositor callback never waits for CPU readback, encoder input or network
+I/O. When all staging slots are busy, the oldest queued frame is dropped.
+
+## Host-to-Android video packet (`PVRV`)
+
+Each encoded H.264 access unit is fragmented into UDP datagrams. The 32-byte
+header is big-endian; maximum datagram size is 1232 bytes (1200 payload bytes).
 
 | Offset | Size | Field | Description |
 |---:|---:|---|---|
@@ -37,59 +66,38 @@ bytes), avoiding IP fragmentation on common IPv6 paths.
 | 5 | 1 | Flags | bit 0 first fragment, bit 1 last fragment, bit 2 key frame |
 | 6 | 2 | Header size | `32` |
 | 8 | 4 | Frame ID | monotonically wrapping `uint32` |
-| 12 | 8 | Capture timestamp | monotonic nanoseconds on the PC |
-| 20 | 4 | Encoded frame size | total access-unit bytes |
-| 24 | 4 | Fragment offset | offset in access unit |
-| 28 | 2 | Payload size | payload bytes in this datagram |
+| 12 | 8 | Capture timestamp | PC monotonic nanoseconds |
+| 20 | 4 | Encoded frame size | access-unit bytes |
+| 24 | 4 | Fragment offset | byte offset in access unit |
+| 28 | 2 | Payload size | bytes in this datagram |
 | 30 | 2 | Reserved | must be zero |
-| 32 | variable | Payload | encoded access-unit bytes |
+| 32 | variable | Payload | Annex-B H.264 access-unit bytes |
 
-The receiver must validate every header and reject fragments that exceed the
-announced frame boundary. It must keep only a small bounded number of in-flight
-frames, discard incomplete or late frames, and never queue old frames behind a
-newer frame. A key-frame flag is required for recovery; an explicit key-frame
-request/control message will be added with the full streaming session handshake.
+Each fragment repeats the key-frame flag. Android validates every header and
+fragment boundary, tolerates out-of-order fragments, and assembles only a small
+number of in-flight frames. Incomplete or late frames are discarded. The
+decoder queue is bounded to two frames; if a frame gap, queue overflow or
+MediaCodec input-buffer drop occurs, the decoder discards dependent P-frames
+until the next IDR keyframe. A transient
+Host UDP send failure drops that access unit but does not terminate FFmpeg.
 
-## Initial negotiated profile
+## Android presentation
 
-- Codec priority: H.264 first; HEVC only when both sides report capability;
-  AV1 only after device capability and thermal/performance qualification.
-- Stream geometry: SBS, with each eye's dimensions negotiated independently
-  and the packed width equal to `2 * eyeWidth`.
-- Starting profile: 960 x 1080 per eye at 60 Hz (1920 x 1080 packed).
-- Higher target: 1200 x 1080 per eye at 72 Hz (2400 x 1080 packed), gated by
-  measured encoder, Wi-Fi, decoder, GPU and panel performance.
-- B-frames: disabled for the low-latency profile. Encoder lookahead and large
-  reorder queues are disabled where the backend supports it.
-- The packet timestamp is a PC monotonic timestamp. Clock-offset estimation
-  and capture-to-photon timing are not yet implemented.
+The Android client selects a hardware AVC decoder via `MediaCodecList` and
+validates 1600×720@60 using `VideoCapabilities.areSizeAndRateSupported`. A
+dedicated UDP thread reassembles frames; a separate decoder thread feeds
+MediaCodec and releases output to a `SurfaceTexture`-backed `Surface`. The GL
+renderer samples the external OES texture as SBS, then applies the existing
+lens warp and optical correction independently to each eye. Until the first
+decoded video frame, the local test scene remains visible.
 
-These are initial targets, not claims about achieved latency or guaranteed
-capability on every handset.
+## Known limits
 
-## Capability discovery
-
-The Android client queries `MediaCodecList` and each decoder's
-`MediaCodecInfo.CodecCapabilities` / `VideoCapabilities`. The optional `hello.mediaCapabilities` JSON array reports codecs,
-hardware/software classification, maximum dimensions, frame-rate range,
-profiles and color formats. It must validate a requested width/height/frame-rate
-combination with `areSizeAndRateSupported`; a model name or SoC name is never
-used as a substitute for runtime capability discovery. The Host retains the optional report in its connected-device snapshot; older v1 Hosts ignore the additional JSON field.
-
-The Windows Host enumerates FFmpeg encoders present in the installed FFmpeg
-build (`h264_nvenc`, `h264_amf`, `h264_qsv`, software fallback, and matching
-HEVC/AV1 variants). A listed encoder is only a candidate: the next stage must
-initialize the actual device/session to prove that the driver, GPU, format and
-requested profile work. When multiple GPU vendors are present, runtime probing
-and explicit user preference take precedence over any fixed vendor assumption.
-
-## Implementation state in 0.4.0 foundation
-
-Implemented: Go encoder capability parser/selector; Go 32-byte video packet
-encode/decode validation; Android MediaCodec capability query; local SteamVR
-pose bridge; SteamVR HMD and display-redirect driver skeleton.
-
-Not implemented yet: SteamVR final-backbuffer texture capture, D3D11/FFmpeg
-hardware encoder sessions, UDP video sender/reassembler, Android MediaCodec
-stream decoder, decoder-to-OpenGL texture integration, clock synchronization,
-rate adaptation, audio and Daydream controller forwarding.
+The PC capture source and Android output are currently fixed to 1600×720 SBS
+at up to 60 FPS. Dynamic bitrate/rate adaptation, HEVC/AV1 transport, audio,
+clock synchronization, capture-to-photon measurement and a remote keyframe
+request control message are not yet implemented. The current H.264 encoder
+repeats an IDR at least once per second so the receiver can recover after loss.
+Real Windows MSVC/D3D11, target-GPU hardware encoding, Android device MediaCodec
+and Wi-Fi end-to-end tests are still required before claiming validated runtime
+performance.

@@ -1,3 +1,13 @@
+## 0.4.16 - Independent SteamVR pose publishing and timing diagnostics
+
+- Moved HMD pose publication out of `IServerTrackedDeviceProvider::RunFrame()` into a dedicated above-normal-priority worker. It wakes immediately for every new UDP pose generation and republishes the latest pose on a 10 ms keepalive, separating tracking update cadence from `vrserver` main-loop callbacks.
+- Added receiver generation signalling and counters for valid driver RX samples, UDP sequence gaps and queued datagrams drained. Added unique/repeated published-pose counters, maximum publish gap, maximum sample age and independent `RunFrame` cadence metrics.
+- Added `IVRVirtualDisplay::Present` and `WaitForPresent` callback frequency / maximum-duration diagnostics to distinguish compositor/GPU callback stalls from pose publication stalls.
+- Retained the existing 72 Hz virtual-display clock and explicitly report it alongside sensor and runtime update rates; no unverified 90/120 Hz change was made.
+- The publisher sends stack-local `DriverPose_t` values and is stopped/joined before the HMD object ID is invalidated. Android sampling, Host packet protocol, Chaperone settings and D3D11 synchronization policy are otherwise unchanged.
+- Added regression checks for independent pose publishing and separate compositor timing telemetry. Android versionCode is now 32.
+- Native MSVC driver compilation and SteamVR runtime validation remain required on the Windows target; this environment cannot run that native toolchain.
+
 ## 0.4.15 - Host pose scheduling and log-view stability
 
 - Cached local IPv4 adapter enumeration at Host service startup. `Snapshot()` no longer calls `net.Interfaces()` while holding the shared service read lock, preventing slow VPN/virtual-adapter queries from blocking the high-rate pose receiver's state update lock.

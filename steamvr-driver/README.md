@@ -1,4 +1,4 @@
-# PhoneVR SteamVR Driver — 0.4.15
+# PhoneVR SteamVR Driver — 0.4.16
 
 Windows x64 OpenVR server driver foundation for the PhoneVR wireless HMD.
 
@@ -10,12 +10,24 @@ Windows x64 OpenVR server driver foundation for the PhoneVR wireless HMD.
   `IVRVirtualDisplay` so SteamVR can provide the final composited backbuffer
   for a wireless output path.
 
-The HMD pose is published from the provider's non-blocking `RunFrame()` via
-`IVRServerDriverHost::TrackedDevicePoseUpdated`. The OpenVR header marks
-`ITrackedDeviceServerDriver::GetPose()` as unused. The UDP pose listener binds
-only to `127.0.0.1:48103`; it is not a LAN service. The provider also sends a
-250 ms loopback-only `PVST` health heartbeat to Host UDP `127.0.0.1:48105`.
-Host considers the driver connected only while these heartbeats are fresh.
+The HMD pose receiver binds only to `127.0.0.1:48103`; it is not a LAN
+service. A dedicated above-normal-priority worker wakes immediately when the
+receiver publishes a new sample generation and calls
+`IVRServerDriverHost::TrackedDevicePoseUpdated` independently of the
+`IServerTrackedDeviceProvider::RunFrame()` cadence. A 10 ms keepalive republishes
+the latest pose when sensor updates pause briefly. The provider's `RunFrame()`
+only collects runtime-cadence diagnostics and sends the 250 ms loopback-only
+`PVST` health heartbeat to Host UDP `127.0.0.1:48105`. Host considers the driver
+connected only while these heartbeats are fresh.
+
+The driver reports separate rates for UDP samples received, unique/repeated
+pose publications and `RunFrame()` callbacks, plus sequence gaps, drained
+packets, maximum pose publish gap and maximum sample age. The virtual-display
+component separately reports `Present` / `WaitForPresent` callback rates and
+maximum callback durations, so tracking-rate problems can be distinguished
+from compositor/GPU synchronization stalls. The current virtual display timing
+is explicitly configured for 72 Hz; sensor input frequency is not the display
+refresh frequency.
 
 ## Build
 

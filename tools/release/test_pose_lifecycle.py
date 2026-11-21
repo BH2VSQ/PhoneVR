@@ -20,11 +20,16 @@ class PoseLifecycleTests(unittest.TestCase):
         self.assertIn("pose.deviceIsConnected = true", self.driver)
         self.assertNotIn("pose.deviceIsConnected = deviceConnected", self.driver)
         self.assertNotIn("m_lastConnected", self.driver)
-        hmd_run_frame = self.driver.split("class PhoneVRHmd", 1)[1].split("class VirtualDisplayComponent", 1)[0]
-        run_frame = hmd_run_frame.split("void RunFrame() {", 1)[1].split("\nprivate:", 1)[0]
-        self.assertIn("TrackedDevicePoseUpdated", run_frame)
-        self.assertNotIn("sample.sequence ==", run_frame)
-        self.assertNotIn("trackingValid == m_lastTrackingValid) return", run_frame)
+        hmd = self.driver.split("class PhoneVRHmd", 1)[1].split("class VirtualDisplayComponent", 1)[0]
+        run_frame = hmd.split("void RunFrame() {", 1)[1].split("\nprivate:", 1)[0]
+        publisher = hmd.split("void PosePublisherLoop() {", 1)[1].split("\n    }\n\n    uint32_t m_objectId", 1)[0]
+        self.assertNotIn("TrackedDevicePoseUpdated", run_frame)
+        self.assertIn("TrackedDevicePoseUpdated", publisher)
+        self.assertIn("m_receiver.WaitForUpdate", publisher)
+        self.assertIn("std::chrono::milliseconds(10)", publisher)
+        self.assertIn("m_posePublisherThread = std::thread", hmd)
+        self.assertIn("m_posePublisherThread.join()", hmd)
+        self.assertIn("~PhoneVRHmd() { Deactivate(); }", hmd)
 
     def test_initial_pose_is_connected_but_untracked(self):
         helper = re.search(

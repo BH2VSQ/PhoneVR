@@ -15,6 +15,7 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -83,6 +84,40 @@ uint64_t MonotonicNowNs() {
         std::chrono::steady_clock::now().time_since_epoch()).count());
 }
 
+void AtomicMax(std::atomic<uint64_t>& target, uint64_t value) {
+    uint64_t current = target.load(std::memory_order_relaxed);
+    while (current < value &&
+           !target.compare_exchange_weak(current, value,
+                                         std::memory_order_relaxed,
+                                         std::memory_order_relaxed)) {
+    }
+}
+
+class ScopedCallbackTiming {
+public:
+    ScopedCallbackTiming(std::atomic<uint64_t>& calls, std::atomic<uint64_t>& maxDurationNs)
+        : m_calls(calls), m_maxDurationNs(maxDurationNs), m_startedNs(MonotonicNowNs()) {}
+    ~ScopedCallbackTiming() {
+        const uint64_t now = MonotonicNowNs();
+        m_calls.fetch_add(1, std::memory_order_relaxed);
+        AtomicMax(m_maxDurationNs, now >= m_startedNs ? now - m_startedNs : 0);
+    }
+    ScopedCallbackTiming(const ScopedCallbackTiming&) = delete;
+    ScopedCallbackTiming& operator=(const ScopedCallbackTiming&) = delete;
+private:
+    std::atomic<uint64_t>& m_calls;
+    std::atomic<uint64_t>& m_maxDurationNs;
+    uint64_t m_startedNs;
+};
+
+struct VirtualDisplayTimingSnapshot {
+    uint64_t presentCalls = 0;
+    uint64_t waitCalls = 0;
+    uint64_t completedFrames = 0;
+    uint64_t maxPresentNs = 0;
+    uint64_t maxWaitNs = 0;
+};
+
 struct Quaternion {
     double x = 0.0, y = 0.0, z = 0.0, w = 1.0;
     double angularVelocityX = 0.0, angularVelocityY = 0.0, angularVelocityZ = 0.0;
@@ -100,9 +135,9 @@ public:
         if (WSAStartup(MAKEWORD(2, 2), &data) != 0) { m_running = false; return false; }
         m_socket = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
         if (m_socket == INVALID_SOCKET) { WSACleanup(); m_running = false; return false; }
-        // The receiver drains queued datagrams after each blocking receive and
-        // only publishes the newest valid sample. Keep the OS queue bounded so
-        // a short vrserver scheduling pause cannot turn into pose latency.
+        // Keep the driver's loopback queue small. The receiver drains each burst
+        // and records sequence gaps, while the pose publisher wakes on each new
+        // generation instead of waiting for the vrserver RunFrame callback.
         int receiveBufferBytes = 32 * 1024;
         (void)setsockopt(m_socket, SOL_SOCKET, SO_RCVBUF,
                          reinterpret_cast<const char*>(&receiveBufferBytes), sizeof(receiveBufferBytes));
@@ -119,6 +154,7 @@ public:
 
     void Stop() {
         if (!m_running.exchange(false)) return;
+        m_updateCv.notify_all();
         if (m_socket != INVALID_SOCKET) {
             shutdown(m_socket, SD_BOTH);
             closesocket(m_socket);
@@ -133,6 +169,32 @@ public:
         return m_pose;
     }
 
+    // Wait until a new sensor generation arrives or the keepalive interval
+    // expires. The generation check prevents lost wakeups if a packet arrives
+    // between Snapshot() and the next wait.
+    bool WaitForUpdate(uint64_t* observedGeneration, std::chrono::milliseconds timeout) {
+        if (!observedGeneration) return false;
+        std::unique_lock<std::mutex> lock(m_mutex);
+        m_updateCv.wait_for(lock, timeout, [this, observedGeneration] {
+            return !m_running.load(std::memory_order_acquire) || m_generation != *observedGeneration;
+        });
+        if (!m_running.load(std::memory_order_acquire)) return false;
+        *observedGeneration = m_generation;
+        return true; // Also true on timeout: the publisher emits a bounded keepalive.
+    }
+
+    uint64_t TakeReceivedPacketCount() {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        const uint64_t count = m_receivedPacketCount;
+        m_receivedPacketCount = 0;
+        return count;
+    }
+    uint64_t TakeSequenceGapCount() {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        const uint64_t count = m_sequenceGapCount;
+        m_sequenceGapCount = 0;
+        return count;
+    }
     uint64_t TakeDrainedPacketCount() {
         std::lock_guard<std::mutex> lock(m_mutex);
         const uint64_t count = m_drainedPacketCount;
@@ -171,24 +233,14 @@ private:
         current.angularVelocityZ = 0.0;
         if (!previous.valid || previous.sensorTimestampNs == 0 ||
             current.sensorTimestampNs <= previous.sensorTimestampNs) return;
-
-        // q and -q are equivalent. Select the nearest representation before
-        // differentiating so a sign flip near a 180-degree pitch cannot create
-        // an artificial full-turn angular velocity.
         const double dot = previous.x * current.x + previous.y * current.y +
                            previous.z * current.z + previous.w * current.w;
         if (dot < 0.0) {
             current.x = -current.x; current.y = -current.y;
             current.z = -current.z; current.w = -current.w;
         }
-
-        // The Android monotonic timestamp is comparable between sensor samples
-        // on the same phone. Do not use Windows packet-processing intervals:
-        // a drained UDP burst would otherwise look like near-zero sample spacing.
         const double dt = static_cast<double>(current.sensorTimestampNs - previous.sensorTimestampNs) / 1.0e9;
         if (dt < 0.001 || dt > 0.100) return;
-
-        // World-space delta = current * inverse(previous).
         const double bx = -previous.x, by = -previous.y, bz = -previous.z, bw = previous.w;
         double dx = current.w * bx + current.x * bw + current.y * bz - current.z * by;
         double dy = current.w * by - current.x * bz + current.y * bw + current.z * bx;
@@ -198,21 +250,17 @@ private:
         if (deltaNorm < 1.0e-9) return;
         dx /= deltaNorm; dy /= deltaNorm; dz /= deltaNorm; dw /= deltaNorm;
         if (dw < 0.0) { dx = -dx; dy = -dy; dz = -dz; dw = -dw; }
-
         const double sinHalf = std::sqrt(dx * dx + dy * dy + dz * dz);
         if (sinHalf < 1.0e-7) return;
         const double angle = 2.0 * std::atan2(sinHalf, std::clamp(dw, -1.0, 1.0));
         const double scale = angle / (sinHalf * dt);
         double vx = dx * scale, vy = dy * scale, vz = dz * scale;
         const double speed = std::sqrt(vx * vx + vy * vy + vz * vz);
-        constexpr double maxAngularSpeed = 20.0; // rad/s; reject extreme sensor discontinuities.
+        constexpr double maxAngularSpeed = 20.0;
         if (speed > maxAngularSpeed) {
             const double clampScale = maxAngularSpeed / speed;
             vx *= clampScale; vy *= clampScale; vz *= clampScale;
         }
-
-        // Mild low-pass filtering removes Wi-Fi arrival jitter without adding
-        // a long trailing response. SteamVR then performs time-based prediction.
         constexpr double alpha = 0.80;
         current.angularVelocityX = previous.angularVelocityX * (1.0 - alpha) + vx * alpha;
         current.angularVelocityY = previous.angularVelocityY * (1.0 - alpha) + vy * alpha;
@@ -220,52 +268,60 @@ private:
     }
 
     void Run() {
-        // Capture the socket handle once. Stop() closes this underlying socket
-        // to wake recv(), but does not race a write to the worker's handle copy.
         const SOCKET socket = m_socket;
         std::array<uint8_t, 1500> buffer{};
-        while (m_running.load()) {
+        bool haveSequence = false;
+        uint32_t lastSequence = 0;
+        while (m_running.load(std::memory_order_acquire)) {
             int received = recv(socket, reinterpret_cast<char*>(buffer.data()),
                                 static_cast<int>(buffer.size()), 0);
             if (received == SOCKET_ERROR) {
-                if (!m_running.load()) break;
+                if (!m_running.load(std::memory_order_acquire)) break;
                 continue;
             }
-
-            // Keep a sensor-sample cursor while draining the socket. This lets
-            // angular velocity use adjacent Android samples even when Windows
-            // delivered a short burst to the driver worker.
             Quaternion velocityBase = Snapshot();
             Quaternion latest{};
-            bool haveLatest = DecodePacket(buffer.data(), received, &latest);
-            if (haveLatest) {
-                EstimateAngularVelocity(velocityBase, latest);
-                velocityBase = latest;
-            }
-            uint64_t drainedPackets = 0;
-            // If the worker was descheduled, discard older queued poses and
-            // publish only the freshest one. Tracking is state, not a reliable
-            // event stream; replaying stale samples increases perceived lag.
-            while (m_running.load()) {
+            uint64_t validInBurst = 0;
+            uint64_t drainedInBurst = 0;
+            auto consume = [&](int length) {
+                Quaternion candidate{};
+                if (!DecodePacket(buffer.data(), length, &candidate)) return;
+                if (haveSequence) {
+                    const uint32_t delta = candidate.sequence - lastSequence;
+                    if (delta > 1 && delta < 0x80000000u) {
+                        std::lock_guard<std::mutex> lock(m_mutex);
+                        m_sequenceGapCount += static_cast<uint64_t>(delta - 1);
+                    }
+                }
+                haveSequence = true;
+                lastSequence = candidate.sequence;
+                EstimateAngularVelocity(velocityBase, candidate);
+                velocityBase = candidate;
+                latest = candidate;
+                ++validInBurst;
+            };
+            consume(received);
+            while (m_running.load(std::memory_order_acquire)) {
                 u_long pendingBytes = 0;
                 if (ioctlsocket(socket, FIONREAD, &pendingBytes) == SOCKET_ERROR || pendingBytes == 0) break;
                 received = recv(socket, reinterpret_cast<char*>(buffer.data()),
                                 static_cast<int>(buffer.size()), 0);
                 if (received == SOCKET_ERROR) break;
-                Quaternion candidate{};
-                if (DecodePacket(buffer.data(), received, &candidate)) {
-                    EstimateAngularVelocity(velocityBase, candidate);
-                    velocityBase = candidate;
-                    latest = candidate;
-                    haveLatest = true;
-                }
-                ++drainedPackets;
+                consume(received);
+                ++drainedInBurst;
             }
-
-            if (!haveLatest) continue;
-            std::lock_guard<std::mutex> lock(m_mutex);
-            m_pose = latest;
-            m_drainedPacketCount += drainedPackets;
+            if (validInBurst == 0) continue;
+            // The receiver differentiates every sample in the burst, but stores
+            // only its newest orientation. The publisher wakes once per burst
+            // and sends the freshest state instead of replaying stale history.
+            {
+                std::lock_guard<std::mutex> lock(m_mutex);
+                m_pose = latest;
+                ++m_generation;
+                m_receivedPacketCount += validInBurst;
+                m_drainedPacketCount += drainedInBurst;
+            }
+            m_updateCv.notify_one();
         }
     }
 
@@ -273,7 +329,11 @@ private:
     SOCKET m_socket = INVALID_SOCKET;
     std::thread m_thread;
     mutable std::mutex m_mutex;
+    std::condition_variable m_updateCv;
     Quaternion m_pose{};
+    uint64_t m_generation = 0;
+    uint64_t m_receivedPacketCount = 0;
+    uint64_t m_sequenceGapCount = 0;
     uint64_t m_drainedPacketCount = 0;
 };
 
@@ -366,6 +426,8 @@ public:
 
 class PhoneVRHmd final : public vr::ITrackedDeviceServerDriver {
 public:
+    ~PhoneVRHmd() { Deactivate(); }
+
     vr::EVRInitError Activate(uint32_t objectId) override {
         m_objectId = objectId;
         const auto container = vr::VRProperties()->TrackedDeviceToPropertyContainer(objectId);
@@ -381,19 +443,13 @@ public:
         properties->SetFloatProperty(container, vr::Prop_DisplayFrequency_Float,
                                      static_cast<float>(kDisplayRefreshRateHz));
 
-        // PhoneVR supplies orientation only. Publish an explicit, stable
-        // driver-owned Chaperone universe so SteamVR does not depend on a
-        // user-created room-scale calibration for this 3DoF device. Empty
-        // collision bounds are intentional: PhoneVR has no positional
-        // tracking and must not advertise a fictitious room-scale boundary.
         const auto universeResult = properties->SetUint64Property(
             container, vr::Prop_CurrentUniverseId_Uint64,
             static_cast<uint64_t>(kPhoneVRUniverseId));
         const auto chaperoneResult = properties->SetStringProperty(
             container, vr::Prop_DriverProvidedChaperoneJson_String,
             kDriverProvidedChaperoneJson);
-        if (universeResult != vr::TrackedProp_Success ||
-            chaperoneResult != vr::TrackedProp_Success) {
+        if (universeResult != vr::TrackedProp_Success || chaperoneResult != vr::TrackedProp_Success) {
             char message[224]{};
             std::snprintf(message, sizeof(message),
                           "PhoneVR: failed to publish driver Chaperone (universe property=%d, JSON property=%d)",
@@ -411,27 +467,46 @@ public:
             vr::VRDriverLog()->Log(message);
         }
 
-        if (!m_receiver.Start() && vr::VRDriverLog())
-            vr::VRDriverLog()->Log("PhoneVR: failed to bind local pose bridge on UDP 48103; HMD remains connected but untracked");
-
-        // Publish a connected-but-untracked initial pose immediately. OpenVR's
-        // deviceIsConnected describes device presence, not packet freshness.
-        // This prevents SteamVR from removing and rediscovering the HMD while
-        // the phone app is starting or briefly pauses sensor delivery.
-        m_lastPose = MakeUntrackedPose();
-        m_lastTrackingValid = false;
+        // Initial state is published before the worker starts: connected, but
+        // untracked until a fresh phone sensor sample is received.
+        const vr::DriverPose_t initialPose = MakeUntrackedPose();
+        {
+            std::lock_guard<std::mutex> lock(m_poseMutex);
+            m_lastPose = initialPose;
+        }
+        m_lastTrackingValid.store(false, std::memory_order_release);
         if (auto* host = vr::VRServerDriverHost())
-            host->TrackedDevicePoseUpdated(m_objectId, m_lastPose, sizeof(m_lastPose));
+            host->TrackedDevicePoseUpdated(objectId, initialPose, sizeof(initialPose));
+
+        if (!m_receiver.Start()) {
+            if (vr::VRDriverLog())
+                vr::VRDriverLog()->Log("PhoneVR: failed to bind local pose bridge on UDP 48103; HMD remains connected but untracked");
+            return vr::VRInitError_None;
+        }
+
+        m_posePublisherRunning.store(true, std::memory_order_release);
+        try {
+            m_posePublisherThread = std::thread(&PhoneVRHmd::PosePublisherLoop, this);
+        } catch (...) {
+            m_posePublisherRunning.store(false, std::memory_order_release);
+            m_receiver.Stop();
+            if (vr::VRDriverLog()) vr::VRDriverLog()->Log("PhoneVR: failed to create pose publisher thread");
+            return vr::VRInitError_Driver_Unknown;
+        }
         if (vr::VRDriverLog()) {
-            vr::VRDriverLog()->Log("PhoneVR: HMD activation published; tracking awaits fresh IMU samples");
+            vr::VRDriverLog()->Log("PhoneVR: HMD activation published; pose updates use dedicated event-driven worker");
+            vr::VRDriverLog()->Log("PhoneVR: pose publisher priority=ABOVE_NORMAL, keepalive=10ms; virtual display refresh=72Hz");
             vr::VRDriverLog()->Log("PhoneVR: HMD reports IsDisplayOnDesktop=false; enable SteamVR Settings > Developer > Enable Direct Mode for headset display operation");
         }
         return vr::VRInitError_None;
     }
+
     void Deactivate() override {
-        m_receiver.Stop();
-        m_objectId = vr::k_unTrackedDeviceIndexInvalid;
-        m_lastTrackingValid = false;
+        m_posePublisherRunning.store(false, std::memory_order_release);
+        m_receiver.Stop(); // Also wakes WaitForUpdate() in the publisher.
+        if (m_posePublisherThread.joinable()) m_posePublisherThread.join();
+        m_objectId.store(vr::k_unTrackedDeviceIndexInvalid, std::memory_order_release);
+        m_lastTrackingValid.store(false, std::memory_order_release);
     }
     void EnterStandby() override {}
     void* GetComponent(const char* nameAndVersion) override {
@@ -441,12 +516,15 @@ public:
     void DebugRequest(const char*, char* response, uint32_t size) override {
         if (response && size) response[0] = '\0';
     }
-    // OpenVR marks ITrackedDeviceServerDriver::GetPose as unused. Pose updates
-    // must be pushed to IVRServerDriverHost from RunFrame instead.
-    vr::DriverPose_t GetPose() override { return m_lastPose; }
+    vr::DriverPose_t GetPose() override {
+        std::lock_guard<std::mutex> lock(m_poseMutex);
+        return m_lastPose;
+    }
 
-    bool IsActivated() const { return m_objectId != vr::k_unTrackedDeviceIndexInvalid; }
-    bool HasValidPose() const { return m_lastTrackingValid; }
+    bool IsActivated() const {
+        return m_objectId.load(std::memory_order_acquire) != vr::k_unTrackedDeviceIndexInvalid;
+    }
+    bool HasValidPose() const { return m_lastTrackingValid.load(std::memory_order_acquire); }
 
     static vr::DriverPose_t MakeUntrackedPose() {
         vr::DriverPose_t pose{};
@@ -463,88 +541,128 @@ public:
     }
 
     void RunFrame() {
-        if (m_objectId == vr::k_unTrackedDeviceIndexInvalid) return;
-        const Quaternion sample = m_receiver.Snapshot();
-        if (!sample.valid || sample.receivedAtNs == 0) {
-            if (m_lastTrackingValid && vr::VRDriverLog())
-                vr::VRDriverLog()->Log("PhoneVR: IMU sample unavailable; HMD remains connected and pose is marked untracked");
-            m_lastTrackingValid = false;
-            m_lastPose.deviceIsConnected = true;
-            m_lastPose.poseIsValid = false;
-            m_lastPose.result = vr::TrackingResult_Uninitialized;
-            if (auto* host = vr::VRServerDriverHost())
-                host->TrackedDevicePoseUpdated(m_objectId, m_lastPose, sizeof(m_lastPose));
-            return;
-        }
-
+        // Intentionally do not submit pose here. OpenVR's RunFrame cadence is
+        // controlled by vrserver. The dedicated publisher submits every fresh
+        // UDP generation immediately and records this callback cadence only as
+        // a diagnostic so it can be compared with the independent pose rate.
         const uint64_t now = MonotonicNowNs();
-        const uint64_t ageNs = now >= sample.receivedAtNs ? now - sample.receivedAtNs : 0;
-        const bool trackingValid = ageNs <= kTrackingPoseTimeoutNs;
-        if (now - m_lastPoseDiagnosticsNs >= 5000000000ULL && vr::VRDriverLog()) {
-            const double angularSpeed = std::sqrt(
-                sample.angularVelocityX * sample.angularVelocityX +
-                sample.angularVelocityY * sample.angularVelocityY +
-                sample.angularVelocityZ * sample.angularVelocityZ);
-            char message[192]{};
-            const double sinPitch = 2.0 * (sample.w * sample.y - sample.z * sample.x);
-            const double pitchDegrees = std::asin(std::clamp(sinPitch, -1.0, 1.0)) * 57.295779513;
-            const uint64_t drainedPackets = m_receiver.TakeDrainedPacketCount();
-            std::snprintf(message, sizeof(message),
-                          "PhoneVR: pose telemetry age=%.2f ms angular-speed=%.1f deg/s pitch=%.1f deg sequence=%u driver-drained=%llu",
-                          static_cast<double>(ageNs) / 1.0e6, angularSpeed * 57.295779513,
-                          pitchDegrees, sample.sequence,
-                          static_cast<unsigned long long>(drainedPackets));
-            vr::VRDriverLog()->Log(message);
-            m_lastPoseDiagnosticsNs = now;
-        }
-        const bool trackingStateChanged = trackingValid != m_lastTrackingValid;
-        if (trackingStateChanged && vr::VRDriverLog()) {
-            char message[160]{};
-            std::snprintf(message, sizeof(message),
-                          "PhoneVR: IMU tracking %s (sample age %llu ms); HMD device remains connected",
-                          trackingValid ? "resumed" : "stale",
-                          static_cast<unsigned long long>(ageNs / 1000000ULL));
-            vr::VRDriverLog()->Log(message);
-        }
+        if (m_lastRuntimeFrameNs != 0) AtomicMax(m_maxRuntimeRunFrameGapNs, now - m_lastRuntimeFrameNs);
+        m_lastRuntimeFrameNs = now;
+        m_runtimeRunFrameCount.fetch_add(1, std::memory_order_relaxed);
+        if (now - m_lastDiagnosticsNs < 5000000000ULL) return;
+        const double intervalSeconds = m_lastDiagnosticsNs == 0
+            ? 5.0 : static_cast<double>(now - m_lastDiagnosticsNs) / 1.0e9;
+        m_lastDiagnosticsNs = now;
 
-        vr::DriverPose_t pose{};
-        // The packet's sensor clock belongs to Android and cannot be compared
-        // directly with the Windows clock. Use the driver's local receive age
-        // as a conservative lower bound and provide measured angular velocity
-        // so SteamVR can predict forward to display time.
-        const uint64_t predictionAgeNs = std::min<uint64_t>(ageNs, 50000000ULL);
-        pose.poseTimeOffset = -static_cast<double>(predictionAgeNs) / 1.0e9;
-        pose.qWorldFromDriverRotation = {1.0, 0.0, 0.0, 0.0};
-        pose.qDriverFromHeadRotation = {1.0, 0.0, 0.0, 0.0};
-        pose.qRotation = {sample.w, sample.x, sample.y, sample.z};
-        pose.vecAngularVelocity[0] = sample.angularVelocityX;
-        pose.vecAngularVelocity[1] = sample.angularVelocityY;
-        pose.vecAngularVelocity[2] = sample.angularVelocityZ;
-        pose.result = trackingValid ? vr::TrackingResult_Running_OK : vr::TrackingResult_Uninitialized;
-        // The HMD has been activated by SteamVR and remains physically present.
-        // Sensor timeout only affects pose validity; never set this false on a
-        // transient IMU/network gap or SteamVR will remove and rediscover it.
-        pose.deviceIsConnected = true;
-        pose.poseIsValid = trackingValid;
-        pose.willDriftInYaw = true;
-        pose.shouldApplyHeadModel = false;
-        m_lastPose = pose;
-        m_lastTrackingValid = trackingValid;
-
-        // OpenVR expects drivers to submit poses at least once per frame. Do not
-        // suppress an update merely because the latest UDP sequence is unchanged:
-        // the runtime only extrapolates briefly and otherwise invalidates old poses.
-        if (auto* host = vr::VRServerDriverHost())
-            host->TrackedDevicePoseUpdated(m_objectId, pose, sizeof(pose));
+        const uint64_t rx = m_receiver.TakeReceivedPacketCount();
+        const uint64_t gaps = m_receiver.TakeSequenceGapCount();
+        const uint64_t drained = m_receiver.TakeDrainedPacketCount();
+        const uint64_t published = m_publishedPoseCount.exchange(0, std::memory_order_relaxed);
+        const uint64_t unique = m_uniquePoseCount.exchange(0, std::memory_order_relaxed);
+        const uint64_t repeated = m_repeatedPoseCount.exchange(0, std::memory_order_relaxed);
+        const uint64_t maxPublishGap = m_maxPublishGapNs.exchange(0, std::memory_order_relaxed);
+        const uint64_t maxSampleAge = m_maxSampleAgeNs.exchange(0, std::memory_order_relaxed);
+        const uint64_t runtimeCalls = m_runtimeRunFrameCount.exchange(0, std::memory_order_relaxed);
+        const uint64_t maxRuntimeGap = m_maxRuntimeRunFrameGapNs.exchange(0, std::memory_order_relaxed);
+        char message[512]{};
+        std::snprintf(message, sizeof(message),
+                      "PhoneVR: pose rates driver-rx=%.1fHz published=%.1fHz unique=%.1fHz repeated=%.1fHz sequence-gaps=%llu drained=%llu max-publish-gap=%.2fms max-sample-age=%.2fms | runtime RunFrame=%.1fHz max-gap=%.2fms | display-refresh=%.0fHz",
+                      rx / intervalSeconds, published / intervalSeconds,
+                      unique / intervalSeconds, repeated / intervalSeconds,
+                      static_cast<unsigned long long>(gaps), static_cast<unsigned long long>(drained),
+                      maxPublishGap / 1.0e6, maxSampleAge / 1.0e6,
+                      runtimeCalls / intervalSeconds, maxRuntimeGap / 1.0e6,
+                      kDisplayRefreshRateHz);
+        if (vr::VRDriverLog()) vr::VRDriverLog()->Log(message);
     }
 
 private:
-    uint32_t m_objectId = vr::k_unTrackedDeviceIndexInvalid;
+    void PosePublisherLoop() {
+        (void)SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL);
+        uint64_t observedGeneration = 0;
+        uint32_t lastPublishedSequence = 0;
+        bool havePublishedSequence = false;
+        uint64_t lastPublishNs = 0;
+        while (m_posePublisherRunning.load(std::memory_order_acquire)) {
+            if (!m_receiver.WaitForUpdate(&observedGeneration, std::chrono::milliseconds(10))) break;
+            if (!m_posePublisherRunning.load(std::memory_order_acquire)) break;
+
+            const Quaternion sample = m_receiver.Snapshot();
+            const uint64_t now = MonotonicNowNs();
+            vr::DriverPose_t pose = MakeUntrackedPose();
+            uint64_t ageNs = 0;
+            bool trackingValid = false;
+            if (sample.valid && sample.receivedAtNs != 0) {
+                ageNs = now >= sample.receivedAtNs ? now - sample.receivedAtNs : 0;
+                trackingValid = ageNs <= kTrackingPoseTimeoutNs;
+                const uint64_t predictionAgeNs = std::min<uint64_t>(ageNs, 50000000ULL);
+                pose.poseTimeOffset = -static_cast<double>(predictionAgeNs) / 1.0e9;
+                pose.qRotation = {sample.w, sample.x, sample.y, sample.z};
+                pose.vecAngularVelocity[0] = sample.angularVelocityX;
+                pose.vecAngularVelocity[1] = sample.angularVelocityY;
+                pose.vecAngularVelocity[2] = sample.angularVelocityZ;
+                pose.result = trackingValid ? vr::TrackingResult_Running_OK : vr::TrackingResult_Uninitialized;
+                pose.poseIsValid = trackingValid;
+                pose.deviceIsConnected = true;
+                pose.willDriftInYaw = true;
+                pose.shouldApplyHeadModel = false;
+            }
+            AtomicMax(m_maxSampleAgeNs, ageNs);
+
+            const bool previousTrackingValid = m_lastTrackingValid.exchange(trackingValid, std::memory_order_acq_rel);
+            if (previousTrackingValid != trackingValid && vr::VRDriverLog()) {
+                char stateMessage[160]{};
+                std::snprintf(stateMessage, sizeof(stateMessage),
+                              "PhoneVR: IMU tracking %s (sample age %.1f ms); HMD device remains connected",
+                              trackingValid ? "resumed" : "stale",
+                              static_cast<double>(ageNs) / 1.0e6);
+                vr::VRDriverLog()->Log(stateMessage);
+            }
+
+            const bool uniquePose = sample.valid &&
+                (!havePublishedSequence || sample.sequence != lastPublishedSequence);
+            if (uniquePose) {
+                m_uniquePoseCount.fetch_add(1, std::memory_order_relaxed);
+                lastPublishedSequence = sample.sequence;
+                havePublishedSequence = true;
+            } else {
+                m_repeatedPoseCount.fetch_add(1, std::memory_order_relaxed);
+            }
+
+            const uint64_t publishNow = MonotonicNowNs();
+            if (lastPublishNs != 0 && publishNow >= lastPublishNs)
+                AtomicMax(m_maxPublishGapNs, publishNow - lastPublishNs);
+            lastPublishNs = publishNow;
+            {
+                std::lock_guard<std::mutex> lock(m_poseMutex);
+                m_lastPose = pose;
+            }
+            const uint32_t objectId = m_objectId.load(std::memory_order_acquire);
+            if (objectId != vr::k_unTrackedDeviceIndexInvalid) {
+                if (auto* host = vr::VRServerDriverHost())
+                    host->TrackedDevicePoseUpdated(objectId, pose, sizeof(pose));
+            }
+            m_publishedPoseCount.fetch_add(1, std::memory_order_relaxed);
+        }
+    }
+
+    std::atomic<uint32_t> m_objectId{vr::k_unTrackedDeviceIndexInvalid};
     PoseReceiver m_receiver;
     HmdDisplay m_display;
+    std::thread m_posePublisherThread;
+    std::atomic<bool> m_posePublisherRunning{false};
+    mutable std::mutex m_poseMutex;
     vr::DriverPose_t m_lastPose{};
-    bool m_lastTrackingValid = false;
-    uint64_t m_lastPoseDiagnosticsNs = 0;
+    std::atomic<bool> m_lastTrackingValid{false};
+    std::atomic<uint64_t> m_publishedPoseCount{0};
+    std::atomic<uint64_t> m_uniquePoseCount{0};
+    std::atomic<uint64_t> m_repeatedPoseCount{0};
+    std::atomic<uint64_t> m_maxPublishGapNs{0};
+    std::atomic<uint64_t> m_maxSampleAgeNs{0};
+    std::atomic<uint64_t> m_runtimeRunFrameCount{0};
+    std::atomic<uint64_t> m_maxRuntimeRunFrameGapNs{0};
+    uint64_t m_lastRuntimeFrameNs = 0;
+    uint64_t m_lastDiagnosticsNs = 0;
 };
 
 class VirtualDisplayComponent final : public vr::IVRVirtualDisplay {
@@ -632,6 +750,7 @@ public:
     }
 
     void Present(const vr::PresentInfo_t* info, uint32_t infoSize) override {
+        ScopedCallbackTiming timing(m_presentCalls, m_maxPresentDurationNs);
         std::lock_guard<std::mutex> lock(m_mutex);
         if (!info || infoSize < sizeof(vr::PresentInfo_t) || !info->backbufferTextureHandle) {
             return;
@@ -706,6 +825,7 @@ public:
     }
 
     void WaitForPresent() override {
+        ScopedCallbackTiming timing(m_waitCalls, m_maxWaitDurationNs);
         std::lock_guard<std::mutex> lock(m_mutex);
         if (!m_pendingReadback || !m_context || !m_flushTexture) return;
         D3D11_MAPPED_SUBRESOURCE mapped{};
@@ -719,6 +839,7 @@ public:
             m_vsyncOriginTimeSeconds = m_lastVsyncTimeSeconds;
             m_vsyncOriginFrameCounter = m_frameCounter;
             const uint64_t completed = m_completedFrameCounter.fetch_add(1, std::memory_order_relaxed) + 1;
+            m_timingCompletedFrames.fetch_add(1, std::memory_order_relaxed);
             if (completed == 1 && vr::VRDriverLog())
                 vr::VRDriverLog()->Log("PhoneVR: first virtual display frame synchronized successfully");
         } else {
@@ -744,6 +865,15 @@ public:
     }
 
     uint64_t PresentCounter() const { return m_completedFrameCounter.load(std::memory_order_relaxed); }
+    VirtualDisplayTimingSnapshot TakeTimingSnapshot() {
+        VirtualDisplayTimingSnapshot snapshot{};
+        snapshot.presentCalls = m_presentCalls.exchange(0, std::memory_order_relaxed);
+        snapshot.waitCalls = m_waitCalls.exchange(0, std::memory_order_relaxed);
+        snapshot.completedFrames = m_timingCompletedFrames.exchange(0, std::memory_order_relaxed);
+        snapshot.maxPresentNs = m_maxPresentDurationNs.exchange(0, std::memory_order_relaxed);
+        snapshot.maxWaitNs = m_maxWaitDurationNs.exchange(0, std::memory_order_relaxed);
+        return snapshot;
+    }
 
 private:
     static double NowSeconds() {
@@ -865,6 +995,11 @@ private:
     uint64_t m_lastMutexFailureLogNs = 0;
     uint64_t m_lastMapFailureLogNs = 0;
     std::atomic<uint64_t> m_completedFrameCounter{0};
+    std::atomic<uint64_t> m_presentCalls{0};
+    std::atomic<uint64_t> m_waitCalls{0};
+    std::atomic<uint64_t> m_timingCompletedFrames{0};
+    std::atomic<uint64_t> m_maxPresentDurationNs{0};
+    std::atomic<uint64_t> m_maxWaitDurationNs{0};
 };
 
 class PhoneVRDisplayRedirect final : public vr::ITrackedDeviceServerDriver {
@@ -890,6 +1025,7 @@ public:
     void EnterStandby() override {}
     bool IsActive() const { return m_active; }
     uint64_t PresentCounter() const { return m_display.PresentCounter(); }
+    VirtualDisplayTimingSnapshot TakeTimingSnapshot() { return m_display.TakeTimingSnapshot(); }
     void* GetComponent(const char* nameAndVersion) override {
         if (nameAndVersion && std::strcmp(nameAndVersion, vr::IVRVirtualDisplay_Version) == 0) return &m_display;
         return nullptr;
@@ -925,7 +1061,7 @@ public:
         if (!host->TrackedDeviceAdded("PHONEVR-DISPLAY-001", vr::TrackedDeviceClass_DisplayRedirect, m_redirect)) {
             Cleanup(); return vr::VRInitError_Driver_Unknown;
         }
-        if (vr::VRDriverLog()) vr::VRDriverLog()->Log("PhoneVR 0.4.13 SteamVR driver initialized");
+        if (vr::VRDriverLog()) vr::VRDriverLog()->Log("PhoneVR 0.4.16 SteamVR driver initialized");
         return vr::VRInitError_None;
     }
     void Cleanup() override {
@@ -937,6 +1073,21 @@ public:
     const char* const* GetInterfaceVersions() override { return vr::k_InterfaceVersions; }
     void RunFrame() override {
         if (m_hmd) m_hmd->RunFrame();
+        const uint64_t now = MonotonicNowNs();
+        if (m_redirect && now - m_lastDisplayDiagnosticsNs >= 5000000000ULL) {
+            const double intervalSeconds = m_lastDisplayDiagnosticsNs == 0
+                ? 5.0 : static_cast<double>(now - m_lastDisplayDiagnosticsNs) / 1.0e9;
+            m_lastDisplayDiagnosticsNs = now;
+            const auto timing = m_redirect->TakeTimingSnapshot();
+            char line[384]{};
+            std::snprintf(line, sizeof(line),
+                          "PhoneVR: virtual display Present=%.1fHz WaitForPresent=%.1fHz completed=%.1fHz max-Present=%.2fms max-WaitForPresent=%.2fms refresh=%.0fHz",
+                          timing.presentCalls / intervalSeconds, timing.waitCalls / intervalSeconds,
+                          timing.completedFrames / intervalSeconds,
+                          timing.maxPresentNs / 1.0e6, timing.maxWaitNs / 1.0e6,
+                          kDisplayRefreshRateHz);
+            if (vr::VRDriverLog()) vr::VRDriverLog()->Log(line);
+        }
         uint8_t flags = kStatusDriverLoaded;
         if (m_hmd && m_hmd->IsActivated()) flags |= kStatusHmdActive;
         if (m_hmd && m_hmd->HasValidPose()) flags |= kStatusPoseValid;
@@ -952,6 +1103,7 @@ private:
     PhoneVRHmd* m_hmd = nullptr;
     PhoneVRDisplayRedirect* m_redirect = nullptr;
     SteamVRStatusReporter m_statusReporter;
+    uint64_t m_lastDisplayDiagnosticsNs = 0;
 };
 
 PhoneVRProvider g_provider;

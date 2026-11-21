@@ -39,11 +39,33 @@ class PoseLatencyRegressionTests(unittest.TestCase):
         self.assertIn("SetReadBuffer(16 * 1024)", HOST_SERVICE)
         self.assertIn("time.Now().Add(250 * time.Microsecond)", HOST_SERVICE)
 
+    def test_pose_publisher_is_independent_of_runframe_and_reports_both_cadences(self):
+        hmd = DRIVER.split("class PhoneVRHmd", 1)[1].split("class VirtualDisplayComponent", 1)[0]
+        run_frame = hmd.split("void RunFrame() {", 1)[1].split("\nprivate:", 1)[0]
+        publisher = hmd.split("void PosePublisherLoop() {", 1)[1].split("\n    }\n\n    uint32_t m_objectId", 1)[0]
+        self.assertIn("controlled by vrserver", run_frame)
+        self.assertNotIn("TrackedDevicePoseUpdated", run_frame)
+        self.assertIn("TrackedDevicePoseUpdated", publisher)
+        self.assertIn("WaitForUpdate", publisher)
+        self.assertIn("THREAD_PRIORITY_ABOVE_NORMAL", publisher)
+        self.assertIn("m_uniquePoseCount", publisher)
+        self.assertIn("m_repeatedPoseCount", publisher)
+        self.assertIn("max-publish-gap", run_frame)
+        self.assertIn("runtime RunFrame=%.1fHz", run_frame)
+
+    def test_virtual_display_callback_timing_is_reported_separately(self):
+        self.assertIn("ScopedCallbackTiming timing(m_presentCalls", DRIVER)
+        self.assertIn("ScopedCallbackTiming timing(m_waitCalls", DRIVER)
+        self.assertIn("TakeTimingSnapshot()", DRIVER)
+        self.assertIn("max-Present=%.2fms", DRIVER)
+        self.assertIn("max-WaitForPresent=%.2fms", DRIVER)
+        self.assertIn("display-refresh=%.0fHz", DRIVER)
+
     def test_driver_drains_stale_udp_queue_and_predicts_with_angular_velocity(self):
         self.assertIn("ioctlsocket(socket, FIONREAD, &pendingBytes)", DRIVER)
-        self.assertIn("only the freshest one", DRIVER)
+        self.assertIn("stores\n            // only its newest orientation", DRIVER)
+        self.assertIn("m_sequenceGapCount", DRIVER)
         self.assertIn("EstimateAngularVelocity", DRIVER)
-        self.assertIn("EstimateAngularVelocity(velocityBase, latest)", DRIVER)
         self.assertIn("EstimateAngularVelocity(velocityBase, candidate)", DRIVER)
         self.assertIn("next.sensorTimestampNs = ReadBE64(data + 12)", DRIVER)
         self.assertIn("current.sensorTimestampNs - previous.sensorTimestampNs", DRIVER)
@@ -51,7 +73,7 @@ class PoseLatencyRegressionTests(unittest.TestCase):
         self.assertIn("pose.vecAngularVelocity[1]", DRIVER)
         self.assertIn("pose.vecAngularVelocity[2]", DRIVER)
         self.assertIn("pose.poseTimeOffset = -static_cast<double>(predictionAgeNs)", DRIVER)
-        self.assertIn("pose telemetry age=%.2f ms angular-speed=%.1f deg/s pitch=%.1f deg", DRIVER)
+        self.assertIn("pose rates driver-rx=%.1fHz published=%.1fHz", DRIVER)
         self.assertIn("constexpr double alpha = 0.80", DRIVER)
 
     def test_snapshot_never_enumerates_network_adapters_under_pose_mutex(self):

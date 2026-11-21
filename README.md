@@ -1,6 +1,6 @@
 # PhoneVRStream
 
-Repository revision: **0.4.15**. Windows Host: **0.4.15**. Android client: **0.4.15**. Control protocol: **v1**; video packet protocol: **v1 foundation**.
+Repository revision: **0.4.16**. Windows Host: **0.4.16**. Android client: **0.4.16**. Control protocol: **v1**; video packet protocol: **v1 foundation**.
 
 PhoneVRStream is a multi-component project for using an Android phone as a PC VR streaming HMD. Both applications live in one repository and use independent build/test pipelines.
 
@@ -22,7 +22,7 @@ PhoneVRStream/
 └── dist/                       # Local build output (git-ignored)
 ```
 
-## Windows Host 0.4.15 bundled SteamVR driver
+## Windows Host 0.4.16 bundled SteamVR driver
 
 The Windows Host has been migrated from an Edge/Chrome app-mode dashboard to a native Windows desktop application.
 
@@ -41,7 +41,7 @@ The Windows Host has been migrated from an Edge/Chrome app-mode dashboard to a n
 
 The normal `PhoneVRHost.exe` is built with the Windows GUI subsystem and opens the native desktop application. `PhoneVRHost-console.exe -headless` runs the network service without a desktop window for diagnostics or server-only use.
 
-## Android client 0.4.15
+## Android client 0.4.16
 
 - Landscape immersive display with OpenGL ES 3.0 stereo rendering.
 - Locally stored optical preset selector with Daydream View v2.0 (2017) and Generic Cardboard built-in presets.
@@ -53,7 +53,7 @@ The normal `PhoneVRHost.exe` is built with the Windows GUI subsystem and opens t
 - `CodecCapabilityProbe` enumerates device MediaCodec decoders for H.264, HEVC and AV1, including hardware classification, supported size/frame-rate limits, profiles and color formats.
 
 
-## SteamVR driver 0.4.15
+## SteamVR driver 0.4.16
 
 The PhoneVR Host contains its own Windows x64 OpenVR driver inside the Host executable. The normal build compiles `steamvr-driver/`, embeds the resulting manifest, DLL and resources into both Host executables, and no longer asks users to download or select a ZIP. On startup, the Host checks whether SteamVR is installed and whether the user has disabled automatic deployment. When enabled, it copies the embedded driver into a content-versioned directory under `%LOCALAPPDATA%\PhoneVR\SteamVRDriver` and registers it with SteamVR's own `vrpathreg.exe`.
 
@@ -65,7 +65,7 @@ The 0.4.x driver opens the final SteamVR backbuffer through D3D11 shared texture
 - Registers `PhoneVRHmd` as `TrackedDeviceClass_HMD` with an `IVRDisplayComponent`, and `PhoneVRDisplayRedirect` as `TrackedDeviceClass_DisplayRedirect` with an `IVRVirtualDisplay` component.
 - Uses latest-only pose forwarding at Android, Host and driver stages; driver angular velocity is derived from Android sensor timestamps and supplied to SteamVR for prediction. Host and driver expose pose-rate/age diagnostics.
 - `IsDisplayOnDesktop=false` is reported by the HMD. When SteamVR warns that the HMD is running as a monitor, enable **SteamVR → Settings → Developer → Enable Direct Mode** and restart SteamVR.
-- Receives validated Android `PVSP` quaternion packets from the Go Host through loopback UDP port 48103. The driver reports 3DoF orientation only; it does not invent positional tracking.
+- Receives validated Android `PVSP` quaternion packets from the Go Host through loopback UDP port 48103. A dedicated above-normal-priority pose worker publishes each new pose immediately to OpenVR, independently of `RunFrame`, with a 10 ms keepalive. Driver diagnostics compare received / unique / repeated pose rates against `RunFrame` cadence and report maximum publish gap and sample age. `IVRVirtualDisplay` separately reports `Present` / `WaitForPresent` rates and callback durations. The currently declared virtual display refresh is 72 Hz; sensor rate and display refresh are separate. The driver reports 3DoF orientation only; it does not invent positional tracking.
 - Publishes a stable OpenVR v5 driver-provided Chaperone JSON and matching universe ID at HMD activation. The seated/standing transforms are neutral; collision bounds are empty because PhoneVR does not yet provide 6DoF position tracking or a real room-scale safety perimeter.
 - The `IVRVirtualDisplay::Present` callback opens the D3D11 shared backbuffer, uses bounded keyed-mutex synchronization and queues only a small GPU-completion fence copy. No full-resolution staging copy is performed until a real encoder/consumer is connected, avoiding wasted GPU bandwidth in P0. `WaitForPresent` maps the small fence texture; `GetTimeSinceLastVsync` supplies a monotonic 72 Hz virtual refresh clock. DXGI adapter selection, texture layout, mutex contention and GPU Map failures are written to the SteamVR driver log with rate limiting. Completed frames and live SteamVR driver/HMD/pose/display state are reported to Host over loopback UDP 48105. Video encoding and hardware encoder submission are not implemented yet.
 - The normal `build-windows-host.ps1` build compiles and embeds the driver. `build-steamvr-driver.ps1` can still be run separately to produce a standalone development package under `dist/steamvr-driver`.

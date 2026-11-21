@@ -1,3 +1,16 @@
+## 0.4.12 - HMD connection stability and Android control sync
+
+- Decoupled OpenVR device presence from IMU packet freshness. An activated HMD now remains `deviceIsConnected = true`; stale or missing samples only mark its pose untracked instead of making SteamVR remove and rediscover the device.
+- Published an initial connected-but-untracked identity pose during HMD activation so SteamVR receives an explicit device pose before the first phone sensor packet arrives.
+- Submit the latest pose on every SteamVR `RunFrame`, even when the UDP sequence has not changed. OpenVR invalidates poses if the driver stops submitting updates, so this prevents a quiet sensor/network interval from aging out an otherwise usable pose.
+- Increased the pose freshness grace period from 250 ms to 1000 ms to absorb short Android scheduling and Wi-Fi jitter without producing unnecessary tracking-invalid transitions.
+- Added `vrserver.txt` transition logs for IMU tracking becoming stale or resuming, explicitly noting that the HMD remains connected.
+- Android now replies to the Host's initial optical-preset catalogue request directly on the TCP control thread rather than queueing a network response on the UI thread.
+- Host retries an unanswered optical-preset catalogue request up to three times and logs a missing/empty response without tearing down the connected control or pose session.
+- Manual LAN discovery now automatically fills and persists the selected Host IPv4 address and control port; tapping another result still changes the selected target.
+- Added regression tests for the HMD connected/untracked lifecycle, Android preset response path, Host address auto-fill, and Host preset-request retry.
+- Android versionCode increased to 28. Live SteamVR and Android-device runtime validation remains required.
+
 ## 0.4.11 - MSVC Chaperone JSON literal build fix
 
 - Shortened the embedded Chaperone JSON C++ raw-string delimiter from 17 characters to the standard maximum of 16, fixing MSVC C3512.

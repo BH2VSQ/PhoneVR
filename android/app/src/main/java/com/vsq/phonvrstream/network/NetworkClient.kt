@@ -313,19 +313,26 @@ class NetworkClient(
                     "pong" -> lastPongNs = System.nanoTime()
                     "error" -> postStatus("PC：${message.optString("message", "未知错误")}", true)
                     "get_optical_presets" -> {
+                        // This request only reads an immutable, @Volatile snapshot and
+                        // serializes JSON. Respond on the TCP control thread instead of
+                        // posting to the UI thread: a busy GL/UI frame must not delay the
+                        // Host's initial preset catalogue handshake.
                         val requestId = message.optString("requestId", "")
-                        mainHandler.post {
-                            if (isSessionActive(generation)) {
-                                try {
-                                    writeControlMessage(
-                                        writer,
-                                        JSONObject().put("type", "optical_presets")
-                                            .put("requestId", requestId)
-                                            .put("presets", currentOpticalPresets()),
-                                    )
-                                } catch (error: Exception) {
-                                    postStatus("光学预设读取失败：${error.message ?: error.javaClass.simpleName}", true)
-                                }
+                        if (isSessionActive(generation)) {
+                            try {
+                                val presets = currentOpticalPresets()
+                                writeControlMessage(
+                                    writer,
+                                    JSONObject().put("type", "optical_presets")
+                                        .put("requestId", requestId)
+                                        .put("presets", presets),
+                                )
+                                postStatus("已向 PC 同步 ${presets.length()} 个光学预设", true)
+                            } catch (error: Exception) {
+                                postStatus(
+                                    "光学预设回传失败（请求 $requestId）：${error.message ?: error.javaClass.simpleName}",
+                                    true,
+                                )
                             }
                         }
                     }
@@ -568,7 +575,7 @@ class NetworkClient(
         const val DEFAULT_POSE_PORT = 48102
         const val DISCOVERY_PORT = 48100
         private const val PROTOCOL_VERSION = 1
-        private const val CLIENT_VERSION = "PhoneVRStream-0.4.11"
+        private const val CLIENT_VERSION = "PhoneVRStream-0.4.12"
         private const val DISCOVERY_REQUEST = "PHONEVR_DISCOVER_V1"
         private const val DISCOVERY_RESPONSE_PREFIX = "PHONEVR_HOST_V1 "
         private const val DISCOVERY_WINDOW_MS = 1800L

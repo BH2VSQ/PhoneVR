@@ -602,13 +602,19 @@ func (s *HostService) handleControlConnection(ctx context.Context, conn net.Conn
 	}
 	s.mu.Unlock()
 
-	// Ask the Android device for its persistent optical preset catalogue.
-	// The phone remains the source of truth; the host only caches and edits it.
+	// Ask Android for its persistent optical preset catalogue. The response is
+	// independent from pose transport and must not be treated as proof that the
+	// TCP session itself is unhealthy. Retry a few times if the initial request
+	// was missed while the Android activity/UI was starting.
+	presetRequestCount := 1
+	presetResponseReceived := false
+	nextPresetRetry := time.Now().Add(2 * time.Second)
 	if err := writeControlJSON(device, map[string]any{
 		"type": "get_optical_presets", "requestId": newSessionID(),
 	}); err != nil {
 		s.addLog("Optical preset request failed: " + err.Error())
-		return
+	} else {
+		s.addLog("Requested Android optical preset catalogue")
 	}
 
 	for {
@@ -648,13 +654,18 @@ func (s *HostService) handleControlConnection(ctx context.Context, conn net.Conn
 			}
 		case "optical_presets":
 			presets := normalizeOpticalPresets(message.Presets)
+			presetResponseReceived = true
 			s.mu.Lock()
 			if current, ok := s.devices[remote]; ok && current.Conn == conn {
 				current.Snapshot.OpticalPresets = presets
 				s.devices[remote] = current
 			}
 			s.mu.Unlock()
-			s.addLog(fmt.Sprintf("Received %d optical presets from %s", len(presets), hello.DeviceName))
+			if len(presets) == 0 {
+				s.addLog(fmt.Sprintf("Android %s replied to optical preset request with an empty catalogue", hello.DeviceName))
+			} else {
+				s.addLog(fmt.Sprintf("Received %d optical presets from %s (request %s)", len(presets), hello.DeviceName, message.RequestID))
+			}
 		case "optical_presets_ack":
 			if message.Status == "applied" {
 				s.addLog(fmt.Sprintf("Android saved %d optical presets", len(message.Presets)))
@@ -700,6 +711,24 @@ func (s *HostService) handleControlConnection(ctx context.Context, conn net.Conn
 			}
 		default:
 			_ = writeControlJSON(device, map[string]any{"type": "error", "message": "unsupported control message"})
+		}
+
+		if !presetResponseReceived && time.Now().After(nextPresetRetry) {
+			if presetRequestCount < 4 {
+				presetRequestCount++
+				requestID := newSessionID()
+				if err := writeControlJSON(device, map[string]any{
+					"type": "get_optical_presets", "requestId": requestID,
+				}); err != nil {
+					s.addLog("Optical preset retry failed: " + err.Error())
+					return
+				}
+				s.addLog(fmt.Sprintf("Retrying Android optical preset request (%d/3; request %s)", presetRequestCount-1, requestID))
+				nextPresetRetry = time.Now().Add(2 * time.Second)
+			} else {
+				s.addLog("Android optical preset catalogue was not received after 3 retries; control and pose links remain active")
+				presetResponseReceived = true // Stop retrying; keep the session alive.
+			}
 		}
 		select {
 		case <-ctx.Done():

@@ -384,9 +384,7 @@ class MainActivity : Activity(), SensorEventListener {
             val saved = getSharedPreferences("phone_vr_connection", MODE_PRIVATE)
             val rememberedAddress = saved.getString("host", null)
             val selected = hosts.firstOrNull { it.address == rememberedAddress } ?: hosts.first()
-            if (::hostAddressInput.isInitialized) hostAddressInput.setText(selected.address)
-            if (::hostPortInput.isInitialized) hostPortInput.setText(selected.controlPort.toString())
-            saved.edit().putString("host", selected.address).putInt("port", selected.controlPort).apply()
+            fillConnectionAddress(selected, persist = true)
             connectionMessage = "发现 ${hosts.size} 台主机，正在连接 ${selected.name}"
             updateTopHud()
             if (::connectionStatusLabel.isInitialized) {
@@ -488,8 +486,20 @@ class MainActivity : Activity(), SensorEventListener {
                         "没有发现 PC。请确认主机程序已启动，或手动输入 IP 地址。", true
                     ).apply { setPadding(0, dp(6), 0, dp(6)) })
                 } else {
-                    hosts.forEach { host -> addDiscoveredHost(host) }
-                    connectionStatusLabel.text = "发现 ${hosts.size} 台 PC"
+                    // Always populate the address fields as soon as discovery
+                    // returns. The user no longer has to tap a result row merely
+                    // to transfer the discovered IP into the manual connect form.
+                    val saved = getSharedPreferences("phone_vr_connection", MODE_PRIVATE)
+                    val rememberedAddress = saved.getString("host", null)
+                    val selected = hosts.firstOrNull { it.address == rememberedAddress } ?: hosts.first()
+                    fillConnectionAddress(selected, persist = true)
+                    hosts.forEach { host -> addDiscoveredHost(host, selected.address == host.address) }
+                    connectionStatusLabel.text = if (hosts.size == 1) {
+                        "已发现 ${selected.name}，IP 地址已自动填入"
+                    } else {
+                        "发现 ${hosts.size} 台 PC，已填入 ${selected.name}（可点击其他设备切换）"
+                    }
+                    connectionStatusLabel.setTextColor(Color.rgb(118, 225, 164))
                 }
             }
         }.apply {
@@ -540,10 +550,24 @@ class MainActivity : Activity(), SensorEventListener {
         return panel
     }
 
-    private fun addDiscoveredHost(host: DiscoveredHost) {
-        discoveredHostList.addView(makeButton("${host.name}  ·  ${host.address}") {
-            hostAddressInput.setText(host.address)
-            hostPortInput.setText(host.controlPort.toString())
+    private fun fillConnectionAddress(host: DiscoveredHost, persist: Boolean) {
+        if (::hostAddressInput.isInitialized) hostAddressInput.setText(host.address)
+        if (::hostPortInput.isInitialized) hostPortInput.setText(host.controlPort.toString())
+        if (persist) {
+            getSharedPreferences("phone_vr_connection", MODE_PRIVATE).edit()
+                .putString("host", host.address)
+                .putInt("port", host.controlPort)
+                .apply()
+        }
+    }
+
+    private fun addDiscoveredHost(host: DiscoveredHost, selected: Boolean = false) {
+        discoveredHostList.addView(makeButton(
+            "${if (selected) "✓ " else ""}${host.name}  ·  ${host.address}"
+        ) {
+            fillConnectionAddress(host, persist = true)
+            connectionStatusLabel.text = "已选择 ${host.name}（${host.address}）"
+            connectionStatusLabel.setTextColor(Color.rgb(118, 225, 164))
         }.apply {
             layoutParams = LinearLayout.LayoutParams(-1, dp(38)).apply { topMargin = dp(4) }
         })

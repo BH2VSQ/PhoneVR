@@ -29,6 +29,9 @@ constexpr uint32_t kEyeWidth = 1200;
 constexpr uint32_t kEyeHeight = 1080;
 constexpr double kDisplayRefreshRateHz = 72.0;
 constexpr double kDisplayFrameIntervalSeconds = 1.0 / kDisplayRefreshRateHz;
+// Tracking can briefly pause under Android scheduling or Wi-Fi jitter. A stale
+// pose becomes untracked, but it must never disconnect the HMD device itself.
+constexpr uint64_t kTrackingPoseTimeoutNs = 1000000000ULL;
 
 // Stable four-character PhoneVR tag (PHVR in ASCII).
 // SteamVR requires the JSON universeID (uint32) to match the HMD's
@@ -295,15 +298,24 @@ public:
         }
 
         if (!m_receiver.Start() && vr::VRDriverLog())
-            vr::VRDriverLog()->Log("PhoneVR: failed to bind local pose bridge on UDP 48103");
+            vr::VRDriverLog()->Log("PhoneVR: failed to bind local pose bridge on UDP 48103; HMD remains connected but untracked");
+
+        // Publish a connected-but-untracked initial pose immediately. OpenVR's
+        // deviceIsConnected describes device presence, not packet freshness.
+        // This prevents SteamVR from removing and rediscovering the HMD while
+        // the phone app is starting or briefly pauses sensor delivery.
+        m_lastPose = MakeUntrackedPose();
+        m_lastTrackingValid = false;
+        if (auto* host = vr::VRServerDriverHost())
+            host->TrackedDevicePoseUpdated(m_objectId, m_lastPose, sizeof(m_lastPose));
+        if (vr::VRDriverLog())
+            vr::VRDriverLog()->Log("PhoneVR: HMD activation published; tracking awaits fresh IMU samples");
         return vr::VRInitError_None;
     }
     void Deactivate() override {
         m_receiver.Stop();
         m_objectId = vr::k_unTrackedDeviceIndexInvalid;
-        m_hasPublished = false;
         m_lastTrackingValid = false;
-        m_lastConnected = false;
     }
     void EnterStandby() override {}
     void* GetComponent(const char* nameAndVersion) override {
@@ -320,16 +332,47 @@ public:
     bool IsActivated() const { return m_objectId != vr::k_unTrackedDeviceIndexInvalid; }
     bool HasValidPose() const { return m_lastTrackingValid; }
 
+    static vr::DriverPose_t MakeUntrackedPose() {
+        vr::DriverPose_t pose{};
+        pose.poseTimeOffset = 0.0;
+        pose.qWorldFromDriverRotation = {1.0, 0.0, 0.0, 0.0};
+        pose.qDriverFromHeadRotation = {1.0, 0.0, 0.0, 0.0};
+        pose.qRotation = {1.0, 0.0, 0.0, 0.0};
+        pose.result = vr::TrackingResult_Uninitialized;
+        pose.deviceIsConnected = true;
+        pose.poseIsValid = false;
+        pose.willDriftInYaw = true;
+        pose.shouldApplyHeadModel = false;
+        return pose;
+    }
+
     void RunFrame() {
         if (m_objectId == vr::k_unTrackedDeviceIndexInvalid) return;
         const Quaternion sample = m_receiver.Snapshot();
-        if (!sample.valid || sample.receivedAtNs == 0) return;
+        if (!sample.valid || sample.receivedAtNs == 0) {
+            if (m_lastTrackingValid && vr::VRDriverLog())
+                vr::VRDriverLog()->Log("PhoneVR: IMU sample unavailable; HMD remains connected and pose is marked untracked");
+            m_lastTrackingValid = false;
+            m_lastPose.deviceIsConnected = true;
+            m_lastPose.poseIsValid = false;
+            m_lastPose.result = vr::TrackingResult_Uninitialized;
+            if (auto* host = vr::VRServerDriverHost())
+                host->TrackedDevicePoseUpdated(m_objectId, m_lastPose, sizeof(m_lastPose));
+            return;
+        }
+
         const uint64_t now = MonotonicNowNs();
         const uint64_t ageNs = now >= sample.receivedAtNs ? now - sample.receivedAtNs : 0;
-        const bool trackingValid = ageNs <= 250000000ULL;
-        const bool deviceConnected = ageNs <= 2000000000ULL;
-        if (m_hasPublished && sample.sequence == m_lastSequence &&
-            trackingValid == m_lastTrackingValid && deviceConnected == m_lastConnected) return;
+        const bool trackingValid = ageNs <= kTrackingPoseTimeoutNs;
+        const bool trackingStateChanged = trackingValid != m_lastTrackingValid;
+        if (trackingStateChanged && vr::VRDriverLog()) {
+            char message[160]{};
+            std::snprintf(message, sizeof(message),
+                          "PhoneVR: IMU tracking %s (sample age %llu ms); HMD device remains connected",
+                          trackingValid ? "resumed" : "stale",
+                          static_cast<unsigned long long>(ageNs / 1000000ULL));
+            vr::VRDriverLog()->Log(message);
+        }
 
         vr::DriverPose_t pose{};
         pose.poseTimeOffset = 0.0;
@@ -337,27 +380,29 @@ public:
         pose.qDriverFromHeadRotation = {1.0, 0.0, 0.0, 0.0};
         pose.qRotation = {sample.w, sample.x, sample.y, sample.z};
         pose.result = trackingValid ? vr::TrackingResult_Running_OK : vr::TrackingResult_Uninitialized;
-        pose.deviceIsConnected = deviceConnected;
+        // The HMD has been activated by SteamVR and remains physically present.
+        // Sensor timeout only affects pose validity; never set this false on a
+        // transient IMU/network gap or SteamVR will remove and rediscover it.
+        pose.deviceIsConnected = true;
         pose.poseIsValid = trackingValid;
         pose.willDriftInYaw = true;
         pose.shouldApplyHeadModel = false;
         m_lastPose = pose;
-        m_lastSequence = sample.sequence;
         m_lastTrackingValid = trackingValid;
-        m_lastConnected = deviceConnected;
-        m_hasPublished = true;
+
+        // OpenVR expects drivers to submit poses at least once per frame. Do not
+        // suppress an update merely because the latest UDP sequence is unchanged:
+        // the runtime only extrapolates briefly and otherwise invalidates old poses.
         if (auto* host = vr::VRServerDriverHost())
             host->TrackedDevicePoseUpdated(m_objectId, pose, sizeof(pose));
     }
+
 private:
     uint32_t m_objectId = vr::k_unTrackedDeviceIndexInvalid;
     PoseReceiver m_receiver;
     HmdDisplay m_display;
     vr::DriverPose_t m_lastPose{};
-    uint32_t m_lastSequence = 0;
     bool m_lastTrackingValid = false;
-    bool m_lastConnected = false;
-    bool m_hasPublished = false;
 };
 
 class VirtualDisplayComponent final : public vr::IVRVirtualDisplay {
@@ -738,7 +783,7 @@ public:
         if (!host->TrackedDeviceAdded("PHONEVR-DISPLAY-001", vr::TrackedDeviceClass_DisplayRedirect, m_redirect)) {
             Cleanup(); return vr::VRInitError_Driver_Unknown;
         }
-        if (vr::VRDriverLog()) vr::VRDriverLog()->Log("PhoneVR 0.4.11 SteamVR driver initialized");
+        if (vr::VRDriverLog()) vr::VRDriverLog()->Log("PhoneVR 0.4.12 SteamVR driver initialized");
         return vr::VRInitError_None;
     }
     void Cleanup() override {

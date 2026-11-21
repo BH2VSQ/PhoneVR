@@ -609,6 +609,70 @@ func TestHostSynchronizesAndroidOpticalPresetsAndAppliesByID(t *testing.T) {
 	}
 }
 
+func TestHostRetriesOpticalPresetRequestWithoutDroppingControlSession(t *testing.T) {
+	config := HostConfig{
+		ListenAddress: "127.0.0.1",
+		DiscoveryPort: reservePort(t, "udp4"),
+		ControlPort:   reservePort(t, "tcp4"),
+		PosePort:      reservePort(t, "udp4"),
+	}
+	service := NewHostService(false)
+	if err := service.Start(config); err != nil {
+		t.Skipf("Host listeners unavailable for preset retry test: %v", err)
+	}
+	defer service.Stop()
+
+	conn, err := net.DialTimeout("tcp4", net.JoinHostPort("127.0.0.1", fmt.Sprint(service.Snapshot().ControlPort)), time.Second)
+	if err != nil {
+		t.Fatalf("dial control listener: %v", err)
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(7 * time.Second))
+	encoder := json.NewEncoder(conn)
+	decoder := json.NewDecoder(bufio.NewReader(conn))
+	if err := encoder.Encode(helloMessage{Type: "hello", Protocol: protocolVersion, DeviceName: "Preset Retry Test"}); err != nil {
+		t.Fatalf("send hello: %v", err)
+	}
+	var welcome welcomeMessage
+	if err := decoder.Decode(&welcome); err != nil {
+		t.Fatalf("read welcome: %v", err)
+	}
+	var first controlMessage
+	if err := decoder.Decode(&first); err != nil {
+		t.Fatalf("read initial preset request: %v", err)
+	}
+	if first.Type != "get_optical_presets" {
+		t.Fatalf("expected initial preset request, got %+v", first)
+	}
+
+	// Simulate an ordinary control heartbeat after the retry deadline. The
+	// server must keep the session alive and send another catalogue request.
+	time.Sleep(2100 * time.Millisecond)
+	if err := encoder.Encode(controlMessage{Type: "ping"}); err != nil {
+		t.Fatalf("send heartbeat before retry: %v", err)
+	}
+	var pong map[string]any
+	if err := decoder.Decode(&pong); err != nil || pong["type"] != "pong" {
+		t.Fatalf("control heartbeat failed while waiting for presets: %#v, %v", pong, err)
+	}
+	var retry controlMessage
+	if err := decoder.Decode(&retry); err != nil {
+		t.Fatalf("read retried preset request: %v", err)
+	}
+	if retry.Type != "get_optical_presets" || retry.RequestID == "" || retry.RequestID == first.RequestID {
+		t.Fatalf("unexpected retried preset request: %+v (first %+v)", retry, first)
+	}
+
+	presets := nativePresetDefaults()
+	if err := encoder.Encode(controlMessage{Type: "optical_presets", RequestID: retry.RequestID, Presets: presets}); err != nil {
+		t.Fatalf("send preset response: %v", err)
+	}
+	waitUntil(t, time.Second, func() bool {
+		devices := service.Snapshot().ConnectedDevices
+		return len(devices) == 1 && len(devices[0].OpticalPresets) == len(presets)
+	})
+}
+
 func TestPhoneDisplaySettingsNormalizationClampsValues(t *testing.T) {
 	settings := PhoneDisplaySettings{IPDMm: 100, Blur: -1, Sharpness: 4, FOVDegrees: 10}.Normalized()
 	if settings.IPDMm != 75 || settings.Blur != 0 || settings.Sharpness != 1 || settings.FOVDegrees != 60 {

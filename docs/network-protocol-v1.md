@@ -119,7 +119,7 @@ The host advertises `android-optical-presets-v1` in `welcome.capabilities`. Afte
 {"type":"get_optical_presets","requestId":"..."}
 ```
 
-Android reads the persistent list from its local settings store and replies with `optical_presets` containing an array of `{id,name,builtin,settings}` objects. The host must treat this list as the authoritative catalogue for the connected device; the host does not persist a competing catalogue. The Windows UI can create, rename, clone, edit, or delete entries and sends the complete updated list with `set_optical_presets`. Android validates the entries, saves them locally, and responds with `optical_presets_ack` (`status:"applied"` plus the normalized list, or `status:"rejected"` plus a message).
+Android reads the persistent list from its local settings store and replies with `optical_presets` containing an array of `{id,name,builtin,settings}` objects. The Android client sends this response directly from its TCP control loop; it must not depend on UI-thread scheduling to answer the catalogue request. The Host retries an unanswered catalogue request up to three times at two-second intervals. A missing catalogue response is logged but does not close the TCP pairing or UDP pose path. The host must treat this list as the authoritative catalogue for the connected device; the host does not persist a competing catalogue. The Windows UI can create, rename, clone, edit, or delete entries and sends the complete updated list with `set_optical_presets`. Android validates the entries, saves them locally, and responds with `optical_presets_ack` (`status:"applied"` plus the normalized list, or `status:"rejected"` plus a message).
 
 To apply a preset, the host sends only its ID:
 

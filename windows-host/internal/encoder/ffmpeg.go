@@ -103,7 +103,9 @@ func ProbeFFmpeg(ctx context.Context, path string) ([]Capability, error) {
 		}
 		path = resolved
 	}
-	output, err := exec.CommandContext(ctx, path, "-hide_banner", "-encoders").CombinedOutput()
+	cmd := exec.CommandContext(ctx, path, "-hide_banner", "-encoders")
+	configureFFmpegProcess(cmd)
+	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("probe FFmpeg encoders: %w: %s", err, strings.TrimSpace(string(output)))
 	}

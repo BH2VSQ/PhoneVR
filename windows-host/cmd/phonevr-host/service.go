@@ -423,7 +423,7 @@ func (s *HostService) ProbeVideoEncoders(ffmpegPath string) {
 	for _, candidate := range candidates {
 		s.addLog(fmt.Sprintf("Video encoder candidate (adapter/session unverified): %s | %s | %s", candidate.Name, candidate.Codec, candidate.Backend))
 	}
-	selected, probeErr := encoder.ProbeHardwareH264Encoder(ctx, ffmpegPath, videoFrameRate)
+	selected, probeErr := encoder.ProbeHardwareH264Encoder(ctx, ffmpegPath, videoWidth, videoHeight, videoFrameRate)
 	s.mu.Lock()
 	s.videoEncoderReady = probeErr == nil
 	if probeErr != nil {
@@ -1378,9 +1378,64 @@ func (s *HostService) handleVideoCaptureConnection(ctx context.Context, conn net
 			return
 		}
 		frame.timestampNs = header.TimestampNs
-		s.videoRawFrames.Add(1)
+		rawCount := s.videoRawFrames.Add(1)
+		if rawCount <= 3 {
+			s.addLog(describeRawBGRAFrame(frame.data, rawCount))
+		}
 		s.enqueueRawVideoFrame(frame)
 	}
+}
+
+// describeRawBGRAFrame samples a small subset of the first raw frames. It
+// confirms whether the driver is delivering varied pixels before FFmpeg; it
+// deliberately avoids scanning the entire 4.6 MiB frame on every capture.
+func describeRawBGRAFrame(data []byte, frameNumber uint64) string {
+	if len(data) == 0 {
+		return fmt.Sprintf("SteamVR raw frame %d is empty", frameNumber)
+	}
+	var minR, minG, minB = uint8(255), uint8(255), uint8(255)
+	var maxR, maxG, maxB uint8
+	var sumR, sumG, sumB uint64
+	var samples uint64
+	const sampleStride = 64 * 1024
+	for offset := 0; offset+3 < len(data); offset += sampleStride {
+		b, g, r := data[offset], data[offset+1], data[offset+2]
+		if r < minR {
+			minR = r
+		}
+		if r > maxR {
+			maxR = r
+		}
+		if g < minG {
+			minG = g
+		}
+		if g > maxG {
+			maxG = g
+		}
+		if b < minB {
+			minB = b
+		}
+		if b > maxB {
+			maxB = b
+		}
+		sumR += uint64(r)
+		sumG += uint64(g)
+		sumB += uint64(b)
+		samples++
+	}
+	if samples == 0 {
+		return fmt.Sprintf("SteamVR raw frame %d has no sampleable pixels", frameNumber)
+	}
+	return fmt.Sprintf("SteamVR raw frame %d BGRA sample: R=%d..%d avg=%.1f G=%d..%d avg=%.1f B=%d..%d avg=%.1f samples=%d",
+		frameNumber, minR, maxR, float64(sumR)/float64(samples), minG, maxG, float64(sumG)/float64(samples),
+		minB, maxB, float64(sumB)/float64(samples), samples)
+}
+
+func minDuration(a, b time.Duration) time.Duration {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 // videoEncoderLoop owns exactly one FFmpeg process for the Host service
@@ -1390,12 +1445,45 @@ func (s *HostService) videoEncoderLoop(ctx context.Context) {
 	defer s.wg.Done()
 	var session *encoder.H264EncoderSession
 	var retryAfter time.Time
+	retryDelay := 5 * time.Second
+	var sessionStartedAt time.Time
+	var lastBackpressureLog time.Time
 	var framesInWindow uint64
 	statsStart := time.Now()
+	rawAtWindowStart := s.videoRawFrames.Load()
 	encodedAtWindowStart := s.videoEncodedFrames.Load()
 	udpAtWindowStart := s.videoUDPFragments.Load()
 	droppedAtWindowStart := s.videoDroppedFrames.Load()
 	inputDropsAtWindowStart := s.videoInputQueueDrops.Load()
+	logPipelineStats := func(active *encoder.H264EncoderSession) {
+		elapsed := time.Since(statsStart)
+		if elapsed < 5*time.Second {
+			return
+		}
+		seconds := maxDurationSeconds(elapsed)
+		encodedNow := s.videoEncodedFrames.Load()
+		udpNow := s.videoUDPFragments.Load()
+		droppedNow := s.videoDroppedFrames.Load()
+		inputDropsNow := s.videoInputQueueDrops.Load()
+		rawNow := s.videoRawFrames.Load()
+		name, pending, outputBytes, outputUnits := "stopped", 0, uint64(0), uint64(0)
+		if active != nil {
+			name, pending, outputBytes, outputUnits = active.EncoderName(), active.PendingFrames(), active.OutputBytes(), active.OutputAccessUnits()
+		}
+		s.addLog(fmt.Sprintf("Video pipeline: raw RX %.1f FPS | submitted %.1f FPS | H.264 %.1f FPS | UDP fragments %d | capture-queue drops %d | encoder drops %d | FFmpeg stdout %d bytes | H.264 access units %d | pending=%d | backend %s",
+			float64(rawNow-rawAtWindowStart)/seconds,
+			float64(framesInWindow)/seconds,
+			float64(encodedNow-encodedAtWindowStart)/seconds,
+			udpNow-udpAtWindowStart, inputDropsNow-inputDropsAtWindowStart, droppedNow-droppedAtWindowStart,
+			outputBytes, outputUnits, pending, name))
+		framesInWindow = 0
+		rawAtWindowStart = rawNow
+		encodedAtWindowStart = encodedNow
+		udpAtWindowStart = udpNow
+		droppedAtWindowStart = droppedNow
+		inputDropsAtWindowStart = inputDropsNow
+		statsStart = time.Now()
+	}
 	defer func() {
 		if session != nil {
 			session.Close()
@@ -1442,43 +1530,53 @@ func (s *HostService) videoEncoderLoop(ctx context.Context) {
 						return nil
 					}, s.addLog)
 				if createErr != nil {
-					s.addLog("Persistent H.264 encoder startup failed; retrying after 5 seconds: " + createErr.Error())
-					retryAfter = time.Now().Add(5 * time.Second)
+					s.addLog(fmt.Sprintf("Persistent H.264 encoder startup failed; retrying after %s: %s", retryDelay, createErr.Error()))
+					retryAfter = time.Now().Add(retryDelay)
+					retryDelay = minDuration(retryDelay*2, 60*time.Second)
 					s.releaseRawVideoFrame(frame)
 					continue
 				}
 				session = created
+				sessionStartedAt = time.Now()
 				s.addLog("Persistent live VR hardware H.264 encoder started: " + session.EncoderName())
 			}
 
 			if err := session.WriteFrame(frame.data, frame.timestampNs); err != nil {
 				s.videoDroppedFrames.Add(1)
-				s.addLog("Persistent H.264 encoder input failed; stopping the failed session and retrying after 5 seconds: " + err.Error())
+				s.releaseRawVideoFrame(frame)
+				if errors.Is(err, encoder.ErrH264Backpressure) {
+					// Drop input while the encoder catches up. If a full pending queue
+					// has produced no complete H.264 access unit for two seconds, the
+					// process is genuinely stalled and must be recycled with backoff.
+					if session.OutputStalled(encoder.H264OutputStallTimeout) {
+						stallErr := fmt.Sprintf("H.264 encoder stalled without access units for %s (pending=%d, input=%d, stdout=%d bytes, output access units=%d)",
+							encoder.H264OutputStallTimeout, session.PendingFrames(), session.InputFrames(), session.OutputBytes(), session.OutputAccessUnits())
+						s.addLog(stallErr + "; closing this failed session and retrying with backoff")
+						session.Close()
+						session = nil
+						retryAfter = time.Now().Add(retryDelay)
+						retryDelay = minDuration(retryDelay*2, 60*time.Second)
+					} else if time.Since(lastBackpressureLog) >= 5*time.Second {
+						lastBackpressureLog = time.Now()
+						s.addLog(fmt.Sprintf("H.264 encoder backpressure: keeping %s alive and dropping raw frames (pending=%d, input=%d, stdout=%d bytes, output access units=%d); no encoder restart",
+							session.EncoderName(), session.PendingFrames(), session.InputFrames(), session.OutputBytes(), session.OutputAccessUnits()))
+					}
+					logPipelineStats(session)
+					continue
+				}
+				s.addLog("Persistent H.264 encoder process failed; closing session and retrying with backoff: " + err.Error())
 				session.Close()
 				session = nil
-				retryAfter = time.Now().Add(5 * time.Second)
-				s.releaseRawVideoFrame(frame)
+				if time.Since(sessionStartedAt) > 15*time.Second {
+					retryDelay = 5 * time.Second
+				}
+				retryAfter = time.Now().Add(retryDelay)
+				retryDelay = minDuration(retryDelay*2, 60*time.Second)
 				continue
 			}
 			s.releaseRawVideoFrame(frame)
 			framesInWindow++
-			if elapsed := time.Since(statsStart); elapsed >= 5*time.Second {
-				seconds := maxDurationSeconds(elapsed)
-				encodedNow := s.videoEncodedFrames.Load()
-				udpNow := s.videoUDPFragments.Load()
-				droppedNow := s.videoDroppedFrames.Load()
-				inputDropsNow := s.videoInputQueueDrops.Load()
-				s.addLog(fmt.Sprintf("Video pipeline: queued-to-FFmpeg %.1f FPS | H.264 %.1f FPS | UDP fragments %d | input queue drops %d | dropped access units %d | backend %s",
-					float64(framesInWindow)/seconds,
-					float64(encodedNow-encodedAtWindowStart)/seconds,
-					udpNow-udpAtWindowStart, inputDropsNow-inputDropsAtWindowStart, droppedNow-droppedAtWindowStart, session.EncoderName()))
-				framesInWindow = 0
-				encodedAtWindowStart = encodedNow
-				udpAtWindowStart = udpNow
-				droppedAtWindowStart = droppedNow
-				inputDropsAtWindowStart = inputDropsNow
-				statsStart = time.Now()
-			}
+			logPipelineStats(session)
 		}
 	}
 }

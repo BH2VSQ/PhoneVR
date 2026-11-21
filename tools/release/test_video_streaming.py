@@ -50,6 +50,10 @@ class VideoStreamingIntegrationTests(unittest.TestCase):
         self.assertIn("m_videoReadbackFailures", worker)
         self.assertIn("DWORD timeout = 5000", worker)
         self.assertIn("raw video TCP send failed WSA error", worker)
+        self.assertIn("D3D11_MAP_FLAG_DO_NOT_WAIT", worker)
+        self.assertIn("DXGI_ERROR_WAS_STILL_DRAWING", worker)
+        self.assertIn("m_videoReadbackPending", worker)
+        self.assertIn("gpu-map-pending", DRIVER)
 
     def test_android_legacy_codec_probe_and_video_stage_status(self):
         self.assertIn("isLikelySoftwareCodec", ANDROID_CAPS)
@@ -65,7 +69,22 @@ class VideoStreamingIntegrationTests(unittest.TestCase):
         self.assertIn("StartHardwareH264Encoder", ENCODER)
         self.assertIn("StartH264EncoderWithCapability", ENCODER)
         self.assertIn("h264PendingFrameLimit", ENCODER)
+        self.assertIn("ErrH264Backpressure", ENCODER)
+        self.assertIn("-async_depth", ENCODER)
+        self.assertIn("H264OutputStallTimeout", ENCODER)
+        self.assertIn("format=bgra", ENCODER)
+        self.assertIn("configureFFmpegProcess", ENCODER)
+        self.assertIn("encoderOutputPixelFormat", ENCODER)
         self.assertIn("-flush_packets", ENCODER)
+        self.assertIn("no encoder restart", HOST_SERVICE)
+        self.assertIn("OutputStalled", HOST_SERVICE)
+        self.assertIn("FFmpeg stdout", HOST_SERVICE)
+        self.assertIn("describeRawBGRAFrame", HOST_SERVICE)
+
+    def test_ffmpeg_children_do_not_create_console_windows_on_windows(self):
+        helper = (ROOT / "windows-host" / "internal" / "encoder" / "process_windows.go").read_text(encoding="utf-8")
+        self.assertIn("HideWindow:    true", helper)
+        self.assertIn("CREATE_NO_WINDOW", helper)
 
     def test_display_redirect_overrides_hmd_virtual_output_properties(self):
         self.assertIn("vr::k_ulDisplayRedirectContainer", DRIVER)

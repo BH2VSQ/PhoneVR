@@ -157,3 +157,8 @@ The current source includes a DisplayRedirect initialization-order and HMD prope
 ## Video-stream stability follow-up
 
 The 2026-11-22 video encoder lifecycle and backpressure fix keeps one hardware H.264 encoder session alive across brief loopback TCP reconnects. Raw BGRA frames are received independently of FFmpeg input through a bounded latest-frame queue. See `docs/2026-11-22-video-encoder-lifecycle-backpressure.md` for details and validation status.
+
+
+### 2026-11-22 QSV and D3D11 readback stability follow-up
+
+The live H.264 path now requests NV12 for hardware encoders, preflights a full-resolution BGRA stream, limits QSV's asynchronous queue, and distinguishes transient input backpressure from a genuine no-access-unit stall. FFmpeg child processes run without visible console windows on Windows. Driver staging readback uses nonblocking `Map` polling so the capture worker does not wait on GPU completion while holding the protected immediate-context lock. New logs expose raw BGRA samples, FFmpeg stdout bytes and complete H.264 access-unit counts. See `docs/2026-11-22-video-qsv-stall-and-nonblocking-readback.md`.

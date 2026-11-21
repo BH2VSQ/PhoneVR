@@ -1,3 +1,14 @@
+## 0.4.19 - QSV output stall and nonblocking capture readback follow-up
+
+- Explicitly request NV12 for hardware H.264 encoding, retain YUV420P for software encoders, and use QSV-native AUD insertion.
+- Raise QSV asynchronous depth to 4 while retaining a bounded 24-frame timestamp window.
+- Upgrade hardware preflight from a 160x90 two-frame initialization check to a full-resolution BGRA test at the configured size and frame rate; reject a full-profile test slower than three seconds.
+- Treat a full timestamp queue as recoverable raw-frame backpressure. Add a two-second complete-access-unit stall watchdog, exponential retry backoff, process-exit detection and first-stdout/first-AU logs.
+- Launch FFmpeg inventory, preflight and streaming processes with `CREATE_NO_WINDOW` to avoid visible child console windows on Windows.
+- Expand Host video telemetry with raw RX FPS, submitted FPS, encoded AU count, FFmpeg stdout bytes and drop counters; sample the first three BGRA frames to distinguish an upstream black frame from an encoder failure.
+- Change the background D3D11 staging readback to `D3D11_MAP_FLAG_DO_NOT_WAIT`, requeueing `DXGI_ERROR_WAS_STILL_DRAWING` instead of waiting inside the protected immediate context.
+- Go unit tests, race tests, vet, Windows/amd64 Host cross-build and 42 Python release tests pass. Native Windows driver build, real QSV throughput and Android device validation remain pending.
+
 ## 0.4.19 - Persistent video encoder and capture backpressure fix
 
 - Moved the FFmpeg H.264 session out of individual driver TCP connection handlers into one Host service-lifetime encoder worker. A transient TCP reconnect no longer closes and respawns FFmpeg.

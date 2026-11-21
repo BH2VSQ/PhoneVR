@@ -3,6 +3,7 @@ package encoder
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os/exec"
 	"strings"
 	"testing"
@@ -121,13 +122,67 @@ func TestH264EncoderSessionEmitsAnnexBAccessUnitsWhenFFmpegAvailable(t *testing.
 	}
 }
 
-func TestRawH264EncoderArgsFlushPacketsAndBoundTimestampBacklog(t *testing.T) {
-	args := rawH264EncoderArgs(Capability{Name: "h264_nvenc", Codec: CodecH264, Backend: BackendNVENC, Hardware: true}, 1600, 720, 60)
-	joined := strings.Join(args, " ")
-	if !strings.Contains(joined, "-flush_packets 1") {
-		t.Fatalf("expected low-latency mux flushing, args: %s", joined)
+func TestRawH264EncoderArgsUseHardwareFormatsAndBoundedQSVQueue(t *testing.T) {
+	nvenc := strings.Join(rawH264EncoderArgs(Capability{Name: "h264_nvenc", Codec: CodecH264, Backend: BackendNVENC, Hardware: true}, 1600, 720, 60), " ")
+	if !strings.Contains(nvenc, "-pix_fmt nv12") || !strings.Contains(nvenc, "-flush_packets 1") {
+		t.Fatalf("expected NV12 hardware input and low-latency mux flushing, args: %s", nvenc)
 	}
-	if h264PendingFrameLimit > 8 || h264PendingFrameLimit < 2 {
+	qsv := strings.Join(rawH264EncoderArgs(Capability{Name: "h264_qsv", Codec: CodecH264, Backend: BackendQSV, Hardware: true}, 1600, 720, 60), " ")
+	for _, option := range []string{"-async_depth 4", "-low_delay_brc 1", "-pix_fmt nv12", "-bf 0", "-aud 1"} {
+		if !strings.Contains(qsv, option) {
+			t.Fatalf("QSV args missing %q: %s", option, qsv)
+		}
+	}
+	if strings.Contains(qsv, "-pix_fmt yuv420p") || strings.Contains(qsv, "-fflags nobuffer") || strings.Contains(qsv, "h264_metadata") {
+		t.Fatalf("QSV args still request an incompatible output format or discard startup buffering: %s", qsv)
+	}
+	if !strings.Contains(qsv, "-async_depth 4") {
+		t.Fatalf("QSV queue depth must allow hardware parallelism: %s", qsv)
+	}
+	if h264PendingFrameLimit < 8 || h264PendingFrameLimit > 32 {
 		t.Fatalf("unexpected pending frame backlog limit: %d", h264PendingFrameLimit)
+	}
+}
+
+type testWriteCloser struct{}
+
+func (testWriteCloser) Write(p []byte) (int, error) { return len(p), nil }
+func (testWriteCloser) Close() error                { return nil }
+
+func TestH264TimestampBackpressureIsRecoverable(t *testing.T) {
+	pending := make(chan uint64, 1)
+	pending <- 123
+	session := &H264EncoderSession{stdin: testWriteCloser{}, timestamps: pending}
+	err := session.WriteFrame([]byte{0, 0, 0, 255}, 456)
+	if !errors.Is(err, ErrH264Backpressure) {
+		t.Fatalf("expected recoverable backpressure, got %v", err)
+	}
+	if session.closed.Load() {
+		t.Fatal("backpressure must not mark the persistent FFmpeg session closed")
+	}
+	if got := session.PendingFrames(); got != 1 {
+		t.Fatalf("pending timestamp count changed after dropped frame: got %d, want 1", got)
+	}
+}
+
+func TestH264OutputStallRequiresBackedUpQueueAndNoRecentAccessUnits(t *testing.T) {
+	stalled := &H264EncoderSession{timestamps: make(chan uint64, h264PendingFrameLimit)}
+	for i := 0; i < h264PendingFrameLimit/2; i++ {
+		stalled.timestamps <- uint64(i)
+	}
+	stalled.inputFrames.Store(uint64(h264PendingFrameLimit / 2))
+	stalled.lastAccessUnitNs.Store(time.Now().Add(-3 * time.Second).UnixNano())
+	if !stalled.OutputStalled(2 * time.Second) {
+		t.Fatal("expected a backed-up encoder with no recent access unit to be stalled")
+	}
+
+	healthy := &H264EncoderSession{timestamps: make(chan uint64, h264PendingFrameLimit)}
+	for i := 0; i < h264PendingFrameLimit/2; i++ {
+		healthy.timestamps <- uint64(i)
+	}
+	healthy.inputFrames.Store(uint64(h264PendingFrameLimit / 2))
+	healthy.lastAccessUnitNs.Store(time.Now().UnixNano())
+	if healthy.OutputStalled(2 * time.Second) {
+		t.Fatal("recently emitted access units must prevent false stall detection")
 	}
 }

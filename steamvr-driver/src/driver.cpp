@@ -1181,15 +1181,17 @@ float4 main(float4 position : SV_POSITION, float2 uv : TEXCOORD0) : SV_TARGET {
         const uint64_t readback = m_videoFramesReadback.exchange(0, std::memory_order_relaxed);
         const uint64_t sent = m_videoFramesSent.exchange(0, std::memory_order_relaxed);
         const uint64_t mapFailures = m_videoReadbackFailures.exchange(0, std::memory_order_relaxed);
+        const uint64_t mapPending = m_videoReadbackPending.exchange(0, std::memory_order_relaxed);
         const uint64_t bridgeFailures = m_videoBridgeFailures.exchange(0, std::memory_order_relaxed);
         const uint64_t skipped = m_videoFramesSkipped.exchange(0, std::memory_order_relaxed);
         char line[320]{};
         std::snprintf(line, sizeof(line),
-                      "PhoneVR: video capture pipeline bridge=%s queued=%llu readback=%llu sent=%llu gpu-map-fail=%llu bridge-fail=%llu skipped=%llu",
+                      "PhoneVR: video capture pipeline bridge=%s queued=%llu readback=%llu sent=%llu gpu-map-pending=%llu gpu-map-fail=%llu bridge-fail=%llu skipped=%llu",
                       bridgeActive ? "connected" : "waiting",
                       static_cast<unsigned long long>(queued),
                       static_cast<unsigned long long>(readback),
                       static_cast<unsigned long long>(sent),
+                      static_cast<unsigned long long>(mapPending),
                       static_cast<unsigned long long>(mapFailures),
                       static_cast<unsigned long long>(bridgeFailures),
                       static_cast<unsigned long long>(skipped));
@@ -1258,6 +1260,7 @@ float4 main(float4 position : SV_POSITION, float2 uv : TEXCOORD0) : SV_TARGET {
             // CPU-owned staging buffer. TCP writes can block, so they must run
             // after the capture slot has been released to the Present callback.
             bool readbackReady = false;
+            bool mapPending = false;
             uint32_t frameId = 0;
             uint64_t timestampNs = 0;
             {
@@ -1266,7 +1269,13 @@ float4 main(float4 position : SV_POSITION, float2 uv : TEXCOORD0) : SV_TARGET {
                 frameId = slot.frameId;
                 timestampNs = slot.timestampNs;
                 D3D11_MAPPED_SUBRESOURCE mapped{};
-                const HRESULT hr = m_context->Map(slot.staging, 0, D3D11_MAP_READ, 0, &mapped);
+                // Never let the video worker block inside Map while holding
+                // the protected immediate-context lock. A blocking readback
+                // can stall SteamVR Present/WaitForPresent on this D3D11
+                // device. Poll with DO_NOT_WAIT and requeue the slot until the
+                // GPU has completed the staging copy.
+                const HRESULT hr = m_context->Map(slot.staging, 0, D3D11_MAP_READ,
+                                                   D3D11_MAP_FLAG_DO_NOT_WAIT, &mapped);
                 if (SUCCEEDED(hr)) {
                     for (uint32_t row = 0; row < kVideoHeight; ++row)
                         std::memcpy(pixels.data() + static_cast<size_t>(row) * kVideoWidth * 4,
@@ -1275,10 +1284,24 @@ float4 main(float4 position : SV_POSITION, float2 uv : TEXCOORD0) : SV_TARGET {
                     m_context->Unmap(slot.staging, 0);
                     readbackReady = true;
                     m_videoFramesReadback.fetch_add(1, std::memory_order_relaxed);
+                    slot.busy.store(false, std::memory_order_release);
+                } else if (hr == DXGI_ERROR_WAS_STILL_DRAWING) {
+                    mapPending = true;
+                    m_videoReadbackPending.fetch_add(1, std::memory_order_relaxed);
                 } else {
                     m_videoReadbackFailures.fetch_add(1, std::memory_order_relaxed);
+                    slot.busy.store(false, std::memory_order_release);
                 }
-                slot.busy.store(false, std::memory_order_release);
+            }
+
+            if (mapPending) {
+                {
+                    std::lock_guard<std::mutex> queueLock(m_captureQueueMutex);
+                    m_captureQueue.push_front(slotIndex);
+                }
+                MaybeLogVideoCaptureStats(true, lastStatsNs);
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                continue;
             }
 
             // A transient GPU readback failure drops this frame only. It must
@@ -1396,6 +1419,7 @@ float4 main(float4 position : SV_POSITION, float2 uv : TEXCOORD0) : SV_TARGET {
     std::atomic<uint64_t> m_videoFramesReadback{0};
     std::atomic<uint64_t> m_videoFramesSent{0};
     std::atomic<uint64_t> m_videoReadbackFailures{0};
+    std::atomic<uint64_t> m_videoReadbackPending{0};
     std::atomic<uint64_t> m_videoBridgeFailures{0};
     uint64_t m_lastVideoCaptureNs = 0;
     uint64_t m_lastBridgeErrorLogNs = 0;

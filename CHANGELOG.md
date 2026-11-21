@@ -42,3 +42,7 @@
 - Consolidated Android and Windows checks/builds into one `PhoneVR CI` workflow with parallel platform jobs.
 - Added a manually triggered Release workflow with patch/minor/major version bump, Android `versionCode` increment, synchronized client/Host version metadata, tagged builds, packaged Windows binaries, APK and GitHub Release publication.
 - Network protocol remains v1. Android client source remains unchanged at version 0.3.6.
+
+
+### Android CI follow-up
+- Fixed JVM unit-test JSON runtime by adding `org.json:json` as a test-only dependency, preventing the mockable Android SDK `org.json` stubs from returning null in `OpticalPresetTest`.

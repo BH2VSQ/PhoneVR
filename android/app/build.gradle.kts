@@ -60,4 +60,7 @@ android {
 
 dependencies {
     testImplementation("junit:junit:4.13.2")
+    // Use a real JVM implementation for local unit tests. The Android SDK
+    // org.json stubs return null/default values under the mockable android.jar.
+    testImplementation("org.json:json:20240303")
 }

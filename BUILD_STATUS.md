@@ -29,3 +29,10 @@ Network protocol: `v1` (additive `android-optical-presets-v1` capability)
 
 - Android Gradle unit tests and APK assembly: not run because this execution environment has no Android SDK (`ANDROID_HOME` and `ANDROID_SDK_ROOT` are unset, and no `android.jar`/SDK platform is installed). The Android changes therefore still require CI or an Android SDK machine to confirm Kotlin compilation and APK packaging.
 - Interactive Windows desktop verification of light/dark Win32 control rendering, display scaling, SteamVR label fit and child-window dragging/scrolling. Windows AMD64 cross-compilation passed, but runtime appearance should be checked on Windows.
+
+
+## Android unit-test runtime fix
+
+The 0.3.11 CI log showed that Android Kotlin compilation succeeded, but two `OpticalPresetTest` cases failed with `NullPointerException` while constructing/using `org.json` objects. Local Android unit tests run against the mockable Android SDK jar, whose `org.json` methods are stubs. Added the JVM `org.json:json:20240303` implementation to `testImplementation` only; production Android runtime continues to use the platform `org.json` implementation.
+
+Validation note: this container does not include an Android SDK (`ANDROID_HOME` / `ANDROID_SDK_ROOT` are unset and no `android.jar` is installed), so the Gradle test/build tasks cannot be rerun here. The fix targets the exact test-runtime failure shown in the supplied CI log.

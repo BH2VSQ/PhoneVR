@@ -114,7 +114,9 @@ func (app *nativeUI) applyDarkControl(hwnd uintptr) {
 	}
 	theme := "DarkMode_Explorer"
 	if app.themeConfig.Mode == "light" {
-		theme = ""
+		// Use the explicit light Explorer theme instead of an empty theme name;
+		// otherwise common controls can retain dark/system cached parts.
+		theme = "Explorer"
 	}
 	pSetWindowTheme.Call(hwnd, uintptr(unsafe.Pointer(syscall.StringToUTF16Ptr(theme))), 0)
 }
@@ -183,7 +185,7 @@ func (app *nativeUI) controlColor(hdc uintptr, message uint32) uintptr {
 	pSetTextColor.Call(hdc, p.Text)
 	switch message {
 	case 0x0133, 0x0134: // EDIT / LISTBOX
-		pSetBkMode.Call(hdc, 2)
+		pSetBkMode.Call(hdc, 2) // OPAQUE: use the active theme's input brush.
 		pSetBkColor.Call(hdc, p.Input)
 		return app.editBackground
 	case 0x0135: // BUTTON

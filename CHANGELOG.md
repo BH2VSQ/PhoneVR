@@ -1,3 +1,12 @@
+## 0.3.12
+
+- Fixed optical-preset dialog alignment by calculating card borders and all controls from one shared responsive layout; the two-button action rows now fill and align with the right-hand card.
+- Separated optical-preset and appearance cards from their footers to eliminate overlapping surfaces and improve visual balance.
+- Made light/dark mode and predefined accent selections apply and persist immediately; custom HEX colors remain editable and are applied with the Apply Theme button.
+- Reworked theme refresh to update every native child control, trigger `WM_THEMECHANGED`, and force a full redraw using the newly-created brushes.
+- Applied an explicit Explorer common-controls theme in light mode rather than relying on a blank theme name, preventing stale dark/system control rendering.
+- Added platform-independent layout regression tests for preset and appearance dialogs.
+
 ## 0.3.11
 
 - Fixed the Android Kotlin compile error caused by the missing `android.content.Intent` import.

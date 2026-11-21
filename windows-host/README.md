@@ -1,4 +1,4 @@
-# PhoneVR Host 0.3.11
+# PhoneVR Host 0.3.12
 
 Executable version is injected from the repository root `VERSION` file during builds.
 

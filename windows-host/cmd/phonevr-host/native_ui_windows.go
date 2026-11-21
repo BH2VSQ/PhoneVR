@@ -38,6 +38,7 @@ var (
 	pSetTimer                      = user32.NewProc("SetTimer")
 	pKillTimer                     = user32.NewProc("KillTimer")
 	pInvalidateRect                = user32.NewProc("InvalidateRect")
+	pRedrawWindow                  = user32.NewProc("RedrawWindow")
 	pGetClientRect                 = user32.NewProc("GetClientRect")
 	pGetWindowRect                 = user32.NewProc("GetWindowRect")
 	pGetSystemMetrics              = user32.NewProc("GetSystemMetrics")
@@ -152,6 +153,7 @@ const (
 	cbDropDownList      = 0x0003
 	lbnSelChange        = 1
 	cbnSelChange        = 1
+	cbnSelEndOK         = 9
 	lbnDblClk           = 2
 	wmNcHitTest         = 0x0084
 	htCaption           = 2
@@ -772,11 +774,20 @@ func nativeDialogWndProc(hwnd uintptr, message uint32, wParam, lParam uintptr) u
 				app.openPresetEditor(dialog, index)
 				return 0
 			}
-			if dialog.kind == "appearance" && commandID == idThemePalette && notification == cbnSelChange {
+			if dialog.kind == "appearance" && commandID == idThemeMode && (notification == cbnSelChange || notification == cbnSelEndOK) {
+				// Apply and persist the mode as soon as the user chooses it. The
+				// Apply button remains available for manually entered HEX colors.
+				app.applyThemeFromDialog(dialog)
+				return 0
+			}
+			if dialog.kind == "appearance" && commandID == idThemePalette && (notification == cbnSelChange || notification == cbnSelEndOK) {
 				index := int(sendNativeMessage(dialog.controls[idThemePalette], 0x0147, 0, 0))
-				colors := []string{"#5BCEFA", "#F5A9B8", "#B39DDB", "#80CBC4", "#FFCC80"}
-				if index >= 0 && index < len(colors) {
+				colors := []string{"#5BCEFA", "#F5A9B8", "#B39DDB", "#80CBC4", "#FFCC80", ""}
+				if index >= 0 && index < len(colors) && colors[index] != "" {
 					setNativeText(dialog.controls[idThemeAccent], colors[index])
+					app.applyThemeFromDialog(dialog)
+				} else if dialog.status != 0 {
+					setNativeText(dialog.status, app.text("请输入自定义 HEX 颜色后点击应用主题", "Enter a custom HEX color, then click Apply Theme"))
 				}
 				return 0
 			}
@@ -1352,37 +1363,37 @@ func (app *nativeUI) layoutDialog(d *nativeDialog) {
 		move(d.controls[idClose], w-margin-116, h-46, 116, 38)
 
 	case "presets":
-		margin := 22
-		footerY := h - 78
-		leftWidth := maxInt(260, int(float64(w-3*margin)*0.48))
-		rightX := margin + leftWidth + 24
-		rightWidth := maxInt(220, w-rightX-margin)
-		move(d.labels[0], margin, 86, leftWidth, 26)
-		move(d.controls[idPresetList], margin, 116, leftWidth, maxInt(160, footerY-130))
-		move(d.labels[1], rightX, 86, rightWidth, 24)
-		move(d.controls[idPresetName], rightX, 114, rightWidth, 38)
-		move(d.controls[idPresetApply], rightX, 166, rightWidth, 40)
-		actionWidth := minInt(178, (rightWidth-10)/2)
-		move(d.controls[idPresetEdit], rightX, 216, actionWidth, 40)
-		move(d.controls[idPresetNew], rightX+actionWidth+10, 216, actionWidth, 40)
-		move(d.controls[idPresetClone], rightX, 266, actionWidth, 40)
-		move(d.controls[idPresetRename], rightX+actionWidth+10, 266, actionWidth, 40)
-		move(d.controls[idPresetDelete], rightX, 316, rightWidth, 40)
-		move(d.status, margin, h-70, w-2*margin-130, 28)
-		move(d.controls[idClose], w-margin-116, h-48, 116, 38)
+		l := ComputeNativePresetDialogLayout(w, h)
+		moveRect := func(hwnd uintptr, r NativeLayoutRect) {
+			move(hwnd, r.Left, r.Top, r.Width(), r.Height())
+		}
+		moveRect(d.labels[0], l.PresetLabel)
+		moveRect(d.controls[idPresetList], l.PresetList)
+		moveRect(d.labels[1], l.NameLabel)
+		moveRect(d.controls[idPresetName], l.NameEdit)
+		moveRect(d.controls[idPresetApply], l.Apply)
+		moveRect(d.controls[idPresetEdit], l.Edit)
+		moveRect(d.controls[idPresetNew], l.New)
+		moveRect(d.controls[idPresetClone], l.Clone)
+		moveRect(d.controls[idPresetRename], l.Rename)
+		moveRect(d.controls[idPresetDelete], l.Delete)
+		moveRect(d.status, l.Status)
+		moveRect(d.controls[idClose], l.Close)
 
 	case "appearance":
-		margin := 28
-		fieldWidth := minInt(320, w-2*margin-220)
-		move(d.labels[0], margin, 112, 210, 28)
-		move(d.controls[idThemeMode], margin+220, 106, fieldWidth, 38)
-		move(d.labels[1], margin, 176, 210, 28)
-		move(d.controls[idThemeAccent], margin+220, 170, fieldWidth, 38)
-		move(d.labels[2], margin, 240, 210, 28)
-		move(d.controls[idThemePalette], margin+220, 234, fieldWidth, 38)
-		move(d.status, margin, 286, w-2*margin, 30)
-		move(d.controls[idThemeApply], margin, h-54, 180, 40)
-		move(d.controls[idClose], w-margin-116, h-54, 116, 40)
+		l := ComputeNativeAppearanceDialogLayout(w, h)
+		moveRect := func(hwnd uintptr, r NativeLayoutRect) {
+			move(hwnd, r.Left, r.Top, r.Width(), r.Height())
+		}
+		moveRect(d.labels[0], l.ModeLabel)
+		moveRect(d.controls[idThemeMode], l.Mode)
+		moveRect(d.labels[1], l.AccentLabel)
+		moveRect(d.controls[idThemeAccent], l.Accent)
+		moveRect(d.labels[2], l.PaletteLabel)
+		moveRect(d.controls[idThemePalette], l.Palette)
+		moveRect(d.status, l.Hint)
+		moveRect(d.controls[idThemeApply], l.Apply)
+		moveRect(d.controls[idClose], l.Close)
 
 	case "network":
 		margin := 22
@@ -1556,11 +1567,13 @@ func (app *nativeUI) paintDialog(d *nativeDialog, hdc uintptr) {
 	drawNativeLine(hdc, 18, 72, w-18, 72, p.Border, 1)
 	drawNativeRoundRect(hdc, nativeRect{12, int32(h - 92), int32(w - 12), int32(h - 10)}, p.Panel, p.Border, 12)
 	if d.kind == "presets" {
-		drawNativeRoundRect(hdc, nativeRect{14, 80, int32(w/2 + 8), int32(h - 82)}, p.Surface, p.Border, 12)
-		drawNativeRoundRect(hdc, nativeRect{int32(w/2 + 16), 80, int32(w - 14), int32(h - 82)}, p.Surface, p.Border, 12)
+		l := ComputeNativePresetDialogLayout(w, h)
+		drawNativeRoundRect(hdc, nativeRect{int32(l.LeftPanel.Left), int32(l.LeftPanel.Top), int32(l.LeftPanel.Right), int32(l.LeftPanel.Bottom)}, p.Surface, p.Border, 12)
+		drawNativeRoundRect(hdc, nativeRect{int32(l.RightPanel.Left), int32(l.RightPanel.Top), int32(l.RightPanel.Right), int32(l.RightPanel.Bottom)}, p.Surface, p.Border, 12)
 	}
 	if d.kind == "appearance" {
-		drawNativeRoundRect(hdc, nativeRect{16, 84, int32(w - 16), int32(h - 74)}, p.Surface, p.Border, 12)
+		l := ComputeNativeAppearanceDialogLayout(w, h)
+		drawNativeRoundRect(hdc, nativeRect{int32(l.Panel.Left), int32(l.Panel.Top), int32(l.Panel.Right), int32(l.Panel.Bottom)}, p.Surface, p.Border, 12)
 	}
 }
 
@@ -1705,54 +1718,7 @@ func (app *nativeUI) handleDialogCommand(d *nativeDialog, id int) {
 	case "appearance":
 		switch id {
 		case idThemeApply:
-			mode := int(sendNativeMessage(d.controls[idThemeMode], 0x0147, 0, 0))
-			accent := strings.TrimSpace(getNativeText(d.controls[idThemeAccent]))
-			if _, err := parseNativeHexColor(accent); err != nil {
-				setNativeText(d.status, app.text("颜色格式无效，请使用 #RRGGBB", "Invalid color. Use #RRGGBB"))
-				return
-			}
-			config := NativeThemeConfig{Mode: "dark", AccentHex: strings.ToUpper(accent)}
-			if mode == 1 {
-				config.Mode = "light"
-			}
-			if err := saveNativeThemeConfig(config); err != nil {
-				setNativeText(d.status, err.Error())
-				return
-			}
-			app.themeConfig = config
-			app.rebuildThemeBrushes()
-			if app.mainHWnd != 0 {
-				app.applyDarkWindow(app.mainHWnd)
-				pInvalidateRect.Call(app.mainHWnd, 0, 1)
-			}
-			if app.glHWnd != 0 {
-				app.applyDarkControl(app.glHWnd)
-			}
-			for hwnd, window := range app.dialogs {
-				app.applyDarkWindow(hwnd)
-				for _, child := range window.controls {
-					app.applyDarkControl(child)
-					pInvalidateRect.Call(child, 0, 1)
-				}
-				for _, child := range window.labels {
-					app.applyDarkControl(child)
-					pInvalidateRect.Call(child, 0, 1)
-				}
-				if window.viewport != 0 {
-					app.applyDarkControl(window.viewport)
-					pInvalidateRect.Call(window.viewport, 0, 1)
-				}
-				if window.status != 0 {
-					app.applyDarkControl(window.status)
-					pInvalidateRect.Call(window.status, 0, 1)
-				}
-				pInvalidateRect.Call(hwnd, 0, 1)
-			}
-			if app.menuHWnd != 0 {
-				app.applyDarkWindow(app.menuHWnd)
-				pInvalidateRect.Call(app.menuHWnd, 0, 1)
-			}
-			setNativeText(d.status, app.text("主题已应用", "Theme applied"))
+			app.applyThemeFromDialog(d)
 		case idClose:
 			pDestroyWindow.Call(d.hwnd)
 		}
@@ -1786,6 +1752,67 @@ func (app *nativeUI) handleDialogCommand(d *nativeDialog, id int) {
 			pDestroyWindow.Call(d.hwnd)
 		}
 	}
+}
+
+// applyThemeFromDialog validates, saves and immediately redraws every themed
+// surface. It is also used by combo-box selection notifications so users see
+// light/dark and preset-accent changes without an extra click.
+func (app *nativeUI) applyThemeFromDialog(d *nativeDialog) {
+	if d == nil {
+		return
+	}
+	modeSelection := int(sendNativeMessage(d.controls[idThemeMode], 0x0147, 0, 0)) // CB_GETCURSEL
+	mode := "dark"
+	if modeSelection == 1 {
+		mode = "light"
+	} else if modeSelection < 0 && app.themeConfig.Mode == "light" {
+		mode = "light"
+	}
+	accent := strings.ToUpper(strings.TrimSpace(getNativeText(d.controls[idThemeAccent])))
+	if _, err := parseNativeHexColor(accent); err != nil {
+		setNativeText(d.status, app.text("颜色格式无效，请使用 #RRGGBB", "Invalid color. Use #RRGGBB"))
+		return
+	}
+	config := NativeThemeConfig{Mode: mode, AccentHex: accent}
+	if err := saveNativeThemeConfig(config); err != nil {
+		setNativeText(d.status, err.Error())
+		return
+	}
+	app.themeConfig = config
+	app.rebuildThemeBrushes()
+	app.redrawThemedWindows()
+	setNativeText(d.status, app.text("主题已应用并保存", "Theme applied and saved"))
+}
+
+func (app *nativeUI) redrawThemedWindows() {
+	const redrawFlags = uintptr(0x0001 | 0x0004 | 0x0080 | 0x0100) // INVALIDATE | ERASE | ALLCHILDREN | UPDATENOW
+	refresh := func(hwnd uintptr, topLevel bool) {
+		if hwnd == 0 {
+			return
+		}
+		if topLevel {
+			app.applyDarkWindow(hwnd)
+		} else {
+			app.applyDarkControl(hwnd)
+		}
+		pSendMessage.Call(hwnd, 0x031A, 0, 0) // WM_THEMECHANGED
+		pRedrawWindow.Call(hwnd, 0, 0, redrawFlags)
+		pUpdateWindow.Call(hwnd)
+	}
+	refresh(app.mainHWnd, true)
+	refresh(app.glHWnd, false)
+	for hwnd, dialog := range app.dialogs {
+		refresh(hwnd, true)
+		for _, child := range dialog.controls {
+			refresh(child, false)
+		}
+		for _, child := range dialog.labels {
+			refresh(child, false)
+		}
+		refresh(dialog.viewport, false)
+		refresh(dialog.status, false)
+	}
+	refresh(app.menuHWnd, true)
 }
 
 func (app *nativeUI) readSettingsDialog(d *nativeDialog) (PhoneDisplaySettings, error) {

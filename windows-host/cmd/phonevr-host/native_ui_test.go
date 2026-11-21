@@ -121,3 +121,47 @@ func TestNativePoseViewportRemainsSquareAndKeepsTelemetryFooter(t *testing.T) {
 		}
 	}
 }
+
+func TestNativePresetDialogLayoutKeepsControlsInsideCards(t *testing.T) {
+	for _, size := range [][2]int{{700, 520}, {900, 660}, {1100, 760}} {
+		layout := ComputeNativePresetDialogLayout(size[0], size[1])
+		if layout.LeftPanel.Right >= layout.RightPanel.Left {
+			t.Fatalf("preset panels overlap for %dx%d: left=%+v right=%+v", size[0], size[1], layout.LeftPanel, layout.RightPanel)
+		}
+		if layout.LeftPanel.Bottom >= layout.FooterPanel.Top || layout.RightPanel.Bottom >= layout.FooterPanel.Top {
+			t.Fatalf("preset content overlaps footer for %dx%d: left=%+v right=%+v footer=%+v", size[0], size[1], layout.LeftPanel, layout.RightPanel, layout.FooterPanel)
+		}
+		widthDelta := layout.Edit.Width() - layout.New.Width()
+		if widthDelta < -1 || widthDelta > 1 || layout.Clone.Width()-layout.Rename.Width() < -1 || layout.Clone.Width()-layout.Rename.Width() > 1 {
+			t.Fatalf("preset action buttons are not paired evenly for %dx%d: %+v", size[0], size[1], layout)
+		}
+		if layout.Edit.Left != layout.Clone.Left || layout.New.Left != layout.Rename.Left {
+			t.Fatalf("preset action columns are not aligned for %dx%d: %+v", size[0], size[1], layout)
+		}
+		if layout.New.Right != layout.NameEdit.Right || layout.Rename.Right != layout.NameEdit.Right || layout.Delete.Right != layout.NameEdit.Right {
+			t.Fatalf("preset action controls do not fill the right card for %dx%d: %+v", size[0], size[1], layout)
+		}
+		if layout.PresetList.Left < layout.LeftPanel.Left || layout.PresetList.Right > layout.LeftPanel.Right || layout.PresetList.Bottom > layout.LeftPanel.Bottom {
+			t.Fatalf("preset list escapes left card for %dx%d: %+v", size[0], size[1], layout)
+		}
+	}
+}
+
+func TestNativeAppearanceDialogLayoutKeepsThemeControlsAndFooterSeparated(t *testing.T) {
+	for _, size := range [][2]int{{640, 500}, {660, 460}, {900, 640}} {
+		layout := ComputeNativeAppearanceDialogLayout(size[0], size[1])
+		if layout.Panel.Bottom >= layout.FooterPanel.Top {
+			t.Fatalf("appearance panel overlaps footer for %dx%d: panel=%+v footer=%+v", size[0], size[1], layout.Panel, layout.FooterPanel)
+		}
+		for name, rect := range map[string]NativeLayoutRect{
+			"mode": layout.Mode, "accent": layout.Accent, "palette": layout.Palette, "hint": layout.Hint,
+		} {
+			if rect.Left < layout.Panel.Left || rect.Right > layout.Panel.Right || rect.Bottom > layout.Panel.Bottom {
+				t.Fatalf("%s control escapes appearance card for %dx%d: control=%+v panel=%+v", name, size[0], size[1], rect, layout.Panel)
+			}
+		}
+		if layout.Apply.Bottom > layout.FooterPanel.Bottom || layout.Close.Bottom > layout.FooterPanel.Bottom {
+			t.Fatalf("appearance action button escapes footer for %dx%d: %+v", size[0], size[1], layout)
+		}
+	}
+}

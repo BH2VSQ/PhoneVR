@@ -1,4 +1,4 @@
-# PhoneVR Host 0.4.3 hotfix
+# PhoneVR Host 0.4.4 bundled SteamVR driver
 
 Executable version is injected from the repository root `VERSION` file during builds.
 
@@ -52,7 +52,8 @@ Press Ctrl+C to stop the headless process. Closing the native main window stops 
 - Windows 10/11 x64
 - OpenGL 1.1 support provided by the Windows system `opengl32.dll`
 - No Microsoft Edge, Google Chrome, WebView2 runtime, Node.js or third-party Go GUI package required to run the application
-- Go 1.22 or newer to build
+- Go 1.22 or newer to build the Host
+- CMake 3.24+, Git and Visual Studio C++ x64 tools to build and embed the SteamVR driver
 
 ## Build
 
@@ -64,9 +65,10 @@ From the repository root:
 
 Outputs:
 
-- `dist/windows/PhoneVRHost.exe`: native Win32 + OpenGL application, no console window
-- `dist/windows/PhoneVRHost-console.exe`: console build for diagnostics and headless operation
+- `dist/windows/PhoneVRHost.exe`: native Win32 + OpenGL application, with the SteamVR driver embedded
+- `dist/windows/PhoneVRHost-console.exe`: console build for diagnostics and headless operation, also with the driver embedded
 - `dist/windows/SHA256SUMS.txt`: executable hashes
+- `dist/steamvr-driver/`: intermediate standalone driver package created before embedding
 
 ## Test
 
@@ -103,4 +105,8 @@ Validated Android `PVSP` pose packets received on the existing UDP pose port are
 
 ## SteamVR Driver Manager
 
-Open **SteamVR Driver** from the Host main menu. The manager can check the registered `phonevr` driver, download and install the latest `PhoneVR-SteamVR-Driver-Windows-x64.zip` GitHub Release asset, install a locally selected ZIP, and uninstall the registered driver. The package is validated before installation (`driver.vrdrivermanifest` must identify `phonevr` and `bin/win64/driver_phonevr.dll` must exist). Host registers/unregisters the package using the SteamVR installation's `bin/win64/vrpathreg.exe`. Files installed by Host are stored under `%LOCALAPPDATA%\PhoneVR\SteamVRDriver`; manually managed paths are never deleted automatically.
+The PhoneVR OpenVR driver is embedded inside `PhoneVRHost.exe` and `PhoneVRHost-console.exe`. The standard Windows Host build compiles `steamvr-driver/`, stages the resulting package into the Go embed directory, and embeds the complete driver payload into both executables. No separate ZIP or sibling driver folder is needed to run the released Host.
+
+At startup, Host checks SteamVR installation and registration. Unless the user has disabled automatic deployment, it copies the embedded driver into a content-versioned directory under `%LOCALAPPDATA%\PhoneVR\SteamVRDriver`, verifies the copied files, and registers the directory through SteamVR's own `bin\win64\vrpathreg.exe`.
+
+Open **SteamVR Driver** from the Host main menu to refresh status, install/repair the embedded driver, or uninstall and disable future auto-deployment. The opt-out marker is stored under `%LOCALAPPDATA%\PhoneVR`; a manual Install / Repair action removes it. Host deletes only files inside its managed driver directory. If a PhoneVR manifest is registered from a user-managed location, Host unregisters it but leaves those files untouched. Restart SteamVR after driver changes.

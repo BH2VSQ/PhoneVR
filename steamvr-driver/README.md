@@ -1,4 +1,4 @@
-# PhoneVR SteamVR Driver — 0.4.3
+# PhoneVR SteamVR Driver — 0.4.4
 
 Windows x64 OpenVR server driver foundation for the PhoneVR wireless HMD.
 
@@ -28,16 +28,19 @@ and Git. The OpenVR SDK is fetched at the pinned Valve commit listed in
 To use an already downloaded SDK checkout, configure CMake with
 `-DOPENVR_SDK_ROOT=<path-to-openvr-checkout>`.
 
-## Register / unregister
+## Deployment through PhoneVR Host
 
-After building, the package is under `dist/steamvr-driver`:
+The normal Windows Host build compiles this driver and embeds the complete package into `PhoneVRHost.exe` and `PhoneVRHost-console.exe`. At runtime, the Host extracts the embedded files into a content-versioned directory under `%LOCALAPPDATA%\PhoneVR\SteamVRDriver` and registers that directory with SteamVR's `vrpathreg.exe`.
+
+The in-app **SteamVR Driver** manager supports status refresh, install/repair, and uninstall with persistent opt-out from automatic deployment. The Host only deletes driver files from its own managed directory. A manually managed path is unregistered but left untouched.
+
+To build a standalone development package without building the Host, run:
 
 ```powershell
-.\tools\install-steamvr-driver.ps1 -DriverDirectory .\dist\steamvr-driver
-.\tools\install-steamvr-driver.ps1 -DriverDirectory .\dist\steamvr-driver -Remove
+.\scripts\build-steamvr-driver.ps1
 ```
 
-The helper uses SteamVR's `vrpathreg.exe`; SteamVR must be installed.
+The output is `dist/steamvr-driver`. The `tools/install-steamvr-driver.ps1` helper remains available for manual developer testing, but it is not part of the normal user installation flow.
 
 ## Current implementation boundary
 

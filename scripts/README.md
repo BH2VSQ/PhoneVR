@@ -10,6 +10,7 @@ Requirements:
 - Android Studio with JDK 17+ (the script tries Android Studio's bundled JBR)
 - Android SDK Platform 36 and Build-Tools 36.0.0
 - Go 1.22+ on `PATH`
+- CMake 3.24+, Git and Visual Studio C++ x64 build tools for the bundled SteamVR driver
 
 PowerShell:
 
@@ -24,7 +25,7 @@ Or double-click / run the CMD shim:
 scripts\build-all.cmd
 ```
 
-The default full build runs Android unit tests, builds Debug and unsigned Release APKs, runs Go tests and `go vet`, and builds the Windows x64 host executable. The scripts continue to the second target if the first target fails, then return a non-zero exit code and print all failed targets.
+The default full build runs Android unit tests, builds Debug and unsigned Release APKs, runs Go tests and `go vet`, builds the PhoneVR SteamVR OpenVR driver, embeds it into both Windows Host executables, and builds the Windows x64 Host. The scripts continue to the second target if the first target fails, then return a non-zero exit code and print all failed targets.
 
 ## Select build targets
 
@@ -48,8 +49,11 @@ The default full build runs Android unit tests, builds Debug and unsigned Releas
 # Android tests + APKs on Windows
 .\scripts\build-android.ps1
 
-# Windows Host tests + EXE
+# Windows Host + embedded SteamVR driver tests and EXEs
 .\scripts\build-windows-host.ps1
+
+# Diagnostic Host build without the embedded SteamVR driver
+.\scripts\build-windows-host.ps1 -SkipBundledSteamVRDriver
 ```
 
 Android-only build on Linux/macOS or in CI:
@@ -69,8 +73,8 @@ dist/
 │   ├── PhoneVRStream-Android-debug.apk
 │   └── PhoneVRStream-Android-release-unsigned.apk
 └── windows/
-    ├── PhoneVRHost.exe
-    ├── PhoneVRHost-console.exe
+    ├── PhoneVRHost.exe         # SteamVR driver embedded
+    ├── PhoneVRHost-console.exe # SteamVR driver embedded
     └── SHA256SUMS.txt
 ```
 

@@ -64,9 +64,34 @@ def bump_repository(root: Path, bump: str) -> tuple[str, int]:
         f'Repository revision: **{version}**. Windows Host: **{version}**. Android client: **{version}**.',
     )
     replace_one(
+        root / "README.md",
+        r"## Windows Host [0-9]+\.[0-9]+\.[0-9]+[^\n]*",
+        f"## Windows Host {version} bundled SteamVR driver",
+    )
+    replace_one(
+        root / "README.md",
+        r"## Android client [0-9]+\.[0-9]+\.[0-9]+",
+        f"## Android client {version}",
+    )
+    replace_one(
         root / "windows-host/README.md",
         r"# PhoneVR Host [0-9]+\.[0-9]+\.[0-9]+",
         f"# PhoneVR Host {version}",
+    )
+    replace_one(
+        root / "steamvr-driver/CMakeLists.txt",
+        r"project\(PhoneVRSteamVRDriver VERSION [0-9]+\.[0-9]+\.[0-9]+ LANGUAGES CXX\)",
+        f"project(PhoneVRSteamVRDriver VERSION {version} LANGUAGES CXX)",
+    )
+    replace_one(
+        root / "steamvr-driver/README.md",
+        r"# PhoneVR SteamVR Driver — [0-9]+\.[0-9]+\.[0-9]+",
+        f"# PhoneVR SteamVR Driver — {version}",
+    )
+    replace_one(
+        root / "README.md",
+        r"## SteamVR driver [0-9]+\.[0-9]+\.[0-9]+",
+        f"## SteamVR driver {version}",
     )
 
     version_file.write_text(version + "\n", encoding="ascii")

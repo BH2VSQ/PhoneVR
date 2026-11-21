@@ -1,4 +1,4 @@
-$ErrorActionPreference = 'Stop'
+﻿$ErrorActionPreference = 'Stop'
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $sourceDir = Join-Path $repoRoot 'steamvr-driver'
 $buildDir = Join-Path $repoRoot 'build/steamvr-driver'
@@ -14,6 +14,7 @@ if (-not $env:VisualStudioVersion -and -not (Get-Command cl.exe -ErrorAction Sil
     Write-Host 'CMake will use the installed Visual Studio x64 generator/toolchain.'
 }
 
+if (Test-Path $installDir) { Remove-Item -LiteralPath $installDir -Recurse -Force }
 New-Item -ItemType Directory -Force -Path $installDir | Out-Null
 cmake -S $sourceDir -B $buildDir -A x64
 if ($LASTEXITCODE -ne 0) { throw 'SteamVR driver CMake configure failed.' }

@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.4.4 - Bundled SteamVR driver deployment
+
+- Removed the unstable local ZIP picker and ZIP-based driver installation UI from the Windows Host.
+- Embedded the compiled PhoneVR OpenVR driver payload into both Windows Host executables using Go `embed.FS`.
+- Updated the standard Windows Host build to compile the C++ driver before compiling the Host and stage its package for embedding.
+- Added automatic startup deployment when SteamVR is detected, with content-hash version directories, manifest/DLL validation and post-copy verification.
+- Added Install / Repair Bundled Driver and Uninstall & Disable Auto Deploy actions, including a persistent user opt-out marker.
+- Restricted automatic cleanup to PhoneVR-managed files; external driver files are unregistered but never deleted.
+- Removed obsolete ZIP download/extraction code and changed Release packaging to distribute self-contained Host executables without a separate driver ZIP.
+- Added cross-platform unit tests for driver package validation, path safety, digest stability and file-copy integrity.
+
 ## 0.4.1 - Android codec probe compile fix
 
 - Read `maxSupportedInstances` from `MediaCodecInfo.CodecCapabilities` (the API owner), not `MediaCodecInfo`.

@@ -19,3 +19,7 @@ Thumbs.db
 # Python
 __pycache__/
 *.py[cod]
+
+# Temporary SteamVR driver payload staged for Go embedding
+windows-host/cmd/phonevr-host/embedded-driver/*
+!windows-host/cmd/phonevr-host/embedded-driver/README.txt

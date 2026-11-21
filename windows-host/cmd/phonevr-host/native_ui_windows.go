@@ -249,9 +249,8 @@ const (
 	idThemeModeDark  = 600
 	idThemeModeLight = 604
 	idDriverRefresh  = 710
-	idDriverRelease  = 711
-	idDriverLocal    = 712
-	idDriverRemove   = 713
+	idDriverInstall  = 711
+	idDriverRemove   = 712
 	idNetworkApply   = 400
 	idNetworkStop    = 401
 	idNetworkStart   = 402
@@ -1260,9 +1259,8 @@ func (app *nativeUI) createDialogControls(d *nativeDialog) {
 	case "driver":
 		d.status = app.createControl(d.hwnd, "STATIC", app.text("正在检查 SteamVR 驱动...", "Checking SteamVR driver..."), wsChild|wsVisible, 0, 0, 10, 10, 0)
 		addButton(idDriverRefresh, app.text("检查状态", "Check Status"))
-		addButton(idDriverRelease, app.text("下载最新 Release 并安装", "Download Latest Release & Install"))
-		addButton(idDriverLocal, app.text("选择本地驱动 ZIP", "Choose Local Driver ZIP"))
-		addButton(idDriverRemove, app.text("卸载 PhoneVR 驱动", "Uninstall PhoneVR Driver"))
+		addButton(idDriverInstall, app.text("安装 / 修复内置驱动", "Install / Repair Bundled Driver"))
+		addButton(idDriverRemove, app.text("卸载并停用自动部署", "Uninstall & Disable Auto Deploy"))
 		addButton(idClose, app.text("关闭", "Close"))
 
 	case "appearance":
@@ -1379,12 +1377,11 @@ func (app *nativeUI) layoutDialog(d *nativeDialog) {
 
 	case "driver":
 		margin := 24
-		move(d.status, margin, 94, w-2*margin, 110)
+		move(d.status, margin, 88, w-2*margin, 142)
 		buttonW := (w - 2*margin - 14) / 2
-		move(d.controls[idDriverRefresh], margin, 230, buttonW, 42)
-		move(d.controls[idDriverRelease], margin+buttonW+14, 230, buttonW, 42)
-		move(d.controls[idDriverLocal], margin, 286, buttonW, 42)
-		move(d.controls[idDriverRemove], margin+buttonW+14, 286, buttonW, 42)
+		move(d.controls[idDriverRefresh], margin, 246, buttonW, 42)
+		move(d.controls[idDriverInstall], margin+buttonW+14, 246, buttonW, 42)
+		move(d.controls[idDriverRemove], margin, 304, w-2*margin, 42)
 		move(d.controls[idClose], w-margin-124, h-52, 124, 38)
 
 	case "appearance":
@@ -1726,26 +1723,11 @@ func (app *nativeUI) handleDialogCommand(d *nativeDialog, id int) {
 		switch id {
 		case idDriverRefresh:
 			app.refreshDriverStatus(d)
-		case idDriverRelease:
-			app.runDriverTask(d, app.text("正在从 GitHub Release 下载并安装...", "Downloading and installing driver from GitHub Release..."), installLatestPhoneVRDriver)
-		case idDriverLocal:
-			archive, pickerErr := choosePhoneVRDriverZip(d.hwnd)
-			if pickerErr != nil {
-				setNativeText(d.status, "无法打开文件选择器："+pickerErr.Error())
-				return
-			}
-			if archive != "" {
-				app.runDriverTask(d, app.text("正在验证并安装驱动包...", "Validating and installing driver package..."), func() (string, error) {
-					path, err := installPhoneVRDriverArchive(archive)
-					if err != nil {
-						return "", err
-					}
-					return "PhoneVR 驱动已安装\n" + path, nil
-				})
-			}
+		case idDriverInstall:
+			app.runDriverTask(d, app.text("正在部署 PhoneVR 内置 SteamVR 驱动...", "Deploying bundled PhoneVR SteamVR driver..."), installBundledPhoneVRDriver)
 		case idDriverRemove:
-			if app.confirmMessage(app.text("确定卸载 PhoneVR SteamVR 驱动？\nSteamVR 需要重启后才会完全卸载。", "Uninstall the PhoneVR SteamVR driver?\nSteamVR must be restarted to fully unload it."), app.text("卸载驱动", "Uninstall Driver")) {
-				app.runDriverTask(d, app.text("正在从 SteamVR 卸载 PhoneVR 驱动...", "Unregistering PhoneVR driver from SteamVR..."), uninstallPhoneVRDriver)
+			if app.confirmMessage(app.text("确定卸载 PhoneVR SteamVR 驱动并停用自动部署？\n重新启用需要手动点击安装 / 修复内置驱动。", "Uninstall the PhoneVR SteamVR driver and disable automatic deployment?\nUse Install / Repair Bundled Driver to enable it again."), app.text("卸载驱动", "Uninstall Driver")) {
+				app.runDriverTask(d, app.text("正在卸载 PhoneVR 驱动并停用自动部署...", "Uninstalling PhoneVR driver and disabling auto deploy..."), uninstallPhoneVRDriver)
 			}
 		case idClose:
 			pDestroyWindow.Call(d.hwnd)

@@ -8,7 +8,7 @@ import (
 	"syscall"
 )
 
-var appVersion = "0.4.3"
+var appVersion = "0.4.4"
 
 func main() {
 	listenAddress := flag.String("listen", "0.0.0.0", "IPv4 address to bind")
@@ -32,6 +32,12 @@ func main() {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
+	}
+
+	if driverMessage, driverErr := ensureBundledPhoneVRDriverAtStartup(); driverErr != nil {
+		service.addLog("SteamVR driver auto-deploy: " + driverErr.Error())
+	} else if driverMessage != "" {
+		service.addLog(driverMessage)
 	}
 
 	service.ProbeVideoEncoders(*ffmpegPath)

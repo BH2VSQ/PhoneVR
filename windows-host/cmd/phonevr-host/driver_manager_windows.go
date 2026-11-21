@@ -3,31 +3,24 @@
 package main
 
 import (
-	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
-	"syscall"
-	"time"
-	"unsafe"
-
-	"github.com/vsq-studio/phonevr-host/internal/drivermanager"
 )
 
 const phoneVRDriverName = "phonevr"
+const phoneVRDriverDisabledFile = "steamvr-driver.disabled"
 
 type steamVRDriverStatus struct {
-	Installed bool
-	Path      string
-	Runtime   string
+	Installed        bool
+	Path             string
+	Runtime          string
+	Disabled         bool
+	BundledAvailable bool
 }
 
 func steamVRInstallRoot() (string, error) {
@@ -75,7 +68,7 @@ func queryPhoneVRDriver(runtime string) (string, error) {
 		return "", nil
 	}
 	if errors.As(err, &exitErr) && exitErr.ExitCode() == 2 {
-		return "", errors.New("检测到多个 PhoneVR 驱动注册项，请先卸载重复的 PhoneVR 驱动")
+		return "", errors.New("检测到多个 PhoneVR 驱动注册项")
 	}
 	return "", fmt.Errorf("查询 SteamVR 驱动注册状态失败：%s (%w)", strings.TrimSpace(string(out)), err)
 }
@@ -89,85 +82,183 @@ func runVRPathRegistry(runtime string, args ...string) error {
 	return nil
 }
 
-func getPhoneVRDriverStatus() (steamVRDriverStatus, error) {
-	runtime, err := steamVRInstallRoot()
-	if err != nil {
-		return steamVRDriverStatus{}, err
-	}
-	path, err := queryPhoneVRDriver(runtime)
-	if err != nil {
-		return steamVRDriverStatus{Runtime: runtime}, err
-	}
-	return steamVRDriverStatus{Installed: path != "", Path: path, Runtime: runtime}, nil
-}
-
-func phoneVRDataDirectory() (string, error) {
-	base := os.Getenv("LOCALAPPDATA")
-	if strings.TrimSpace(base) == "" {
+func phoneVRAppDataDirectory() (string, error) {
+	base := strings.TrimSpace(os.Getenv("LOCALAPPDATA"))
+	if base == "" {
 		var err error
 		base, err = os.UserConfigDir()
 		if err != nil {
 			return "", err
 		}
 	}
-	path := filepath.Join(base, "PhoneVR", "SteamVRDriver")
+	path := filepath.Join(base, "PhoneVR")
 	if err := os.MkdirAll(path, 0o700); err != nil {
 		return "", err
 	}
 	return path, nil
 }
 
-func installPhoneVRDriverArchive(archivePath string) (string, error) {
+func phoneVRDataDirectory() (string, error) {
+	base, err := phoneVRAppDataDirectory()
+	if err != nil {
+		return "", err
+	}
+	path := filepath.Join(base, "SteamVRDriver")
+	if err := os.MkdirAll(path, 0o700); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
+func phoneVRDriverDisabledPath() (string, error) {
+	base, err := phoneVRAppDataDirectory()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(base, phoneVRDriverDisabledFile), nil
+}
+
+func phoneVRDriverAutoInstallDisabled() (bool, error) {
+	path, err := phoneVRDriverDisabledPath()
+	if err != nil {
+		return false, err
+	}
+	_, err = os.Stat(path)
+	if err == nil {
+		return true, nil
+	}
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	return false, err
+}
+
+func setPhoneVRDriverAutoInstallDisabled(disabled bool) error {
+	path, err := phoneVRDriverDisabledPath()
+	if err != nil {
+		return err
+	}
+	if disabled {
+		return os.WriteFile(path, []byte("PhoneVR SteamVR driver auto-install disabled by user.\n"), 0o600)
+	}
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
+}
+
+func getPhoneVRDriverStatus() (steamVRDriverStatus, error) {
+	disabled, disabledErr := phoneVRDriverAutoInstallDisabled()
+	if disabledErr != nil {
+		return steamVRDriverStatus{}, disabledErr
+	}
+	_, _, bundleErr := readEmbeddedPhoneVRDriver()
+	status := steamVRDriverStatus{Disabled: disabled, BundledAvailable: bundleErr == nil}
+	runtime, err := steamVRInstallRoot()
+	if err != nil {
+		return status, err
+	}
+	status.Runtime = runtime
+	path, err := queryPhoneVRDriver(runtime)
+	if err != nil {
+		if strings.Contains(err.Error(), "多个 PhoneVR 驱动") {
+			return status, err
+		}
+		return status, err
+	}
+	status.Installed = path != ""
+	status.Path = path
+	return status, nil
+}
+
+func stageBundledPhoneVRDriver(dataDir string, files map[string][]byte, digest string) (string, error) {
+	if err := validateBundledDriverFiles(files); err != nil {
+		return "", err
+	}
+	if len(digest) != 64 {
+		return "", errors.New("内置驱动 SHA-256 摘要无效")
+	}
+	installDir := filepath.Join(dataDir, digest)
+	if _, err := os.Stat(installDir); err == nil {
+		if bundledDriverDirectoryMatches(installDir, files) {
+			return installDir, nil
+		}
+		// Repair a corrupted or partial staging from a previous build. If SteamVR
+		// still has a DLL loaded from this directory, Windows will refuse removal
+		// and the user receives a clear error instead of overwriting a live DLL.
+		if removeErr := os.RemoveAll(installDir); removeErr != nil {
+			return "", fmt.Errorf("内置驱动版本目录校验失败且无法修复，请先完全退出 SteamVR 后重试：%w", removeErr)
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return "", err
+	}
+	stagingDir, err := os.MkdirTemp(dataDir, ".phonevr-driver-staging-")
+	if err != nil {
+		return "", err
+	}
+	defer os.RemoveAll(stagingDir)
+	if err := writeBundledDriverFiles(stagingDir, files); err != nil {
+		return "", err
+	}
+	if !bundledDriverDirectoryMatches(stagingDir, files) {
+		return "", errors.New("内置驱动复制后的完整性校验失败")
+	}
+	if err := os.Rename(stagingDir, installDir); err != nil {
+		// A second Host instance may have installed the exact same digest.
+		if bundledDriverDirectoryMatches(installDir, files) {
+			return installDir, nil
+		}
+		return "", fmt.Errorf("无法提交内置驱动目录：%w", err)
+	}
+	return installDir, nil
+}
+
+func installBundledPhoneVRDriver() (string, error) {
+	return installBundledPhoneVRDriverInternal(true)
+}
+
+func installBundledPhoneVRDriverInternal(clearDisabledMarker bool) (string, error) {
 	runtime, err := steamVRInstallRoot()
 	if err != nil {
 		return "", err
+	}
+	files, digest, err := readEmbeddedPhoneVRDriver()
+	if err != nil {
+		return "", fmt.Errorf("当前 Host 未包含可用的 PhoneVR SteamVR 驱动：%w。请重新运行完整构建脚本", err)
 	}
 	dataDir, err := phoneVRDataDirectory()
 	if err != nil {
 		return "", err
 	}
-	archiveFile, err := os.Open(archivePath)
+	installDir, err := stageBundledPhoneVRDriver(dataDir, files, digest)
 	if err != nil {
 		return "", err
 	}
-	hasher := sha256.New()
-	if _, err := io.Copy(hasher, archiveFile); err != nil {
-		archiveFile.Close()
-		return "", err
-	}
-	if err := archiveFile.Close(); err != nil {
-		return "", err
-	}
-	sum := hasher.Sum(nil)
-	folder := hex.EncodeToString(sum)[:16]
-	installDir := filepath.Join(dataDir, folder)
-	if err := os.RemoveAll(installDir); err != nil {
-		return "", err
-	}
-	if err := drivermanager.ValidateAndExtractDriverZip(archivePath, installDir); err != nil {
-		_ = os.RemoveAll(installDir)
-		return "", err
-	}
-	if !fileExists(filepath.Join(installDir, "bin", "win64", "driver_phonevr.dll")) {
-		_ = os.RemoveAll(installDir)
-		return "", errors.New("驱动包缺少 Windows x64 DLL")
-	}
+
 	oldPath, queryErr := queryPhoneVRDriver(runtime)
 	if queryErr != nil && strings.Contains(queryErr.Error(), "多个 PhoneVR 驱动") {
 		if err := runVRPathRegistry(runtime, "removedriverswithname", phoneVRDriverName); err != nil {
-			_ = os.RemoveAll(installDir)
 			return "", err
 		}
 		oldPath = ""
 		queryErr = nil
 	}
 	if queryErr != nil {
-		_ = os.RemoveAll(installDir)
 		return "", queryErr
+	}
+	if oldPath == installDir {
+		if !bundledDriverDirectoryMatches(installDir, files) {
+			return "", errors.New("已注册的 PhoneVR 驱动文件与内置版本不一致")
+		}
+		if clearDisabledMarker {
+			if err := setPhoneVRDriverAutoInstallDisabled(false); err != nil {
+				return "", err
+			}
+		}
+		return "PhoneVR 内置驱动已经是最新版本\n" + installDir, nil
 	}
 	if oldPath != "" {
 		if err := runVRPathRegistry(runtime, "removedriver", oldPath); err != nil {
-			_ = os.RemoveAll(installDir)
 			return "", err
 		}
 	}
@@ -175,37 +266,32 @@ func installPhoneVRDriverArchive(archivePath string) (string, error) {
 		if oldPath != "" {
 			_ = runVRPathRegistry(runtime, "adddriver", oldPath)
 		}
-		_ = os.RemoveAll(installDir)
 		return "", err
+	}
+	if clearDisabledMarker {
+		if err := setPhoneVRDriverAutoInstallDisabled(false); err != nil {
+			return "", fmt.Errorf("驱动已注册，但无法清除自动安装停用标记：%w", err)
+		}
 	}
 	cleanupManagedDriverVersions(dataDir, installDir)
-	return installDir, nil
+	return "PhoneVR 内置驱动已部署并注册\n" + installDir, nil
 }
 
-func installLatestPhoneVRDriver() (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
-	defer cancel()
-	tag, asset, err := drivermanager.FetchLatestDriverRelease(ctx, nil)
+func ensureBundledPhoneVRDriverAtStartup() (string, error) {
+	disabled, err := phoneVRDriverAutoInstallDisabled()
 	if err != nil {
 		return "", err
 	}
-	dataDir, err := phoneVRDataDirectory()
+	if disabled {
+		return "用户已停用 PhoneVR 驱动自动部署，跳过启动时安装", nil
+	}
+	_, err = steamVRInstallRoot()
 	if err != nil {
+		// SteamVR is optional while the Host is being configured; do not make
+		// the network service fail just because SteamVR is not installed yet.
 		return "", err
 	}
-	downloadDir := filepath.Join(dataDir, "downloads")
-	if err := os.MkdirAll(downloadDir, 0o700); err != nil {
-		return "", err
-	}
-	archive := filepath.Join(downloadDir, "PhoneVR-SteamVR-Driver-Windows-x64.zip")
-	if err := drivermanager.DownloadAsset(ctx, nil, asset, archive); err != nil {
-		return "", err
-	}
-	path, err := installPhoneVRDriverArchive(archive)
-	if err != nil {
-		return "", fmt.Errorf("Release %s 驱动安装失败：%w", tag, err)
-	}
-	return fmt.Sprintf("已安装 Release %s\n%s", tag, path), nil
+	return installBundledPhoneVRDriverInternal(false)
 }
 
 func uninstallPhoneVRDriver() (string, error) {
@@ -218,40 +304,48 @@ func uninstallPhoneVRDriver() (string, error) {
 		if removeErr := runVRPathRegistry(runtime, "removedriverswithname", phoneVRDriverName); removeErr != nil {
 			return "", removeErr
 		}
+		if err := setPhoneVRDriverAutoInstallDisabled(true); err != nil {
+			return "", err
+		}
 		managed, _ := phoneVRDataDirectory()
 		cleanupManagedDriverVersions(managed, "")
-		return "已移除所有重复的 PhoneVR 驱动注册项。自定义目录中的旧驱动文件未删除，请重启 SteamVR。", nil
+		return "已移除重复的 PhoneVR 驱动注册项，并停用自动部署。请重启 SteamVR。", nil
 	}
 	if err != nil {
 		return "", err
 	}
-	if path == "" {
-		return "PhoneVR SteamVR 驱动当前未注册", nil
+	if path != "" {
+		manifest := filepath.Join(path, phoneVRDriverManifestName)
+		manifestData, err := os.ReadFile(manifest)
+		if err != nil {
+			return "", fmt.Errorf("无法验证已注册驱动 manifest：%w", err)
+		}
+		var manifestInfo struct {
+			Name string `json:"name"`
+		}
+		if err := json.Unmarshal(manifestData, &manifestInfo); err != nil || !strings.EqualFold(manifestInfo.Name, phoneVRDriverName) {
+			return "", errors.New("已注册路径的 manifest 不属于 PhoneVR，已取消卸载")
+		}
+		if err := runVRPathRegistry(runtime, "removedriver", path); err != nil {
+			return "", err
+		}
 	}
-	manifest := filepath.Join(path, "driver.vrdrivermanifest")
-	manifestData, err := os.ReadFile(manifest)
-	if err != nil {
-		return "", fmt.Errorf("无法验证已注册驱动 manifest：%w", err)
-	}
-	var manifestInfo struct {
-		Name string `json:"name"`
-	}
-	if err := json.Unmarshal(manifestData, &manifestInfo); err != nil || !strings.EqualFold(manifestInfo.Name, phoneVRDriverName) {
-		return "", errors.New("已注册路径的 manifest 不属于 PhoneVR，已取消卸载")
-	}
-	if err := runVRPathRegistry(runtime, "removedriver", path); err != nil {
+	if err := setPhoneVRDriverAutoInstallDisabled(true); err != nil {
 		return "", err
 	}
-	managed, _ := phoneVRDataDirectory()
-	managedPath := isManagedDriverPath(managed, path)
-	if managedPath {
-		_ = os.RemoveAll(path)
+	managed, err := phoneVRDataDirectory()
+	if err != nil {
+		return "", err
 	}
+	managedPath := path != "" && isManagedDriverPath(managed, path)
 	cleanupManagedDriverVersions(managed, "")
 	if managedPath {
-		return "PhoneVR 驱动已从 SteamVR 注销并删除本地文件。请重启 SteamVR。", nil
+		return "PhoneVR 驱动已从 SteamVR 注销并删除本地文件，自动部署已停用。请重启 SteamVR。", nil
 	}
-	return "PhoneVR 驱动已从 SteamVR 注销。驱动文件位于用户自定义目录，未自动删除。请重启 SteamVR。", nil
+	if path == "" {
+		return "PhoneVR 驱动当前未注册，已停用自动部署。", nil
+	}
+	return "PhoneVR 驱动已从 SteamVR 注销。用户自定义目录中的驱动文件未删除，自动部署已停用。请重启 SteamVR。", nil
 }
 
 func isManagedDriverPath(managed, candidate string) bool {
@@ -270,9 +364,6 @@ func cleanupManagedDriverVersions(managed, keep string) {
 		canonicalKeep, _ = filepath.Abs(keep)
 	}
 	for _, entry := range entries {
-		if !entry.IsDir() || strings.EqualFold(entry.Name(), "downloads") {
-			continue
-		}
 		path := filepath.Join(managed, entry.Name())
 		canonical, _ := filepath.Abs(path)
 		if canonicalKeep != "" && strings.EqualFold(canonical, canonicalKeep) {
@@ -282,75 +373,9 @@ func cleanupManagedDriverVersions(managed, keep string) {
 	}
 }
 
-func fileExists(path string) bool { info, err := os.Stat(path); return err == nil && !info.IsDir() }
-
-// OPENFILENAMEW is used only for the optional local ZIP selection path.
-type nativeOpenFileName struct {
-	StructSize       uint32
-	Owner            uintptr
-	Instance         uintptr
-	Filter           *uint16
-	CustomFilter     *uint16
-	MaxCustFilter    uint32
-	FilterIndex      uint32
-	File             *uint16
-	MaxFile          uint32
-	FileTitle        *uint16
-	MaxFileTitle     uint32
-	InitialDir       *uint16
-	Title            *uint16
-	Flags            uint32
-	FileOffset       uint16
-	FileExtension    uint16
-	DefaultExtension *uint16
-	CustomData       uintptr
-	Hook             uintptr
-	TemplateName     *uint16
-	// These two fields are present in the current OPENFILENAMEW ABI.
-	// Omitting them shifts pvReserved/dwReserved/FlagsEx and corrupts memory
-	// when the common dialog writes the structure on return.
-	EditInfo  uintptr // LPEDITMENU
-	Prompt    uintptr // LPCSTR
-	Reserved  uintptr // pvReserved
-	Reserved2 uint32  // dwReserved
-	FlagsEx   uint32
-}
-
-func choosePhoneVRDriverZip(owner uintptr) (string, error) {
-	dll := syscall.NewLazyDLL("comdlg32.dll")
-	proc := dll.NewProc("GetOpenFileNameW")
-	if err := proc.Find(); err != nil {
-		return "", fmt.Errorf("无法加载 Windows 文件选择器：%w", err)
-	}
-	buffer := make([]uint16, 32768)
-	filterUnits := syscall.StringToUTF16("PhoneVR SteamVR Driver (*.zip)\x00*.zip\x00")
-	titleUnits := syscall.StringToUTF16("选择 PhoneVR SteamVR 驱动 ZIP")
-	info := nativeOpenFileName{
-		StructSize: uint32(unsafe.Sizeof(nativeOpenFileName{})), Owner: owner,
-		Filter: &filterUnits[0], FilterIndex: 1, File: &buffer[0], MaxFile: uint32(len(buffer)),
-		Title: &titleUnits[0],
-		Flags: 0x00001000 | 0x00000800 | 0x00080000 | 0x00000008, // FILEMUSTEXIST | PATHMUSTEXIST | EXPLORER | NOCHANGEDIR
-	}
-	ok, _, callErr := proc.Call(uintptr(unsafe.Pointer(&info)))
-	runtime.KeepAlive(&info)
-	runtime.KeepAlive(buffer)
-	runtime.KeepAlive(filterUnits)
-	runtime.KeepAlive(titleUnits)
-	if ok == 0 {
-		errorProc := dll.NewProc("CommDlgExtendedError")
-		if findErr := errorProc.Find(); findErr == nil {
-			code, _, _ := errorProc.Call()
-			if code != 0 {
-				return "", fmt.Errorf("Windows 文件选择器失败（CommDlgExtendedError=0x%X）：%v", code, callErr)
-			}
-		}
-		return "", nil // User cancelled.
-	}
-	selected := syscall.UTF16ToString(buffer)
-	if selected == "" {
-		return "", errors.New("文件选择器返回了空路径")
-	}
-	return selected, nil
+func fileExists(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && !info.IsDir()
 }
 
 func (app *nativeUI) refreshDriverStatus(d *nativeDialog) {
@@ -368,11 +393,24 @@ func (app *nativeUI) refreshDriverStatus(d *nativeDialog) {
 			setNativeText(status, "SteamVR: "+err.Error())
 			return
 		}
+		lines := []string{}
 		if state.Installed {
-			setNativeText(status, "PhoneVR 驱动已注册\n"+state.Path+"\nSteamVR: "+state.Runtime)
+			lines = append(lines, "PhoneVR 驱动已注册", state.Path)
 		} else {
-			setNativeText(status, "PhoneVR 驱动未安装\nSteamVR: "+state.Runtime)
+			lines = append(lines, "PhoneVR 驱动未注册")
 		}
+		if state.Disabled {
+			lines = append(lines, "自动部署：已停用（手动安装/修复可重新启用）")
+		} else {
+			lines = append(lines, "自动部署：已启用")
+		}
+		if !state.BundledAvailable {
+			lines = append(lines, "内置驱动：当前 Host 未包含，请重新构建完整发布包")
+		} else {
+			lines = append(lines, "内置驱动：可用")
+		}
+		lines = append(lines, "SteamVR: "+state.Runtime)
+		setNativeText(status, strings.Join(lines, "\n"))
 	}(d.hwnd, d.status)
 }
 
@@ -381,7 +419,7 @@ func (app *nativeUI) runDriverTask(d *nativeDialog, startText string, task func(
 		return
 	}
 	setNativeText(d.status, startText)
-	buttons := []uintptr{d.controls[idDriverRefresh], d.controls[idDriverRelease], d.controls[idDriverLocal], d.controls[idDriverRemove]}
+	buttons := []uintptr{d.controls[idDriverRefresh], d.controls[idDriverInstall], d.controls[idDriverRemove]}
 	for _, button := range buttons {
 		if button != 0 {
 			pEnableWindow.Call(button, 0)

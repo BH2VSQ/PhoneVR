@@ -42,7 +42,9 @@ else {
 
 if (-not $SkipWindows) {
     try {
-        & (Join-Path $PSScriptRoot "build-windows-host.ps1") -SkipTests:$SkipTests
+        $hostBuildArgs = @("-SkipTests:$SkipTests")
+        if ($SkipSteamVR) { $hostBuildArgs += "-SkipBundledSteamVRDriver" }
+        & (Join-Path $PSScriptRoot "build-windows-host.ps1") @hostBuildArgs
     }
     catch {
         $failures += "Windows Host: $($_.Exception.Message)"
@@ -55,16 +57,21 @@ else {
 
 
 if (-not $SkipSteamVR) {
-    try {
-        & (Join-Path $PSScriptRoot "build-steamvr-driver.ps1")
+    if ($SkipWindows) {
+        try {
+            & (Join-Path $PSScriptRoot "build-steamvr-driver.ps1")
+        }
+        catch {
+            $failures += "SteamVR driver: $($_.Exception.Message)"
+            Write-Host "SteamVR driver build failed: $($_.Exception.Message)" -ForegroundColor Red
+        }
     }
-    catch {
-        $failures += "SteamVR driver: $($_.Exception.Message)"
-        Write-Host "SteamVR driver build failed: $($_.Exception.Message)" -ForegroundColor Red
+    else {
+        Write-Host "SteamVR driver was built and embedded by the Windows Host build." -ForegroundColor Green
     }
 }
 else {
-    Write-Host "Skipping SteamVR driver build." -ForegroundColor Yellow
+    Write-Host "Skipping SteamVR driver build and embedding." -ForegroundColor Yellow
 }
 
 $elapsed = (Get-Date) - $startedAt

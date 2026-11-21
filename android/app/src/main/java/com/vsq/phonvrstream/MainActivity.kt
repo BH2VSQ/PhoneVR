@@ -35,6 +35,7 @@ import com.vsq.phonvrstream.network.NetworkClient
 import com.vsq.phonvrstream.settings.DisplaySettings
 import com.vsq.phonvrstream.settings.OpticalPreset
 import com.vsq.phonvrstream.settings.SettingsStore
+import com.vsq.phonvrstream.streaming.CodecCapabilityProbe
 import kotlin.math.asin
 import kotlin.math.atan2
 
@@ -110,6 +111,7 @@ class MainActivity : Activity(), SensorEventListener {
             },
             currentDisplaySettings = { settings.toJson() },
             currentOpticalPresets = { OpticalPreset.listToJson(opticalPresets) },
+            currentMediaCapabilities = { CodecCapabilityProbe.discoverJson() },
             applyRemoteOpticalPresets = { json ->
                 val parsed = OpticalPreset.listFromJson(json).ifEmpty { OpticalPreset.defaults() }
                 opticalPresets = parsed

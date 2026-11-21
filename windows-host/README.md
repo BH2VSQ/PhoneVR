@@ -1,8 +1,12 @@
-# PhoneVR Host 0.3.14
+# PhoneVR Host 0.4.0 foundation
 
 Executable version is injected from the repository root `VERSION` file during builds.
 
 Native Windows desktop application and Go networking service for the PhoneVRStream Android HMD client.
+
+## Video encoder discovery
+
+The Host runs a bounded FFmpeg encoder-candidate probe at startup. Use `PhoneVRHost.exe -ffmpeg <path>` when FFmpeg is not on PATH. NVIDIA NVENC, AMD AMF and Intel QSV names are candidates only; the video pipeline must still initialize the selected encoder against a concrete DXGI adapter and test a frame before marking it usable.
 
 ## Native desktop UI
 
@@ -84,3 +88,14 @@ Allow `PhoneVRHost.exe` through Windows Defender Firewall on Private networks wh
 | 48100 | UDP | LAN discovery |
 | 48101 | TCP | Pairing, heartbeat and remote settings/actions |
 | 48102 | UDP | HMD head pose |
+| 48103 | UDP loopback | Host-to-SteamVR pose bridge |
+| 48104 | UDP | Reserved for video stream |
+
+
+## SteamVR local pose bridge
+
+Validated Android `PVSP` pose packets received on the existing UDP pose port are forwarded unchanged to `127.0.0.1:48103`. This loopback-only bridge is consumed by the separate SteamVR OpenVR driver inside `vrserver.exe`; it is not exposed to the LAN.
+
+## Video encoder capability discovery
+
+`internal/encoder` parses the installed FFmpeg encoder list and recognizes NVENC, AMF, QSV and software H.264/HEVC/AV1 candidates. Hardware selection is runtime/capability based and supports mixed-vendor systems. A listed FFmpeg encoder is a candidate only; actual device initialization and format validation are performed by the encoder session in the next streaming milestone.

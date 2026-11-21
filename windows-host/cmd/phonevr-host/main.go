@@ -8,7 +8,7 @@ import (
 	"syscall"
 )
 
-var appVersion = "0.3.14"
+var appVersion = "0.4.0"
 
 func main() {
 	listenAddress := flag.String("listen", "0.0.0.0", "IPv4 address to bind")
@@ -16,6 +16,7 @@ func main() {
 	control := flag.Int("control-port", controlPortDefault, "TCP control port")
 	pose := flag.Int("pose-port", posePortDefault, "UDP head-pose port")
 	headless := flag.Bool("headless", false, "run the host service without opening the native desktop UI")
+	ffmpegPath := flag.String("ffmpeg", "", "optional FFmpeg executable path for runtime video-encoder discovery")
 	flag.Parse()
 
 	service := NewHostService(*headless)
@@ -32,6 +33,8 @@ func main() {
 			os.Exit(1)
 		}
 	}
+
+	service.ProbeVideoEncoders(*ffmpegPath)
 
 	if *headless {
 		fmt.Println("PhoneVR Host running in headless mode. Press Ctrl+C to stop.")

@@ -27,13 +27,15 @@ The host name is informational. The Android client should use the source IPv4 ad
 Messages are UTF-8 JSON objects terminated by a newline (`\n`). Android starts the session with:
 
 ```json
-{"type":"hello","protocol":1,"deviceName":"Phone","client":"PhoneVRStream-0.2.0"}
+{"type":"hello","protocol":1,"deviceName":"Phone","client":"PhoneVRStream-0.4.0","mediaCapabilities":[{"name":"c2.qti.avc.decoder","mimeType":"video/avc","hardwareAccelerated":true,"maxWidth":4096,"maxHeight":2304,"maxFrameRate":240.0}]}
 ```
+
+`mediaCapabilities` is an optional additive field. It is generated from the Android MediaCodec runtime inventory and includes decoder names, MIME type, hardware/software classification, maximum size/frame-rate bounds, profiles and color formats. Older protocol-v1 Hosts ignore the field; new Hosts validate its JSON and size before storing it in the connected-device snapshot. Advertised maximum bounds do not guarantee every width/height combination, so the Android client must still validate a proposed stream profile with `VideoCapabilities.areSizeAndRateSupported`.
 
 The host replies:
 
 ```json
-{"type":"welcome","protocol":1,"sessionId":"...","serverName":"PC-NAME","posePort":48102,"capabilities":["head-pose-3dof-udp-v1","control-heartbeat-v1","display-settings-control-v1","android-optical-presets-v1"]}
+{"type":"welcome","protocol":1,"sessionId":"...","serverName":"PC-NAME","posePort":48102,"capabilities":["head-pose-3dof-udp-v1","control-heartbeat-v1","display-settings-control-v1","android-optical-presets-v1","android-media-capabilities-v1"]}
 ```
 
 Heartbeat messages are newline-delimited JSON `ping` and `pong` objects. The Android client sends a heartbeat every two seconds, expects a pong within 10 seconds and retries a lost session with bounded 1/2/4/8 second backoff. The Host applies a 15-second idle read deadline before each message and a 5-second write deadline. Unknown message types should be ignored or rejected without crashing the host.
@@ -67,7 +69,7 @@ Quaternion values are relative to the recentered headset pose. The Android clien
 
 ## Pose sender rate policy
 
-The Android client samples the IMU at the sensor-supported rate but sends only the newest pose at a maximum of 60 packets per second. Updates are conflated in an atomic latest-value slot; historical sensor samples are never queued. UDP pose delivery is best-effort and a transient UDP send error does not close the TCP pairing/heartbeat channel. The TCP control channel remains responsible for connection liveness. High-rate IMU events are processed off the Android UI thread and coalesced to the newest sample before the 60 Hz UDP sender, so sensor bursts do not create an unbounded datagram queue.
+The Android client samples the IMU at the sensor-supported rate but sends only the newest pose at a maximum of 120 packets per second. Updates are conflated in an atomic latest-value slot; historical sensor samples are never queued. UDP pose delivery is best-effort and a transient UDP send error does not close the TCP pairing/heartbeat channel. The TCP control channel remains responsible for connection liveness. High-rate IMU events are processed off the Android UI thread and coalesced to the newest sample before the 120 Hz maximum UDP sender, so sensor bursts do not create an unbounded datagram queue. The effective rate is limited by the handset sensor and scheduler capabilities.
 
 
 ## Legacy remote phone display settings

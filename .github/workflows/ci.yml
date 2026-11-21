@@ -7,6 +7,8 @@ on:
     paths:
       - "android/**"
       - "windows-host/**"
+      - "steamvr-driver/**"
+      - "android/app/src/main/java/com/vsq/phonvrstream/streaming/**"
       - "scripts/**"
       - "tools/release/**"
       - "docs/**"
@@ -17,6 +19,8 @@ on:
     paths:
       - "android/**"
       - "windows-host/**"
+      - "steamvr-driver/**"
+      - "android/app/src/main/java/com/vsq/phonvrstream/streaming/**"
       - "scripts/**"
       - "tools/release/**"
       - "docs/**"
@@ -80,6 +84,24 @@ jobs:
         with:
           name: PhoneVRStream-Android-${{ github.sha }}
           path: dist/android/*.apk
+          if-no-files-found: error
+          retention-days: 30
+
+  steamvr-driver:
+    name: SteamVR driver build (Windows x64)
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Build SteamVR driver
+        shell: pwsh
+        run: .\scripts\build-steamvr-driver.ps1
+      - name: Upload SteamVR driver package
+        uses: actions/upload-artifact@v4
+        with:
+          name: PhoneVR-SteamVR-Driver-Windows-x64-${{ github.sha }}
+          path: dist/steamvr-driver/**
           if-no-files-found: error
           retention-days: 30
 

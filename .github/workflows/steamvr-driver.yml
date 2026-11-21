@@ -1,0 +1,38 @@
+name: PhoneVR SteamVR Driver CI
+
+on:
+  push:
+    branches: ["**"]
+    paths:
+      - "steamvr-driver/**"
+      - "windows-host/cmd/phonevr-host/service.go"
+      - "scripts/build-steamvr-driver.ps1"
+      - ".github/workflows/steamvr-driver.yml"
+  pull_request:
+    paths:
+      - "steamvr-driver/**"
+      - "windows-host/cmd/phonevr-host/service.go"
+      - "scripts/build-steamvr-driver.ps1"
+      - ".github/workflows/steamvr-driver.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build SteamVR driver (Windows x64)
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build driver package
+        shell: pwsh
+        run: .\scripts\build-steamvr-driver.ps1
+      - name: Upload driver package
+        uses: actions/upload-artifact@v4
+        with:
+          name: PhoneVR-SteamVR-Driver-Windows-x64-${{ github.sha }}
+          path: dist/steamvr-driver/**
+          if-no-files-found: error
+          retention-days: 30

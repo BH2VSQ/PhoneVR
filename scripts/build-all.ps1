@@ -4,14 +4,15 @@ param(
     [string]$AndroidConfiguration = "Both",
     [switch]$SkipTests,
     [switch]$SkipAndroid,
-    [switch]$SkipWindows
+    [switch]$SkipWindows,
+    [switch]$SkipSteamVR
 )
 
 $ErrorActionPreference = "Stop"
 . (Join-Path $PSScriptRoot "common.ps1")
 
 $repoRoot = Get-PhoneVRRepositoryRoot
-if ($SkipAndroid -and $SkipWindows) {
+if ($SkipAndroid -and $SkipWindows -and $SkipSteamVR) {
     throw "At least one build target must remain enabled."
 }
 
@@ -24,6 +25,7 @@ Write-Host "==============================================" -ForegroundColor Cya
 Write-Host "Repository: $repoRoot"
 Write-Host "Android APK: $AndroidConfiguration"
 Write-Host "Run tests: $(-not $SkipTests)"
+Write-Host "SteamVR driver: $(-not $SkipSteamVR)"
 
 if (-not $SkipAndroid) {
     try {
@@ -49,6 +51,20 @@ if (-not $SkipWindows) {
 }
 else {
     Write-Host "Skipping Windows Host build." -ForegroundColor Yellow
+}
+
+
+if (-not $SkipSteamVR) {
+    try {
+        & (Join-Path $PSScriptRoot "build-steamvr-driver.ps1")
+    }
+    catch {
+        $failures += "SteamVR driver: $($_.Exception.Message)"
+        Write-Host "SteamVR driver build failed: $($_.Exception.Message)" -ForegroundColor Red
+    }
+}
+else {
+    Write-Host "Skipping SteamVR driver build." -ForegroundColor Yellow
 }
 
 $elapsed = (Get-Date) - $startedAt

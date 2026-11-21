@@ -34,6 +34,7 @@ class NetworkClient(
     private val applyRemoteOpticalPresets: (JSONArray) -> JSONArray = { it },
     private val applyRemoteOpticalPreset: (String) -> JSONObject? = { null },
     private val applyRemoteDeviceAction: (String) -> Unit = {},
+    private val currentMediaCapabilities: () -> JSONArray = { JSONArray() },
 ) {
     private val appContext = context.applicationContext
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -184,6 +185,9 @@ class NetworkClient(
     private fun connectionLoop(generation: Long, address: String, port: Int, deviceName: String) {
         var retryDelayMs = INITIAL_RECONNECT_DELAY_MS
         var firstAttempt = true
+        // Enumerate MediaCodec once per user-requested session, off the UI
+        // thread. Retries reuse this bounded, immutable capability snapshot.
+        val mediaCapabilities = runCatching { currentMediaCapabilities() }.getOrDefault(JSONArray())
 
         while (isSessionActive(generation)) {
             var tcp: Socket? = null
@@ -215,6 +219,7 @@ class NetworkClient(
                     .put("protocol", PROTOCOL_VERSION)
                     .put("deviceName", deviceName.take(80))
                     .put("client", CLIENT_VERSION)
+                    .put("mediaCapabilities", mediaCapabilities)
                 writer.write(hello.toString())
                 writer.newLine()
                 writer.flush()
@@ -456,7 +461,7 @@ class NetworkClient(
         }
     }
 
-    /** Latest-sample-wins UDP sender, capped at 60 Hz. */
+    /** Latest-sample-wins UDP sender, capped at 120 Hz when the device supports it. */
     private fun sendPoseLoop(
         generation: Long,
         socket: DatagramSocket,
@@ -563,7 +568,7 @@ class NetworkClient(
         const val DEFAULT_POSE_PORT = 48102
         const val DISCOVERY_PORT = 48100
         private const val PROTOCOL_VERSION = 1
-        private const val CLIENT_VERSION = "PhoneVRStream-0.3.14"
+        private const val CLIENT_VERSION = "PhoneVRStream-0.4.0"
         private const val DISCOVERY_REQUEST = "PHONEVR_DISCOVER_V1"
         private const val DISCOVERY_RESPONSE_PREFIX = "PHONEVR_HOST_V1 "
         private const val DISCOVERY_WINDOW_MS = 1800L
@@ -573,7 +578,7 @@ class NetworkClient(
         private const val CONTROL_READ_TIMEOUT_MS = 1000
         private const val HEARTBEAT_INTERVAL_NS = 2_000_000_000L
         private const val HEARTBEAT_TIMEOUT_NS = 10_000_000_000L
-        private const val MAX_POSE_SEND_HZ = 60
+        private const val MAX_POSE_SEND_HZ = 120
         private const val UDP_SEND_BUFFER_BYTES = 64 * 1024
         private const val POSE_ERROR_REPORT_INTERVAL_NS = 5_000_000_000L
         private const val POSE_IDLE_SLEEP_NS = 2_000_000L

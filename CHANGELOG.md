@@ -1,4 +1,14 @@
-## 0.3.14
+# Changelog
+
+## 0.4.0 foundation - 2026-11-21
+
+- Added Windows x64 OpenVR SteamVR driver foundation: `PhoneVRHmd` (HMD) and `PhoneVRDisplayRedirect` (`IVRVirtualDisplay`).
+- Added loopback-only pose bridge on UDP 48103; Go Host forwards validated existing `PVSP` packets without changing Android protocol v1.
+- Added Android MediaCodec runtime capability discovery for H.264, HEVC and AV1.
+- Added a bounded Host-startup FFmpeg encoder-candidate probe (`-ffmpeg` override supported) and backend selection for NVIDIA NVENC, AMD AMF, Intel QSV and software fallback; candidates are explicitly not treated as usable until adapter/session initialization succeeds.
+- Added `PVRV` video datagram v1 framing, MTU-safe access-unit fragmentation, validation and boundary tests, with 1200-byte bounded UDP payloads.
+- Added SteamVR driver CMake build, installer helper and Windows CI workflow.
+- Video capture/encoding/transport/decoding and Daydream BLE controller pairing remain future implementation tasks.
 
 - Added a dedicated light OpenGL pose-preview palette with a pale background, softer floor grid, and distinct high-contrast XYZ axes and gaze ray; dark mode preserves its original dark preview palette.
 - Added a light-mode headset material variant that raises only very dark mesh materials so frame, foam and lens details remain visible against the light background.

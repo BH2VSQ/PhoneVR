@@ -39,7 +39,7 @@ func TestHostServiceLifecycleAndPairing(t *testing.T) {
 	defer conn.Close()
 	_ = conn.SetDeadline(time.Now().Add(2 * time.Second))
 	encoder := json.NewEncoder(conn)
-	if err := encoder.Encode(helloMessage{Type: "hello", Protocol: protocolVersion, DeviceName: "Test Android", Client: "PhoneVRStream-Test"}); err != nil {
+	if err := encoder.Encode(helloMessage{Type: "hello", Protocol: protocolVersion, DeviceName: "Test Android", Client: "PhoneVRStream-Test", MediaCapabilities: json.RawMessage(`[ {"mimeType":"video/avc","hardwareAccelerated":true} ]`)}); err != nil {
 		t.Fatalf("send hello: %v", err)
 	}
 	reader := bufio.NewReader(conn)
@@ -64,6 +64,10 @@ func TestHostServiceLifecycleAndPairing(t *testing.T) {
 	}
 
 	waitUntil(t, 2*time.Second, func() bool { return len(service.Snapshot().ConnectedDevices) == 1 })
+	deviceSnapshot := service.Snapshot().ConnectedDevices[0]
+	if len(deviceSnapshot.MediaCapabilities) == 0 || !json.Valid(deviceSnapshot.MediaCapabilities) {
+		t.Fatalf("phone media capabilities were not retained: %s", deviceSnapshot.MediaCapabilities)
+	}
 	if err := service.SendPhoneAction("center_view"); err != nil {
 		t.Fatalf("send center-view action: %v", err)
 	}
@@ -95,6 +99,46 @@ func TestHostServiceLifecycleAndPairing(t *testing.T) {
 	service.Stop()
 	if service.Snapshot().Running {
 		t.Fatal("service should be stopped after Stop")
+	}
+}
+
+func TestSteamVRPoseBridgeForwardsValidatedPhonePose(t *testing.T) {
+	bridge, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: steamVRPoseBridgePort})
+	if err != nil {
+		t.Skipf("SteamVR bridge port is already in use: %v", err)
+	}
+	defer bridge.Close()
+	_ = bridge.SetReadDeadline(time.Now().Add(2 * time.Second))
+
+	config := HostConfig{
+		ListenAddress: "127.0.0.1",
+		DiscoveryPort: reservePort(t, "udp4"),
+		ControlPort:   reservePort(t, "tcp4"),
+		PosePort:      reservePort(t, "udp4"),
+	}
+	service := NewHostService(false)
+	if err := service.Start(config); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	defer service.Stop()
+
+	sender, err := net.DialUDP("udp4", nil, &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: service.Snapshot().PosePort})
+	if err != nil {
+		t.Fatalf("dial phone pose endpoint: %v", err)
+	}
+	defer sender.Close()
+	packet := testPosePacket()
+	if _, err := sender.Write(packet); err != nil {
+		t.Fatalf("send pose packet: %v", err)
+	}
+
+	received := make([]byte, 64)
+	n, _, err := bridge.ReadFromUDP(received)
+	if err != nil {
+		t.Fatalf("read SteamVR bridge packet: %v", err)
+	}
+	if n != len(packet) || string(received[:n]) != string(packet) {
+		t.Fatalf("SteamVR bridge packet mismatch: got %d bytes", n)
 	}
 }
 

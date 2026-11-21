@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/vsq-studio/phonevr-host/internal/encoder"
 	"github.com/vsq-studio/phonevr-host/internal/protocol"
 )
 
@@ -42,15 +43,16 @@ func DefaultHostConfig() HostConfig {
 }
 
 type DeviceSnapshot struct {
-	Name            string                `json:"name"`
-	DeviceID        string                `json:"deviceId,omitempty"`
-	Client          string                `json:"client,omitempty"`
-	Address         string                `json:"address"`
-	ConnectedAt     string                `json:"connectedAt"`
-	DisplaySettings *PhoneDisplaySettings `json:"displaySettings,omitempty"`
-	OpticalPresets  []OpticalPreset       `json:"opticalPresets,omitempty"`
-	BatteryLevel    *int                  `json:"batteryLevel,omitempty"`
-	Charging        bool                  `json:"charging,omitempty"`
+	Name              string                `json:"name"`
+	DeviceID          string                `json:"deviceId,omitempty"`
+	Client            string                `json:"client,omitempty"`
+	Address           string                `json:"address"`
+	ConnectedAt       string                `json:"connectedAt"`
+	DisplaySettings   *PhoneDisplaySettings `json:"displaySettings,omitempty"`
+	OpticalPresets    []OpticalPreset       `json:"opticalPresets,omitempty"`
+	MediaCapabilities json.RawMessage       `json:"mediaCapabilities,omitempty"`
+	BatteryLevel      *int                  `json:"batteryLevel,omitempty"`
+	Charging          bool                  `json:"charging,omitempty"`
 }
 
 type PoseSnapshot struct {
@@ -90,11 +92,12 @@ type PoseFrameSnapshot struct {
 }
 
 type helloMessage struct {
-	Type       string `json:"type"`
-	Protocol   int    `json:"protocol"`
-	DeviceName string `json:"deviceName"`
-	DeviceID   string `json:"deviceId"`
-	Client     string `json:"client"`
+	Type              string          `json:"type"`
+	Protocol          int             `json:"protocol"`
+	DeviceName        string          `json:"deviceName"`
+	DeviceID          string          `json:"deviceId"`
+	Client            string          `json:"client"`
+	MediaCapabilities json.RawMessage `json:"mediaCapabilities,omitempty"`
 }
 
 type discoveryMessage struct {
@@ -254,6 +257,24 @@ func normalizeHostConfig(config HostConfig) HostConfig {
 	return config
 }
 
+// ProbeVideoEncoders runs a bounded, best-effort FFmpeg encoder inventory.
+// Results are candidates only; actual adapter/session initialization is a
+// required later validation before a streaming profile can be selected.
+func (s *HostService) ProbeVideoEncoders(ffmpegPath string) {
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		candidates, err := encoder.ProbeFFmpeg(ctx, ffmpegPath)
+		if err != nil {
+			s.addLog("Video encoder discovery unavailable: " + err.Error())
+			return
+		}
+		for _, candidate := range candidates {
+			s.addLog(fmt.Sprintf("Video encoder candidate (adapter/session unverified): %s | %s | %s", candidate.Name, candidate.Codec, candidate.Backend))
+		}
+	}()
+}
+
 func (s *HostService) Stop() {
 	s.lifecycleMu.Lock()
 	defer s.lifecycleMu.Unlock()
@@ -388,8 +409,19 @@ func (s *HostService) discoveryLoop(ctx context.Context, conn *net.UDPConn, serv
 	}
 }
 
+const steamVRPoseBridgePort = 48103
+
 func (s *HostService) poseLoop(ctx context.Context, conn *net.UDPConn) {
 	defer s.wg.Done()
+	// SteamVR loads the native driver inside vrserver.exe, separate from this
+	// Go Host process. Forward the validated PVSP packet over loopback so the
+	// driver can consume the same HMD pose without changing the phone protocol.
+	bridge, bridgeErr := net.DialUDP("udp4", nil, &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: steamVRPoseBridgePort})
+	if bridgeErr != nil {
+		s.addLog("SteamVR local pose bridge unavailable: " + bridgeErr.Error())
+	} else {
+		defer bridge.Close()
+	}
 	buffer := make([]byte, 1500)
 	for {
 		_ = conn.SetReadDeadline(time.Now().Add(time.Second))
@@ -408,6 +440,11 @@ func (s *HostService) poseLoop(ctx context.Context, conn *net.UDPConn) {
 		if err != nil {
 			s.addLog(fmt.Sprintf("Ignored invalid pose packet from %s: %v", remote, err))
 			continue
+		}
+		if bridge != nil {
+			// This is best-effort latest-pose IPC. Never block the phone receiver
+			// or queue stale tracking samples behind the SteamVR driver.
+			_, _ = bridge.Write(buffer[:n])
 		}
 		yaw, pitch, roll := quaternionEuler(pose.X, pose.Y, pose.Z, pose.W)
 		s.mu.Lock()
@@ -446,9 +483,14 @@ func (s *HostService) handleControlConnection(ctx context.Context, conn net.Conn
 		hello.DeviceName = "Android device"
 	}
 	remote := conn.RemoteAddr().String()
+	mediaCapabilities := hello.MediaCapabilities
+	if len(mediaCapabilities) > 32*1024 || (len(mediaCapabilities) > 0 && !json.Valid(mediaCapabilities)) {
+		mediaCapabilities = nil
+	}
 	device := activeDevice{Snapshot: DeviceSnapshot{
 		Name: hello.DeviceName, DeviceID: hello.DeviceID, Client: hello.Client,
 		Address: remote, ConnectedAt: time.Now().Format(time.RFC3339),
+		MediaCapabilities: append(json.RawMessage(nil), mediaCapabilities...),
 	}, Conn: conn, WriteMu: &sync.Mutex{}}
 	s.mu.Lock()
 	s.devices[remote] = device
@@ -464,7 +506,7 @@ func (s *HostService) handleControlConnection(ctx context.Context, conn net.Conn
 	welcome := welcomeMessage{
 		Type: "welcome", Protocol: protocolVersion, SessionID: newSessionID(),
 		ServerName: s.serverName, PosePort: s.config.PosePort,
-		Capabilities: []string{"head-pose-3dof-udp-v1", "control-heartbeat-v1", "display-settings-control-v1", "android-optical-presets-v1"},
+		Capabilities: []string{"head-pose-3dof-udp-v1", "control-heartbeat-v1", "display-settings-control-v1", "android-optical-presets-v1", "android-media-capabilities-v1"},
 	}
 	if err := writeJSONLine(conn, welcome); err != nil {
 		s.addLog("Pair response failed: " + err.Error())

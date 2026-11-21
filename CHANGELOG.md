@@ -1,3 +1,8 @@
+## 0.4.5 - Automated release
+
+- Android versionName and versionCode bumped by the manual release workflow.
+- Windows Host version metadata updated from the repository VERSION file.
+
 # Changelog
 
 ## 0.4.4 - Bundled SteamVR driver deployment

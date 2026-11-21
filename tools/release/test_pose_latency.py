@@ -9,6 +9,8 @@ QUATERNION = (ROOT / "android/app/src/main/java/com/vsq/phonvrstream/tracking/Qu
 HOST_SERVICE = (ROOT / "windows-host/cmd/phonevr-host/service.go").read_text(encoding="utf-8")
 HOST_UI = (ROOT / "windows-host/cmd/phonevr-host/native_ui_windows.go").read_text(encoding="utf-8")
 DRIVER_README = (ROOT / "steamvr-driver/README.md").read_text(encoding="utf-8")
+DISPLAY_REFRESH = (ROOT / "windows-host/cmd/phonevr-host/display_refresh.go").read_text(encoding="utf-8")
+DISPLAY_REFRESH_TEST = (ROOT / "windows-host/cmd/phonevr-host/display_refresh_test.go").read_text(encoding="utf-8")
 
 
 class PoseLatencyRegressionTests(unittest.TestCase):
@@ -59,7 +61,7 @@ class PoseLatencyRegressionTests(unittest.TestCase):
         self.assertIn("TakeTimingSnapshot()", DRIVER)
         self.assertIn("max-Present=%.2fms", DRIVER)
         self.assertIn("max-WaitForPresent=%.2fms", DRIVER)
-        self.assertIn("display-refresh=%.0fHz", DRIVER)
+        self.assertIn("display-refresh=%.1fHz", DRIVER)
 
     def test_driver_drains_stale_udp_queue_and_predicts_with_angular_velocity(self):
         self.assertIn("ioctlsocket(socket, FIONREAD, &pendingBytes)", DRIVER)
@@ -104,6 +106,35 @@ class PoseLatencyRegressionTests(unittest.TestCase):
         self.assertIn("Enable Direct Mode", DRIVER)
         self.assertIn("SteamVR Settings > Developer > Enable Direct Mode", DRIVER)
         self.assertIn("IVRVirtualDisplay", DRIVER_README)
+
+    def test_host_pose_state_has_a_dedicated_lock_separate_from_general_service_state(self):
+        self.assertIn("poseStateMu         sync.RWMutex", HOST_SERVICE)
+        self.assertIn("latestPose          *PoseSnapshot // guarded by poseStateMu", HOST_SERVICE)
+        snapshot_body = HOST_SERVICE.split("func (s *HostService) Snapshot() HostSnapshot {", 1)[1].split("// PoseFrame", 1)[0]
+        self.assertIn("s.mu.RUnlock()", snapshot_body)
+        self.assertIn("s.poseStateMu.RLock()", snapshot_body)
+        pose_loop = HOST_SERVICE.split("func (s *HostService) poseLoop", 1)[1]
+        self.assertIn("s.poseStateMu.Lock()", pose_loop)
+        self.assertIn("s.mu.Lock()", pose_loop) is False
+
+    def test_display_refresh_supports_60_90_120_and_custom(self):
+        for mode in ("displayRefreshMode60", "displayRefreshMode90", "displayRefreshMode120", "displayRefreshModeCustom"):
+            self.assertIn(mode, DISPLAY_REFRESH)
+        self.assertIn("minCustomDisplayRefreshHz = 60.0", DISPLAY_REFRESH)
+        self.assertIn("maxCustomDisplayRefreshHz = 120.0", DISPLAY_REFRESH)
+        self.assertIn('"display-refresh.json"', DISPLAY_REFRESH)
+        self.assertIn("TestNormalizeDisplayRefreshPresets", DISPLAY_REFRESH_TEST)
+        self.assertIn("TestNormalizeDisplayRefreshCustom", DISPLAY_REFRESH_TEST)
+
+    def test_display_refresh_is_applied_to_property_and_virtual_vsync(self):
+        self.assertIn("LoadDisplayRefreshRateHz()", DRIVER)
+        self.assertIn('L"display-refresh.json"', DRIVER)
+        self.assertIn("gDisplayRefreshRateHz);", DRIVER)
+        self.assertIn("Prop_DisplayFrequency_Float", DRIVER)
+        self.assertIn("DisplayFrameIntervalSeconds()", DRIVER)
+        self.assertIn("60/90/120/custom", DRIVER)
+        self.assertIn("Fully exit and restart SteamVR", HOST_UI)
+        self.assertIn("DefaultDisplayRefreshConfig", DISPLAY_REFRESH_TEST)
 
 
 if __name__ == "__main__":

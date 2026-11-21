@@ -787,3 +787,44 @@ func completeOpticalPresetPull(t *testing.T, service *HostService, decoder *json
 		return len(devices) == 1 && len(devices[0].OpticalPresets) == len(presets)
 	})
 }
+
+func TestPoseUpdateDoesNotWaitForGeneralServiceMutex(t *testing.T) {
+	config := HostConfig{
+		ListenAddress: "127.0.0.1",
+		DiscoveryPort: reservePort(t, "udp4"),
+		ControlPort:   reservePort(t, "tcp4"),
+		PosePort:      reservePort(t, "udp4"),
+	}
+	service := NewHostService(false)
+	if err := service.Start(config); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	defer service.Stop()
+	posePort := service.Snapshot().PosePort
+	sender, err := net.DialUDP("udp4", nil, &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: posePort})
+	if err != nil {
+		t.Fatalf("DialUDP() error = %v", err)
+	}
+	defer sender.Close()
+
+	service.mu.Lock()
+	unlocked := false
+	defer func() {
+		if !unlocked {
+			service.mu.Unlock()
+		}
+	}()
+	if _, err := sender.Write(testPosePacket()); err != nil {
+		t.Fatalf("send pose packet: %v", err)
+	}
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if pose := service.PoseFrame(); pose.PacketsReceived == 1 && pose.LatestPose != nil {
+			service.mu.Unlock()
+			unlocked = true
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatal("pose receiver waited for the general Host service mutex")
+}

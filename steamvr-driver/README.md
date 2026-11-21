@@ -1,4 +1,4 @@
-# PhoneVR SteamVR Driver — 0.4.16
+# PhoneVR SteamVR Driver — 0.4.17
 
 Windows x64 OpenVR server driver foundation for the PhoneVR wireless HMD.
 
@@ -26,7 +26,7 @@ packets, maximum pose publish gap and maximum sample age. The virtual-display
 component separately reports `Present` / `WaitForPresent` callback rates and
 maximum callback durations, so tracking-rate problems can be distinguished
 from compositor/GPU synchronization stalls. The current virtual display timing
-is explicitly configured for 72 Hz; sensor input frequency is not the display
+uses the refresh rate selected in the Host (60/90/120 Hz or Custom 60–120 Hz); sensor input frequency is not the display
 refresh frequency.
 
 ## Build
@@ -63,7 +63,7 @@ uses a bounded keyed-mutex acquire (10 ms maximum), and queues only a small
 staging-texture copy as a GPU-completion fence. `WaitForPresent` maps this small
 synchronization texture. Because P0 has no encoder or frame consumer, it
 intentionally does not copy the unused full-resolution image into staging
-memory. `GetTimeSinceLastVsync` advances a 72 Hz virtual-vsync clock from the
+memory. `GetTimeSinceLastVsync` advances a configurable virtual-vsync clock from the
 last supplied compositor timestamp and keeps its frame counter monotonic. The
 driver logs all enumerated DXGI adapters, the selected adapter LUID, opened
 backbuffer dimensions/format, mutex contention and GPU synchronization errors
@@ -112,3 +112,7 @@ warns that SteamVR may still request Room Setup. A user may also see SteamVR's
 first-run onboarding independently of this driver property. Windows/SteamVR
 runtime testing is required to confirm the prompt disappears on the target
 installation.
+
+## Display refresh configuration
+
+The Host menu item **Display Refresh Rate** writes `%LOCALAPPDATA%/PhoneVR/display-refresh.json`. The SteamVR driver reads the selected 60/90/120 Hz or custom 60–120 Hz value during provider initialization and applies it to `Prop_DisplayFrequency_Float` and its virtual VSync clock. Fully exit and restart SteamVR after changing the setting. The Host uses 72 Hz (Custom) by default when no valid file exists, preserving the previous virtual timing until a new mode is selected.

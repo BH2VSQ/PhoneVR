@@ -20,6 +20,11 @@
 #include <cstdint>
 #include <cstring>
 #include <cstdio>
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
+#include <iterator>
+#include <string>
 #include <mutex>
 #include <thread>
 
@@ -28,8 +33,31 @@ constexpr uint16_t kPoseBridgePort = 48103;
 constexpr uint32_t kPosePacketSize = 36;
 constexpr uint32_t kEyeWidth = 1200;
 constexpr uint32_t kEyeHeight = 1080;
-constexpr double kDisplayRefreshRateHz = 72.0;
-constexpr double kDisplayFrameIntervalSeconds = 1.0 / kDisplayRefreshRateHz;
+double gDisplayRefreshRateHz = 72.0; // Loaded once by the provider before HMD activation.
+
+double DisplayFrameIntervalSeconds() {
+    return 1.0 / std::max(60.0, std::min(120.0, gDisplayRefreshRateHz));
+}
+
+double LoadDisplayRefreshRateHz() {
+    wchar_t localAppData[MAX_PATH]{};
+    const DWORD length = GetEnvironmentVariableW(L"LOCALAPPDATA", localAppData, MAX_PATH);
+    if (length == 0 || length >= MAX_PATH) return 72.0;
+    const std::filesystem::path path = std::filesystem::path(localAppData) / L"PhoneVR" / L"display-refresh.json";
+    std::ifstream input(path, std::ios::binary);
+    if (!input) return 72.0;
+    const std::string json((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
+    const std::string key = "\"refreshRateHz\"";
+    const size_t keyPosition = json.find(key);
+    if (keyPosition == std::string::npos) return 72.0;
+    const size_t colon = json.find(':', keyPosition + key.size());
+    if (colon == std::string::npos) return 72.0;
+    const char* start = json.c_str() + colon + 1;
+    char* end = nullptr;
+    const double value = std::strtod(start, &end);
+    if (end == start || !std::isfinite(value) || value < 60.0 || value > 120.0) return 72.0;
+    return std::round(value * 10.0) / 10.0;
+}
 // Tracking can briefly pause under Android scheduling or Wi-Fi jitter. A stale
 // pose becomes untracked, but it must never disconnect the HMD device itself.
 constexpr uint64_t kTrackingPoseTimeoutNs = 1000000000ULL;
@@ -441,7 +469,7 @@ public:
         properties->SetBoolProperty(container, vr::Prop_DeviceIsWireless_Bool, true);
         properties->SetFloatProperty(container, vr::Prop_UserIpdMeters_Float, 0.064f);
         properties->SetFloatProperty(container, vr::Prop_DisplayFrequency_Float,
-                                     static_cast<float>(kDisplayRefreshRateHz));
+                                     static_cast<float>(gDisplayRefreshRateHz));
 
         const auto universeResult = properties->SetUint64Property(
             container, vr::Prop_CurrentUniverseId_Uint64,
@@ -495,7 +523,11 @@ public:
         }
         if (vr::VRDriverLog()) {
             vr::VRDriverLog()->Log("PhoneVR: HMD activation published; pose updates use dedicated event-driven worker");
-            vr::VRDriverLog()->Log("PhoneVR: pose publisher priority=ABOVE_NORMAL, keepalive=10ms; virtual display refresh=72Hz");
+            char refreshLine[160]{};
+            std::snprintf(refreshLine, sizeof(refreshLine),
+                          "PhoneVR: pose publisher priority=ABOVE_NORMAL, keepalive=10ms; virtual display refresh=%.1fHz",
+                          gDisplayRefreshRateHz);
+            vr::VRDriverLog()->Log(refreshLine);
             vr::VRDriverLog()->Log("PhoneVR: HMD reports IsDisplayOnDesktop=false; enable SteamVR Settings > Developer > Enable Direct Mode for headset display operation");
         }
         return vr::VRInitError_None;
@@ -566,13 +598,13 @@ public:
         const uint64_t maxRuntimeGap = m_maxRuntimeRunFrameGapNs.exchange(0, std::memory_order_relaxed);
         char message[512]{};
         std::snprintf(message, sizeof(message),
-                      "PhoneVR: pose rates driver-rx=%.1fHz published=%.1fHz unique=%.1fHz repeated=%.1fHz sequence-gaps=%llu drained=%llu max-publish-gap=%.2fms max-sample-age=%.2fms | runtime RunFrame=%.1fHz max-gap=%.2fms | display-refresh=%.0fHz",
+                      "PhoneVR: pose rates driver-rx=%.1fHz published=%.1fHz unique=%.1fHz repeated=%.1fHz sequence-gaps=%llu drained=%llu max-publish-gap=%.2fms max-sample-age=%.2fms | runtime RunFrame=%.1fHz max-gap=%.2fms | display-refresh=%.1fHz",
                       rx / intervalSeconds, published / intervalSeconds,
                       unique / intervalSeconds, repeated / intervalSeconds,
                       static_cast<unsigned long long>(gaps), static_cast<unsigned long long>(drained),
                       maxPublishGap / 1.0e6, maxSampleAge / 1.0e6,
                       runtimeCalls / intervalSeconds, maxRuntimeGap / 1.0e6,
-                      kDisplayRefreshRateHz);
+                      gDisplayRefreshRateHz);
         if (vr::VRDriverLog()) vr::VRDriverLog()->Log(message);
     }
 
@@ -854,9 +886,9 @@ public:
         std::lock_guard<std::mutex> lock(m_mutex);
         if (m_frameCounter == 0 || m_vsyncOriginTimeSeconds <= 0.0) return false;
         const double elapsed = std::max(0.0, NowSeconds() - m_vsyncOriginTimeSeconds);
-        const uint64_t elapsedVsyncs = static_cast<uint64_t>(elapsed / kDisplayFrameIntervalSeconds);
+        const uint64_t elapsedVsyncs = static_cast<uint64_t>(elapsed / DisplayFrameIntervalSeconds());
         const double lastVsyncOffset = elapsed -
-            static_cast<double>(elapsedVsyncs) * kDisplayFrameIntervalSeconds;
+            static_cast<double>(elapsedVsyncs) * DisplayFrameIntervalSeconds();
         const uint64_t virtualFrame = m_vsyncOriginFrameCounter + elapsedVsyncs;
         m_frameCounter = std::max(m_frameCounter, virtualFrame);
         *seconds = static_cast<float>(lastVsyncOffset);
@@ -1050,6 +1082,14 @@ class PhoneVRProvider final : public vr::IServerTrackedDeviceProvider {
 public:
     vr::EVRInitError Init(vr::IVRDriverContext* context) override {
         VR_INIT_SERVER_DRIVER_CONTEXT(context);
+        gDisplayRefreshRateHz = LoadDisplayRefreshRateHz();
+        if (vr::VRDriverLog()) {
+            char refreshMessage[160]{};
+            std::snprintf(refreshMessage, sizeof(refreshMessage),
+                          "PhoneVR: display refresh configured to %.1f Hz (60/90/120/custom; restart SteamVR to apply changes)",
+                          gDisplayRefreshRateHz);
+            vr::VRDriverLog()->Log(refreshMessage);
+        }
         if (!m_statusReporter.Start() && vr::VRDriverLog())
             vr::VRDriverLog()->Log("PhoneVR: failed to start loopback status reporter on UDP 48105");
         m_hmd = new PhoneVRHmd();
@@ -1061,7 +1101,7 @@ public:
         if (!host->TrackedDeviceAdded("PHONEVR-DISPLAY-001", vr::TrackedDeviceClass_DisplayRedirect, m_redirect)) {
             Cleanup(); return vr::VRInitError_Driver_Unknown;
         }
-        if (vr::VRDriverLog()) vr::VRDriverLog()->Log("PhoneVR 0.4.16 SteamVR driver initialized");
+        if (vr::VRDriverLog()) vr::VRDriverLog()->Log("PhoneVR 0.4.17 SteamVR driver initialized");
         return vr::VRInitError_None;
     }
     void Cleanup() override {
@@ -1081,11 +1121,11 @@ public:
             const auto timing = m_redirect->TakeTimingSnapshot();
             char line[384]{};
             std::snprintf(line, sizeof(line),
-                          "PhoneVR: virtual display Present=%.1fHz WaitForPresent=%.1fHz completed=%.1fHz max-Present=%.2fms max-WaitForPresent=%.2fms refresh=%.0fHz",
+                          "PhoneVR: virtual display Present=%.1fHz WaitForPresent=%.1fHz completed=%.1fHz max-Present=%.2fms max-WaitForPresent=%.2fms refresh=%.1fHz",
                           timing.presentCalls / intervalSeconds, timing.waitCalls / intervalSeconds,
                           timing.completedFrames / intervalSeconds,
                           timing.maxPresentNs / 1.0e6, timing.maxWaitNs / 1.0e6,
-                          kDisplayRefreshRateHz);
+                          gDisplayRefreshRateHz);
             if (vr::VRDriverLog()) vr::VRDriverLog()->Log(line);
         }
         uint8_t flags = kStatusDriverLoaded;

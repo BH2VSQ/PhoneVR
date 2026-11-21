@@ -1,3 +1,10 @@
+## 0.4.17 - Pose-state isolation and selectable display refresh
+
+- Moved the high-frequency pose snapshot to a dedicated lock, isolating pose writes from the Host device/status/log mutex.
+- Added Host display refresh settings for 60 Hz, 90 Hz, 120 Hz and Custom (60–120 Hz, 0.1 Hz steps); the SteamVR driver reads the persisted rate on startup and applies it to HMD display frequency and virtual VSync timing.
+- Default virtual refresh remains 72 Hz (Custom) for backward compatibility; SteamVR must be fully restarted after changing the setting.
+- Android versionCode/versionName and Host/driver version metadata updated.
+
 ## 0.4.16 - Independent SteamVR pose publishing and timing diagnostics
 
 - Moved HMD pose publication out of `IServerTrackedDeviceProvider::RunFrame()` into a dedicated above-normal-priority worker. It wakes immediately for every new UDP pose generation and republishes the latest pose on a 10 ms keepalive, separating tracking update cadence from `vrserver` main-loop callbacks.

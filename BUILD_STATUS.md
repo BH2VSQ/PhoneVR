@@ -1,28 +1,25 @@
-# PhoneVR 0.4.16 Build Status
+# PhoneVR 0.4.17 Build Status
 
-## 0.4.16 independent SteamVR pose publishing
+## 0.4.17 pose-state isolation and selectable virtual refresh
 
-- HMD pose publication has moved to a dedicated above-normal-priority worker. The worker is awakened by a new receiver generation and performs a 10 ms keepalive publication when no new sensor sample arrives. `IServerTrackedDeviceProvider::RunFrame()` no longer determines the HMD pose publication cadence.
-- `vrserver.txt` now reports the driver UDP RX rate, total pose publications, unique/repeated publications, sequence gaps, drained queue packets, maximum publication gap and maximum sample age. It also reports `RunFrame` frequency and maximum callback gap for side-by-side comparison.
-- `IVRVirtualDisplay::Present` and `WaitForPresent` callbacks now report their rates and maximum durations. These metrics can determine whether smooth Host preview but jerky SteamVR view comes from pose scheduling or virtual-display/compositor GPU synchronization.
-- The virtual display remains configured at 72 Hz. A 180 Hz sensor feed does not imply 180 Hz image presentation. Higher refresh must be selected only after confirming the target phone panel and SteamVR timing behavior.
-- Publisher thread is stopped and joined before HMD object ID invalidation; it submits stack-local pose records. Receiver uses generation-based condition-variable wakeups to avoid missed updates.
+- Moved latest pose, pose packet count and last-packet timestamp behind a dedicated `poseStateMu`; the 180 Hz pose writer no longer contends with the general Host service mutex used by device lists, heartbeats and logs. `Snapshot()` releases the general service lock before taking the pose snapshot lock.
+- Added regression tests for display refresh presets and custom-rate validation.
+- Added Host menu item **Display Refresh Rate** with 60 Hz, 90 Hz, 120 Hz and Custom. Custom is bounded to 60–120 Hz in 0.1 Hz increments to stay within the known 120 Hz phone panel ceiling. Default remains 72 Hz (Custom) for backward compatibility; select 90 Hz or 120 Hz explicitly after confirming runtime performance.
+- Host writes `%LOCALAPPDATA%\PhoneVR\display-refresh.json`; the SteamVR driver reads it at provider startup and uses the same rate for `Prop_DisplayFrequency_Float`, timing diagnostics and `GetTimeSinceLastVsync`. A complete SteamVR restart is required after changing the value.
+- Host and SteamVR display timing are deliberately kept separate from the ~180 Hz IMU update rate. Increasing virtual refresh does not create additional source frames; if the PC compositor cannot sustain the selected rate, dropped/reprojected frames may increase.
 
-## Validation in this environment
+## Validation
 
-- Release/source regression tests: 24 passed
-- Go Host unit tests and Race tests: passed
-- Go Vet and Windows AMD64 Go Vet: passed
-- Windows AMD64 Go test binary, GUI Host and console Host cross-builds: passed (PE32+ x64 outputs)
-- All three GitHub Actions workflow YAML files parse successfully
-- Native MSVC SteamVR DLL build and actual SteamVR runtime test: not available in this environment; must be verified on the Windows target
-- Android sources unchanged in this revision; no Gradle build required for these C++/Host changes
+- Go unit and integration tests, Race and Vet: run in this revision's validation.
+- Windows AMD64 Host cross-compilation and vet: run in this revision's validation.
+- Python release-tool tests and workflow YAML parse: run in this revision's validation.
+- C++ raw-source checks: config parser, shared setting file path and dynamic VSync interval statically inspected.
+- Native MSVC SteamVR DLL build and real SteamVR timing test: requires the Windows target; not claimed as completed in this environment.
+- Rich Win32 dialog interaction and actual 60/90/120/custom mode switching also require Windows runtime verification.
 
-## Runtime interpretation guide
+## How to interpret the next SteamVR log
 
-- `driver-rx` close to Host `forwarded`, and `published` close to `driver-rx`, with low `max-publish-gap` and `max-sample-age`: pose data is arriving and being submitted continuously; investigate compositor/display timing if motion still feels jerky.
-- Low `published` despite high `driver-rx`: investigate pose worker / driver thread scheduling.
-- Low `RunFrame` rate while `published` remains high: Runtime callback cadence is not throttling pose submissions.
-- High `max-Present` or `max-WaitForPresent`: investigate D3D11 shared texture, keyed mutex, GPU device selection or compositor load.
-- `Present`, `WaitForPresent` and pose rates all stable but view still feels low cadence: the configured virtual display refresh (72 Hz) or PC rendering workload may be the limiting factor.
-
+- `driver-rx` and `unique` near 170–180 Hz with low `max-publish-gap` means fresh IMU poses reach OpenVR continuously.
+- `Present` / `WaitForPresent` / `completed` near the selected refresh rate with low callback durations indicates the virtual display is keeping pace.
+- Low `completed` relative to selected refresh or high `max-WaitForPresent` points to compositor/GPU synchronization or PC rendering load.
+- If pose metrics remain healthy but motion still appears uneven, test 60, 90 and 120 Hz one at a time and compare SteamVR frame timing; do not infer that the highest setting is necessarily the smoothest.

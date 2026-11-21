@@ -145,8 +145,11 @@ type activeDevice struct {
 }
 
 type HostService struct {
-	lifecycleMu         sync.Mutex
-	mu                  sync.RWMutex
+	lifecycleMu sync.Mutex
+	mu          sync.RWMutex
+	// poseStateMu isolates the 180 Hz pose path from UI snapshots, device
+	// metadata and log updates guarded by mu.
+	poseStateMu         sync.RWMutex
 	config              HostConfig
 	serverName          string
 	localIPv4           []string
@@ -162,9 +165,9 @@ type HostService struct {
 	wg                  sync.WaitGroup
 	devices             map[string]activeDevice
 	connections         map[net.Conn]struct{}
-	latestPose          *PoseSnapshot
-	packets             uint64
-	lastPacket          time.Time
+	latestPose          *PoseSnapshot // guarded by poseStateMu
+	posePackets         uint64        // guarded by poseStateMu
+	poseLastPacket      time.Time     // guarded by poseStateMu
 	lastError           string
 	logs                []string
 	consoleLogs         bool
@@ -258,11 +261,13 @@ func (s *HostService) Start(config HostConfig) error {
 	s.cancel = cancel
 	s.devices = make(map[string]activeDevice)
 	s.connections = make(map[net.Conn]struct{})
-	s.latestPose = nil
-	s.packets = 0
-	s.lastPacket = time.Time{}
 	s.lastError = ""
 	s.mu.Unlock()
+	s.poseStateMu.Lock()
+	s.latestPose = nil
+	s.posePackets = 0
+	s.poseLastPacket = time.Time{}
+	s.poseStateMu.Unlock()
 
 	s.addLog(fmt.Sprintf("Host started on %s | TCP %d | UDP discovery %d | UDP pose %d", config.ListenAddress, config.ControlPort, config.DiscoveryPort, config.PosePort))
 	for _, ip := range localIPs {
@@ -346,9 +351,11 @@ func (s *HostService) Stop() {
 	s.cancel = nil
 	s.devices = make(map[string]activeDevice)
 	s.connections = make(map[net.Conn]struct{})
-	s.latestPose = nil
-	s.lastPacket = time.Time{}
 	s.mu.Unlock()
+	s.poseStateMu.Lock()
+	s.latestPose = nil
+	s.poseLastPacket = time.Time{}
+	s.poseStateMu.Unlock()
 
 	if cancel != nil {
 		cancel()
@@ -373,7 +380,6 @@ func (s *HostService) Snapshot() HostSnapshot {
 		Running: running, ServerName: s.serverName, ListenAddress: s.config.ListenAddress,
 		LocalIPv4: append([]string(nil), s.localIPv4...), DiscoveryPort: s.config.DiscoveryPort,
 		ControlPort: s.config.ControlPort, PosePort: s.config.PosePort,
-		LatestPose: s.latestPose, PacketsReceived: s.packets,
 		LastError: s.lastError,
 	}
 	if !s.steamVRHeartbeatAt.IsZero() {
@@ -395,11 +401,22 @@ func (s *HostService) Snapshot() HostSnapshot {
 	if running {
 		snapshot.Uptime = time.Since(s.startedAt).Round(time.Second).String()
 	}
-	if !s.lastPacket.IsZero() {
-		snapshot.LastPacketAt = s.lastPacket.Format(time.RFC3339)
-	}
 	snapshot.Logs = append([]string(nil), s.logs...)
 	s.mu.RUnlock()
+
+	// Do not nest poseStateMu under mu. The real-time pose writer never needs
+	// the general service mutex, and status/log rendering cannot stall it.
+	s.poseStateMu.RLock()
+	if s.latestPose != nil {
+		copyPose := *s.latestPose
+		snapshot.LatestPose = &copyPose
+	}
+	snapshot.PacketsReceived = s.posePackets
+	if !s.poseLastPacket.IsZero() {
+		snapshot.LastPacketAt = s.poseLastPacket.Format(time.RFC3339)
+	}
+	s.poseStateMu.RUnlock()
+
 	sort.Slice(snapshot.ConnectedDevices, func(i, j int) bool {
 		return snapshot.ConnectedDevices[i].ConnectedAt < snapshot.ConnectedDevices[j].ConnectedAt
 	})
@@ -410,14 +427,14 @@ func (s *HostService) Snapshot() HostSnapshot {
 // OpenGL viewer can refresh the HMD model without polling device and log
 // metadata on every animation update.
 func (s *HostService) PoseFrame() PoseFrameSnapshot {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.poseStateMu.RLock()
+	defer s.poseStateMu.RUnlock()
 	var latest *PoseSnapshot
 	if s.latestPose != nil {
 		copyPose := *s.latestPose
 		latest = &copyPose
 	}
-	return PoseFrameSnapshot{LatestPose: latest, PacketsReceived: s.packets}
+	return PoseFrameSnapshot{LatestPose: latest, PacketsReceived: s.posePackets}
 }
 
 func (s *HostService) acceptLoop(ctx context.Context, listener net.Listener) {
@@ -680,19 +697,19 @@ func (s *HostService) poseLoop(ctx context.Context, conn *net.UDPConn) {
 
 		yaw, pitch, roll := quaternionEuler(latest.pose.X, latest.pose.Y, latest.pose.Z, latest.pose.W)
 		lockWaitStarted := time.Now()
-		s.mu.Lock()
+		s.poseStateMu.Lock()
 		if wait := time.Since(lockWaitStarted); wait > maxPoseStateLockWait {
 			maxPoseStateLockWait = wait
 		}
-		s.packets += uint64(len(batch))
-		s.lastPacket = latest.receivedAt
+		s.posePackets += uint64(len(batch))
+		s.poseLastPacket = latest.receivedAt
 		s.latestPose = &PoseSnapshot{
 			Sequence: latest.pose.Sequence, TimestampNs: latest.pose.TimestampNs,
 			X: latest.pose.X, Y: latest.pose.Y, Z: latest.pose.Z, W: latest.pose.W,
 			Yaw: yaw, Pitch: pitch, Roll: roll,
 			Source: latest.remote.IP.String(), ReceivedAt: latest.receivedAt.Format(time.RFC3339Nano),
 		}
-		s.mu.Unlock()
+		s.poseStateMu.Unlock()
 
 		if time.Since(statsStarted) >= 5*time.Second {
 			seconds := time.Since(statsStarted).Seconds()

@@ -1,4 +1,4 @@
-# PhoneVR Host 0.4.16 bundled SteamVR driver
+# PhoneVR Host 0.4.17 bundled SteamVR driver
 
 Executable version is injected from the repository root `VERSION` file during builds.
 
@@ -113,3 +113,7 @@ The PhoneVR OpenVR driver is embedded inside `PhoneVRHost.exe` and `PhoneVRHost-
 At startup, Host checks SteamVR installation and registration. Unless the user has disabled automatic deployment, it copies the embedded driver into a content-versioned directory under `%LOCALAPPDATA%\PhoneVR\SteamVRDriver`, verifies the copied files, and registers the directory through SteamVR's own `bin\win64\vrpathreg.exe`.
 
 Open **SteamVR Driver** from the Host main menu to refresh status, install/repair the embedded driver, or uninstall and disable future auto-deployment. The opt-out marker is stored under `%LOCALAPPDATA%\PhoneVR`; a manual Install / Repair action removes it. Host deletes only files inside its managed driver directory. If a PhoneVR manifest is registered from a user-managed location, Host unregisters it but leaves those files untouched. Restart SteamVR after driver changes.
+
+## SteamVR virtual display refresh
+
+Use **Display Refresh Rate** in the Host main menu to select 60 Hz, 90 Hz, 120 Hz, or Custom (60–120 Hz in 0.1 Hz steps). The default is Custom 72 Hz to preserve the previous timing. The selection is stored at `%LOCALAPPDATA%\PhoneVR\display-refresh.json` and read by the SteamVR driver when it starts. Fully exit and restart SteamVR after changing this value.

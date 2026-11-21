@@ -8,7 +8,7 @@ import (
 	"syscall"
 )
 
-var appVersion = "0.4.16"
+var appVersion = "0.4.17"
 
 func main() {
 	listenAddress := flag.String("listen", "0.0.0.0", "IPv4 address to bind")
@@ -39,6 +39,8 @@ func main() {
 	} else if driverMessage != "" {
 		service.addLog(driverMessage)
 	}
+	refreshConfig := loadDisplayRefreshConfig()
+	service.addLog(fmt.Sprintf("SteamVR virtual display refresh setting: %.1f Hz (%s); restart SteamVR after changing it", refreshConfig.RefreshRateHz, refreshConfig.Mode))
 
 	service.ProbeVideoEncoders(*ffmpegPath)
 

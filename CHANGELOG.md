@@ -1,3 +1,10 @@
+## 0.5.3 - WinUSB open diagnostics and overlapped-handle fix
+
+- Create WinUSB device handles with `FILE_FLAG_OVERLAPPED`, as required by `WinUsb_Initialize`.
+- Report `CreateFileW` and `WinUsb_Initialize` failures as separate stages with the Win32 error code.
+- Add actionable diagnostics for `ERROR_ACCESS_DENIED` without silently changing driver permissions or requiring permanent elevation.
+- Bumped synchronized application, Host, SteamVR driver and AOA accessory metadata to 0.5.3. Android `versionCode` is now 38.
+
 ## 0.5.2 - OEM-independent AOA discovery
 
 - Made WinUSB interface discovery generic: the Host reads each installed USB function's `DeviceInterfaceGUID` / `DeviceInterfaceGUIDs` registration and only enumerates interfaces assigned to the WinUSB service. Interface GUIDs are not hard-coded to a particular PC or phone.

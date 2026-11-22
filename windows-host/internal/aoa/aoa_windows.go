@@ -18,6 +18,8 @@ const (
 	genericReadWrite            = 0xC0000000
 	openExisting                = 3
 	shareReadWrite              = 0x00000003
+	fileAttributeNormal         = 0x00000080
+	fileFlagOverlapped          = 0x40000000
 	invalidHandle               = ^uintptr(0)
 	setupPresent                = 0x00000002
 	setupDeviceInterface        = 0x00000010
@@ -415,21 +417,43 @@ func interfacePath(infoSet uintptr, data *deviceInterfaceData) (string, error) {
 	return path, nil
 }
 
+func windowsCallErrorCode(err error) (uint32, bool) {
+	var code syscall.Errno
+	if !errors.As(err, &code) {
+		return 0, false
+	}
+	return uint32(code), true
+}
+
+func formatWindowsCallError(stage string, err error) error {
+	if code, ok := windowsCallErrorCode(err); ok {
+		return fmt.Errorf("%s failed (Win32 error %d): %w", stage, code, err)
+	}
+	return fmt.Errorf("%s failed: %w", stage, err)
+}
+
 func openWinUSB(path string) (*Device, error) {
 	wide, err := syscall.UTF16PtrFromString(path)
 	if err != nil {
 		return nil, err
 	}
+	// WinUsb_Initialize requires the file handle to be created for overlapped
+	// I/O. Pipe operations may still request synchronous behavior by passing a
+	// nil OVERLAPPED pointer, while the underlying device handle retains the
+	// characteristics required by the WinUSB API.
 	handle, _, callErr := procCreateFile.Call(uintptr(unsafe.Pointer(wide)), genericReadWrite,
-		shareReadWrite, 0, openExisting, 0, 0)
+		shareReadWrite, 0, openExisting, fileAttributeNormal|fileFlagOverlapped, 0)
 	if handle == invalidHandle {
-		return nil, callErr
+		if code, ok := windowsCallErrorCode(callErr); ok && code == 5 {
+			return nil, fmt.Errorf("CreateFileW denied access (Win32 error 5, ERROR_ACCESS_DENIED); check the Host process elevation and the USB interface device ACL: %w", callErr)
+		}
+		return nil, formatWindowsCallError("CreateFileW", callErr)
 	}
 	var iface uintptr
 	result, _, initErr := procWinUsbInitialize.Call(handle, uintptr(unsafe.Pointer(&iface)))
 	if result == 0 {
 		procCloseHandle.Call(handle)
-		return nil, initErr
+		return nil, formatWindowsCallError("WinUsb_Initialize", initErr)
 	}
 	return &Device{handle: handle, iface: iface, id: path}, nil
 }
@@ -458,7 +482,7 @@ func (d *Device) getAOAProtocol() (uint16, error) {
 }
 
 func (d *Device) startAccessoryMode() error {
-	stringsToSend := []string{"VSQ Studio", "PhoneVR", "PhoneVR USB streaming", "0.5.2", "https://github.com/BH2VSQ/PhoneVR", "PhoneVR-Android"}
+	stringsToSend := []string{"VSQ Studio", "PhoneVR", "PhoneVR USB streaming", "0.5.3", "https://github.com/BH2VSQ/PhoneVR", "PhoneVR-Android"}
 	for index, value := range stringsToSend {
 		payload := append([]byte(value), 0)
 		transferred, err := d.controlTransfer(0x40, usbRequestSendString, 0, uint16(index), payload)

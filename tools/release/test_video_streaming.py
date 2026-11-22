@@ -21,6 +21,21 @@ class VideoStreamingIntegrationTests(unittest.TestCase):
         self.assertIn("kVideoCapturePort = 48106", DRIVER)
         self.assertIn("d3dcompiler", CMAKE)
 
+    def test_virtual_display_clock_commits_only_after_vsync_wait(self):
+        wait = DRIVER[DRIVER.index("void WaitForPresent() override") : DRIVER.index("bool GetTimeSinceLastVsync") ]
+        self.assertLess(wait.index("WaitUntilMonotonic(schedule.targetNs)"), wait.index("m_vsyncOriginNs = schedule.targetNs"))
+        self.assertIn("CreateWaitableTimerExW", DRIVER)
+        self.assertIn("std::mutex m_waitMutex", DRIVER)
+        self.assertIn("m_waitCallsWithoutPresent", DRIVER)
+        self.assertIn("VSync[none=", DRIVER)
+        schedule = DRIVER[DRIVER.index("VsyncSchedule ScheduleVirtualVsync") : DRIVER.index("void LogMutexAcquireFailure") ]
+        self.assertIn("m_lastScheduledVsyncNs = target", schedule)
+        self.assertNotIn("m_vsyncOriginNs = target", schedule)
+
+    def test_encoder_backlog_is_bounded_for_low_latency(self):
+        self.assertIn("h264PendingFrameLimit   = 4", ENCODER)
+        self.assertIn('"-async_depth", "2"', ENCODER)
+
     def test_host_uses_loopback_capture_and_android_udp(self):
         self.assertIn("steamVRVideoCapturePort = 48106", HOST_SERVICE)
         self.assertRegex(HOST_SERVICE, r"androidVideoPort\s*=\s*48104")

@@ -32,8 +32,8 @@
 namespace phonevr {
 constexpr uint16_t kPoseBridgePort = 48103;
 constexpr uint32_t kPosePacketSize = 36;
-constexpr uint32_t kEyeWidth = 1200;
-constexpr uint32_t kEyeHeight = 1080;
+constexpr uint32_t kEyeWidth = 800;
+constexpr uint32_t kEyeHeight = 720;
 constexpr uint16_t kVideoCapturePort = 48106;
 constexpr uint16_t kVideoWidth = 1600;
 constexpr uint16_t kVideoHeight = 720;
@@ -126,6 +126,10 @@ struct VirtualDisplayTimingSnapshot {
     uint64_t presentCalls = 0;
     uint64_t waitCalls = 0;
     uint64_t completedFrames = 0;
+    uint64_t waitCallsWithoutPresent = 0;
+    uint64_t vsyncNoneCalls = 0;
+    uint64_t vsyncWaitRenderCalls = 0;
+    uint64_t vsyncNoWaitRenderCalls = 0;
     uint64_t maxPresentNs = 0;
     uint64_t maxWaitNs = 0;
 };
@@ -815,15 +819,26 @@ public:
     void Present(const vr::PresentInfo_t* info, uint32_t infoSize) override {
         ScopedCallbackTiming timing(m_presentCalls, m_maxPresentDurationNs);
         std::lock_guard<std::mutex> lock(m_mutex);
-        if (!info || infoSize < sizeof(vr::PresentInfo_t) || !info->backbufferTextureHandle) {
-            return;
+        if (!info || infoSize < sizeof(vr::PresentInfo_t)) return;
+
+        const double requestedVsyncSeconds =
+            (std::isfinite(info->flVSyncTimeInSeconds) && info->flVSyncTimeInSeconds > 0.0)
+                ? info->flVSyncTimeInSeconds : NowSeconds();
+        m_pendingVsyncTimeNs = static_cast<uint64_t>(requestedVsyncSeconds * 1.0e9);
+        switch (info->vsync) {
+            case vr::VSync_None: m_vsyncNoneCalls.fetch_add(1, std::memory_order_relaxed); break;
+            case vr::VSync_WaitRender: m_vsyncWaitRenderCalls.fetch_add(1, std::memory_order_relaxed); break;
+            case vr::VSync_NoWaitRender: m_vsyncNoWaitRenderCalls.fetch_add(1, std::memory_order_relaxed); break;
+            default: break;
         }
-        if (!m_device || !m_context) return;
+        m_pendingPresent = true;
+        m_lastFrameId = info->nFrameId;
+
+        if (!info->backbufferTextureHandle || !m_device || !m_context) return;
 
         HANDLE sharedHandle = reinterpret_cast<HANDLE>(info->backbufferTextureHandle);
         if (sharedHandle != m_sharedHandle) {
             ReleaseTexture(m_sharedTexture);
-            ReleaseTexture(m_flushTexture);
             m_sharedHandle = sharedHandle;
             HRESULT openResult = m_device->OpenSharedResource(
                 sharedHandle, __uuidof(ID3D11Texture2D), reinterpret_cast<void**>(&m_sharedTexture));
@@ -844,92 +859,100 @@ public:
                               source.SampleDesc.Count, source.ArraySize, source.MipLevels, source.MiscFlags);
                 vr::VRDriverLog()->Log(line);
             }
-            if (!EnsureSyncTexture()) return;
         }
-        if (!m_sharedTexture || !m_flushTexture) return;
-        if (m_captureBridgeReady.load(std::memory_order_acquire) && !m_captureInputTexture) {
-            D3D11_TEXTURE2D_DESC captureSource{};
-            m_sharedTexture->GetDesc(&captureSource);
-            EnsureVideoCaptureResources(captureSource);
-        }
+        if (!m_sharedTexture) return;
 
+        // The compositor has released the shared texture before Present is
+        // called. Acquire without waiting on the compositor thread: a busy
+        // frame is skipped and the next frame will be tried instead.
         IDXGIKeyedMutex* keyedMutex = nullptr;
         const HRESULT mutexQuery = m_sharedTexture->QueryInterface(
             __uuidof(IDXGIKeyedMutex), reinterpret_cast<void**>(&keyedMutex));
         bool mutexAcquired = false;
         if (SUCCEEDED(mutexQuery) && keyedMutex) {
-            // Match Valve's virtual_display sample. A 2 ms timeout was too short
-            // for cross-process compositor scheduling on some GPUs and caused
-            // repeated frame drops/black flashes. Do not wait indefinitely.
-            const HRESULT acquire = keyedMutex->AcquireSync(0, 10);
+            const HRESULT acquire = keyedMutex->AcquireSync(0, 0);
             if (acquire != S_OK) {
                 ++m_mutexAcquireFailures;
                 LogMutexAcquireFailure(acquire);
                 keyedMutex->Release();
-                return; // Drop a contended frame instead of hanging the compositor.
+                return;
             }
             mutexAcquired = true;
         } else if (FAILED(mutexQuery)) {
             LogD3DFailureOnce("QueryInterface(IDXGIKeyedMutex)", mutexQuery, m_loggedMutexQueryFailure);
         }
 
-        // Capture the final SBS backbuffer for the Host video encoder. GPU-side
-        // scaling keeps the readback bounded to 1600x720; a nonblocking triple
-        // staging queue ensures the compositor never waits for network/encoder IO.
-        if (m_captureBridgeReady.load(std::memory_order_acquire) && (!keyedMutex || mutexAcquired) && m_captureInputTexture) CaptureVideoFrameUnlocked(info->nFrameId);
+        // AcquireSync above is the compositor-to-driver handoff. Do not insert
+        // a blocking GPU readback/fence into the compositor callback path.
 
-        // Keep the small GPU completion fence used by Valve's virtual-display sample.
-        const D3D11_BOX syncBox{0, 0, 0, 1, 1, 1};
-        m_context->CopySubresourceRegion(m_flushTexture, 0, 0, 0, 0,
-                                         m_sharedTexture, 0, &syncBox);
-        m_context->Flush();
+        if (m_captureBridgeReady.load(std::memory_order_acquire) && !m_captureResourcesReady) {
+            D3D11_TEXTURE2D_DESC captureSource{};
+            m_sharedTexture->GetDesc(&captureSource);
+            EnsureVideoCaptureResources(captureSource);
+        }
+        if (m_captureBridgeReady.load(std::memory_order_acquire) &&
+            (!keyedMutex || mutexAcquired) && m_captureResourcesReady) {
+            CaptureVideoFrameUnlocked(info->nFrameId);
+            // Submit the capture work without waiting for it. The readback
+            // thread polls staging textures with DO_NOT_WAIT.
+            m_context->Flush();
+        }
 
         if (mutexAcquired) keyedMutex->ReleaseSync(0);
         if (keyedMutex) keyedMutex->Release();
-
-        m_pendingReadback = true;
-        m_lastFrameId = info->nFrameId;
-        m_lastVsyncTimeSeconds = (std::isfinite(info->flVSyncTimeInSeconds) && info->flVSyncTimeInSeconds > 0.0)
-                                     ? info->flVSyncTimeInSeconds : NowSeconds();
     }
 
     void WaitForPresent() override {
         ScopedCallbackTiming timing(m_waitCalls, m_maxWaitDurationNs);
-        std::lock_guard<std::mutex> lock(m_mutex);
-        if (!m_pendingReadback || !m_context || !m_flushTexture) return;
-        D3D11_MAPPED_SUBRESOURCE mapped{};
-        const HRESULT hr = m_context->Map(m_flushTexture, 0, D3D11_MAP_READ, 0, &mapped);
-        if (SUCCEEDED(hr)) {
-            // The small staging readback was queued after the shared-backbuffer
-            // fence copy. Mapping it waits for the preceding GPU work to finish.
-            m_context->Unmap(m_flushTexture, 0);
-            m_pendingReadback = false;
-            m_frameCounter = std::max(m_frameCounter + 1, m_lastFrameId);
-            m_vsyncOriginTimeSeconds = m_lastVsyncTimeSeconds;
-            m_vsyncOriginFrameCounter = m_frameCounter;
-            const uint64_t completed = m_completedFrameCounter.fetch_add(1, std::memory_order_relaxed) + 1;
-            m_timingCompletedFrames.fetch_add(1, std::memory_order_relaxed);
-            if (completed == 1 && vr::VRDriverLog())
-                vr::VRDriverLog()->Log("PhoneVR: first virtual display frame synchronized successfully");
-        } else {
-            m_pendingReadback = false;
-            ++m_mapFailures;
-            LogMapFailure(hr);
+        // The virtual display has one scan-out clock. Serialize waiters so
+        // overlapping runtime callbacks cannot reserve the same clock tick.
+        std::lock_guard<std::mutex> waitLock(m_waitMutex);
+        uint64_t requestedVsyncNs = 0;
+        {
+            std::lock_guard<std::mutex> lock(m_mutex);
+            if (!m_pendingPresent) {
+                m_waitCallsWithoutPresent.fetch_add(1, std::memory_order_relaxed);
+                return;
+            }
+            requestedVsyncNs = m_pendingVsyncTimeNs;
+            m_pendingPresent = false;
         }
+
+        // There is no physical scan-out device on a wireless HMD. AcquireSync
+        // in Present confirms the compositor has released its shared backbuffer;
+        // WaitForPresent then advances the emulated display clock at 72 Hz.
+        const VsyncSchedule schedule = ScheduleVirtualVsync(requestedVsyncNs);
+        WaitUntilMonotonic(schedule.targetNs);
+
+        // Publish the virtual-vsync origin only after the scheduled event has
+        // actually been reached. Publishing a future timestamp before waiting
+        // makes GetTimeSinceLastVsync report an event that has not happened yet;
+        // SteamVR can then run its compositor clock ahead of the display.
+        {
+            std::lock_guard<std::mutex> timingLock(m_timingMutex);
+            if (schedule.targetNs >= m_vsyncOriginNs) {
+                m_vsyncOriginNs = schedule.targetNs;
+                m_vsyncOriginFrameCounter += schedule.frameAdvance;
+            }
+        }
+
+        const uint64_t completed = m_completedFrameCounter.fetch_add(1, std::memory_order_relaxed) + 1;
+        m_timingCompletedFrames.fetch_add(1, std::memory_order_relaxed);
+        if (completed == 1 && vr::VRDriverLog())
+            vr::VRDriverLog()->Log("PhoneVR: first virtual display frame synchronized to the 72 Hz clock");
     }
 
     bool GetTimeSinceLastVsync(float* seconds, uint64_t* frameCounter) override {
         if (!seconds || !frameCounter) return false;
-        std::lock_guard<std::mutex> lock(m_mutex);
-        if (m_frameCounter == 0 || m_vsyncOriginTimeSeconds <= 0.0) return false;
-        const double elapsed = std::max(0.0, NowSeconds() - m_vsyncOriginTimeSeconds);
-        const uint64_t elapsedVsyncs = static_cast<uint64_t>(elapsed / DisplayFrameIntervalSeconds());
-        const double lastVsyncOffset = elapsed -
-            static_cast<double>(elapsedVsyncs) * DisplayFrameIntervalSeconds();
-        const uint64_t virtualFrame = m_vsyncOriginFrameCounter + elapsedVsyncs;
-        m_frameCounter = std::max(m_frameCounter, virtualFrame);
-        *seconds = static_cast<float>(lastVsyncOffset);
-        *frameCounter = m_frameCounter;
+        std::lock_guard<std::mutex> lock(m_timingMutex);
+        if (m_vsyncOriginNs == 0) return false;
+        const uint64_t now = MonotonicNowNs();
+        const uint64_t elapsed = now >= m_vsyncOriginNs ? now - m_vsyncOriginNs : 0;
+        const uint64_t intervalNs = static_cast<uint64_t>(1.0e9 / gDisplayRefreshRateHz);
+        const uint64_t elapsedVsyncs = elapsed / intervalNs;
+        const uint64_t lastVsyncOffset = elapsed - elapsedVsyncs * intervalNs;
+        *seconds = static_cast<float>(lastVsyncOffset / 1.0e9);
+        *frameCounter = m_vsyncOriginFrameCounter + elapsedVsyncs;
         return true;
     }
 
@@ -939,6 +962,10 @@ public:
         snapshot.presentCalls = m_presentCalls.exchange(0, std::memory_order_relaxed);
         snapshot.waitCalls = m_waitCalls.exchange(0, std::memory_order_relaxed);
         snapshot.completedFrames = m_timingCompletedFrames.exchange(0, std::memory_order_relaxed);
+        snapshot.waitCallsWithoutPresent = m_waitCallsWithoutPresent.exchange(0, std::memory_order_relaxed);
+        snapshot.vsyncNoneCalls = m_vsyncNoneCalls.exchange(0, std::memory_order_relaxed);
+        snapshot.vsyncWaitRenderCalls = m_vsyncWaitRenderCalls.exchange(0, std::memory_order_relaxed);
+        snapshot.vsyncNoWaitRenderCalls = m_vsyncNoWaitRenderCalls.exchange(0, std::memory_order_relaxed);
         snapshot.maxPresentNs = m_maxPresentDurationNs.exchange(0, std::memory_order_relaxed);
         snapshot.maxWaitNs = m_maxWaitDurationNs.exchange(0, std::memory_order_relaxed);
         return snapshot;
@@ -963,44 +990,94 @@ private:
         logged = true;
         LogD3DFailure(operation, hr);
     }
-    bool EnsureSyncTexture() {
-        if (!m_sharedTexture || !m_device) return false;
-        D3D11_TEXTURE2D_DESC source{};
-        m_sharedTexture->GetDesc(&source);
-        if (source.Width == 0 || source.Height == 0 || source.SampleDesc.Count != 1) {
-            if (vr::VRDriverLog()) vr::VRDriverLog()->Log("PhoneVR: unsupported compositor backbuffer dimensions or sample count");
-            return false;
-        }
-        // D3D11 staging texture used solely as a GPU completion fence. The
-        // actual source rectangle copied into it is 1x1, as in Valve's sample.
-        constexpr UINT syncWidth = 32;
-        constexpr UINT syncHeight = 32;
-        if (m_flushTexture) {
-            D3D11_TEXTURE2D_DESC current{};
-            m_flushTexture->GetDesc(&current);
-            if (current.Width != syncWidth || current.Height != syncHeight || current.Format != source.Format)
-                ReleaseTexture(m_flushTexture);
-        }
-        if (!m_flushTexture) {
-            D3D11_TEXTURE2D_DESC flush{};
-            flush.Width = syncWidth;
-            flush.Height = syncHeight;
-            flush.MipLevels = 1;
-            flush.ArraySize = 1;
-            flush.Format = source.Format;
-            flush.SampleDesc.Count = 1;
-            flush.Usage = D3D11_USAGE_STAGING;
-            flush.BindFlags = 0;
-            flush.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
-            flush.MiscFlags = 0;
-            const HRESULT hr = m_device->CreateTexture2D(&flush, nullptr, &m_flushTexture);
-            if (FAILED(hr) || !m_flushTexture) {
-                LogD3DFailureOnce("CreateTexture2D(sync staging)", hr, m_loggedSyncTextureFailure);
-                return false;
+    struct VsyncSchedule {
+        uint64_t targetNs = 0;
+        uint64_t frameAdvance = 1;
+    };
+
+    static HANDLE HighResolutionTimer() {
+        struct ThreadTimer {
+            HANDLE handle = CreateWaitableTimerExW(
+                nullptr, nullptr, 0x00000002UL, TIMER_ALL_ACCESS); // CREATE_WAITABLE_TIMER_HIGH_RESOLUTION
+            ThreadTimer() {
+                if (!handle) handle = CreateWaitableTimerExW(nullptr, nullptr, 0, TIMER_ALL_ACCESS);
             }
-            m_loggedSyncTextureFailure = false;
+            ~ThreadTimer() { if (handle) CloseHandle(handle); }
+        };
+        static thread_local ThreadTimer timer;
+        return timer.handle;
+    }
+
+    static void WaitUntilMonotonic(uint64_t targetNs) {
+        HANDLE timer = HighResolutionTimer();
+        for (;;) {
+            const uint64_t now = MonotonicNowNs();
+            if (now >= targetNs) return;
+            const uint64_t remaining = targetNs - now;
+
+            // Use a high-resolution waitable timer for the coarse part of the
+            // wait, then yield-spin over the final 0.5 ms. Sleep(1) can round
+            // up to the system timer quantum (often 15.6 ms), which is longer
+            // than the 13.89 ms frame budget at 72 Hz.
+            if (remaining > 1500000ULL && timer) {
+                const uint64_t sleepNs = remaining - 500000ULL;
+                LARGE_INTEGER due{};
+                due.QuadPart = -static_cast<LONGLONG>((sleepNs + 99ULL) / 100ULL);
+                if (SetWaitableTimer(timer, &due, 0, nullptr, nullptr, FALSE)) {
+                    if (WaitForSingleObject(timer, INFINITE) == WAIT_OBJECT_0) continue;
+                }
+            } else if (remaining > 5000000ULL) {
+                Sleep(1);
+            } else {
+                SwitchToThread();
+            }
         }
-        return m_flushTexture != nullptr;
+    }
+
+    VsyncSchedule ScheduleVirtualVsync(uint64_t requestedNs) {
+        const uint64_t now = MonotonicNowNs();
+        const uint64_t intervalNs = static_cast<uint64_t>(1.0e9 / gDisplayRefreshRateHz);
+        constexpr uint64_t kMaximumAcceptedClockSkewNs = 1000000000ULL;
+        std::lock_guard<std::mutex> lock(m_timingMutex);
+
+        uint64_t target = 0;
+        uint64_t frameAdvance = 1;
+        if (m_lastScheduledVsyncNs == 0) {
+            // PresentInfo reports the compositor's VSync event for this frame.
+            // The wireless display can scan out at the next virtual interval.
+            // Ignore timestamps from a different clock domain.
+            const bool timestampIsComparable = requestedNs > 0 &&
+                (requestedNs > now
+                    ? requestedNs - now <= kMaximumAcceptedClockSkewNs
+                    : now - requestedNs <= kMaximumAcceptedClockSkewNs);
+            const uint64_t base = timestampIsComparable ? requestedNs : now;
+            target = base + intervalNs;
+            if (target <= now) {
+                const uint64_t missed = (now - target) / intervalNs + 1;
+                target += missed * intervalNs;
+                frameAdvance += missed;
+            }
+        } else {
+            target = m_lastScheduledVsyncNs + intervalNs;
+            if (target <= now) {
+                const uint64_t missed = (now - target) / intervalNs + 1;
+                target += missed * intervalNs;
+                frameAdvance += missed;
+            }
+        }
+
+        // A stale reservation must never make the compositor wait several
+        // display periods. Rebase to one interval from now if it drifted too far
+        // into the future. The published frame counter remains monotonic.
+        if (target > now + intervalNs * 2) {
+            target = now + intervalNs;
+            frameAdvance = 1;
+        }
+
+        // Reserve the target for the next WaitForPresent call, but do not expose
+        // it as the last completed VSync until WaitForPresent has reached it.
+        m_lastScheduledVsyncNs = target;
+        return VsyncSchedule{target, frameAdvance};
     }
 
     void LogMutexAcquireFailure(HRESULT hr) {
@@ -1013,19 +1090,6 @@ private:
                       static_cast<unsigned long long>(m_mutexAcquireFailures), static_cast<unsigned>(hr));
         if (vr::VRDriverLog()) vr::VRDriverLog()->Log(line);
         m_mutexAcquireFailures = 0;
-    }
-
-    void LogMapFailure(HRESULT hr) {
-        const uint64_t now = MonotonicNowNs();
-        if (now - m_lastMapFailureLogNs < 2000000000ULL) return;
-        m_lastMapFailureLogNs = now;
-        HRESULT removedReason = m_device ? m_device->GetDeviceRemovedReason() : E_FAIL;
-        char line[224]{};
-        std::snprintf(line, sizeof(line),
-                      "PhoneVR: GPU completion Map failed (HRESULT 0x%08X, device removed reason 0x%08X, failures %llu)",
-                      static_cast<unsigned>(hr), static_cast<unsigned>(removedReason),
-                      static_cast<unsigned long long>(m_mapFailures));
-        if (vr::VRDriverLog()) vr::VRDriverLog()->Log(line);
     }
 
     struct CaptureSlot {
@@ -1060,8 +1124,38 @@ float4 main(float4 position : SV_POSITION, float2 uv : TEXCOORD0) : SV_TARGET {
             return false;
         }
         std::lock_guard<std::mutex> lock(m_captureResourcesMutex);
-        if (m_captureInputTexture && m_captureOutputTexture && m_captureSrv && m_captureRtv) return true;
+        if (m_captureResourcesReady) return true;
         ReleaseVideoCaptureResourcesUnlocked();
+
+        // The HMD render target now matches the encoded SBS profile. In that
+        // common path, copy directly into the CPU-readable staging ring instead
+        // of doing a full-size input copy, shader draw, and output copy.
+        if (source.Width == kVideoWidth && source.Height == kVideoHeight &&
+            source.Format == DXGI_FORMAT_B8G8R8A8_UNORM) {
+            D3D11_TEXTURE2D_DESC staging = source;
+            staging.MipLevels = 1;
+            staging.ArraySize = 1;
+            staging.SampleDesc.Count = 1;
+            staging.Usage = D3D11_USAGE_STAGING;
+            staging.BindFlags = 0;
+            staging.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+            staging.MiscFlags = 0;
+            for (auto& slot : m_captureSlots) {
+                const HRESULT createResult = m_device->CreateTexture2D(&staging, nullptr, &slot.staging);
+                if (FAILED(createResult) || !slot.staging) {
+                    LogD3DFailure("CreateTexture2D(direct video staging)", createResult);
+                    ReleaseVideoCaptureResourcesUnlocked();
+                    return false;
+                }
+            }
+            m_captureDirectCopy = true;
+            m_captureResourcesReady = true;
+            m_captureWidth = source.Width;
+            m_captureHeight = source.Height;
+            if (vr::VRDriverLog())
+                vr::VRDriverLog()->Log("PhoneVR: direct BGRA capture path enabled; render target matches 1600x720 stream");
+            return true;
+        }
 
         D3D11_TEXTURE2D_DESC input = source;
         input.MipLevels = 1; input.ArraySize = 1; input.Usage = D3D11_USAGE_DEFAULT;
@@ -1105,6 +1199,8 @@ float4 main(float4 position : SV_POSITION, float2 uv : TEXCOORD0) : SV_TARGET {
             if (FAILED(hr)) { LogD3DFailure("CreateTexture2D(video staging)", hr); ReleaseVideoCaptureResourcesUnlocked(); return false; }
         }
         m_captureWidth = source.Width; m_captureHeight = source.Height; m_loggedVideoFormatFailure = false;
+        m_captureDirectCopy = false;
+        m_captureResourcesReady = true;
         if (vr::VRDriverLog()) {
             char line[192]{}; std::snprintf(line, sizeof(line), "PhoneVR: H.264 capture resources ready: source %ux%u -> SBS %ux%u @ %u FPS", source.Width, source.Height, kVideoWidth, kVideoHeight, kVideoFrameRate);
             vr::VRDriverLog()->Log(line);
@@ -1113,7 +1209,7 @@ float4 main(float4 position : SV_POSITION, float2 uv : TEXCOORD0) : SV_TARGET {
     }
 
     void CaptureVideoFrameUnlocked(uint64_t frameId) {
-        if (!m_captureRunning.load(std::memory_order_acquire) || !m_captureInputTexture || !m_captureOutputTexture) return;
+        if (!m_captureRunning.load(std::memory_order_acquire) || !m_captureResourcesReady) return;
         const uint64_t now = MonotonicNowNs();
         const uint64_t minimumInterval = 1000000000ULL / kVideoFrameRate;
         if (m_lastVideoCaptureNs && now - m_lastVideoCaptureNs < minimumInterval) return;
@@ -1127,18 +1223,22 @@ float4 main(float4 position : SV_POSITION, float2 uv : TEXCOORD0) : SV_TARGET {
         }
         if (slotIndex == kVideoCaptureSlots) { m_videoFramesSkipped.fetch_add(1, std::memory_order_relaxed); return; }
         auto& slot = m_captureSlots[slotIndex];
-        m_context->CopyResource(m_captureInputTexture, m_sharedTexture);
-        ID3D11RenderTargetView* target = m_captureRtv;
-        m_context->OMSetRenderTargets(1, &target, nullptr);
-        D3D11_VIEWPORT viewport{}; viewport.Width = static_cast<float>(kVideoWidth); viewport.Height = static_cast<float>(kVideoHeight); viewport.MaxDepth = 1.0f;
-        m_context->RSSetViewports(1, &viewport);
-        m_context->IASetInputLayout(nullptr); m_context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-        m_context->VSSetShader(m_captureVS, nullptr, 0); m_context->PSSetShader(m_capturePS, nullptr, 0);
-        m_context->PSSetShaderResources(0, 1, &m_captureSrv); m_context->PSSetSamplers(0, 1, &m_captureSampler);
-        m_context->Draw(3, 0);
-        ID3D11ShaderResourceView* nullSrv = nullptr; m_context->PSSetShaderResources(0, 1, &nullSrv);
-        ID3D11RenderTargetView* nullRtv = nullptr; m_context->OMSetRenderTargets(1, &nullRtv, nullptr);
-        m_context->CopyResource(slot.staging, m_captureOutputTexture);
+        if (m_captureDirectCopy) {
+            m_context->CopyResource(slot.staging, m_sharedTexture);
+        } else {
+            m_context->CopyResource(m_captureInputTexture, m_sharedTexture);
+            ID3D11RenderTargetView* target = m_captureRtv;
+            m_context->OMSetRenderTargets(1, &target, nullptr);
+            D3D11_VIEWPORT viewport{}; viewport.Width = static_cast<float>(kVideoWidth); viewport.Height = static_cast<float>(kVideoHeight); viewport.MaxDepth = 1.0f;
+            m_context->RSSetViewports(1, &viewport);
+            m_context->IASetInputLayout(nullptr); m_context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+            m_context->VSSetShader(m_captureVS, nullptr, 0); m_context->PSSetShader(m_capturePS, nullptr, 0);
+            m_context->PSSetShaderResources(0, 1, &m_captureSrv); m_context->PSSetSamplers(0, 1, &m_captureSampler);
+            m_context->Draw(3, 0);
+            ID3D11ShaderResourceView* nullSrv = nullptr; m_context->PSSetShaderResources(0, 1, &nullSrv);
+            ID3D11RenderTargetView* nullRtv = nullptr; m_context->OMSetRenderTargets(1, &nullRtv, nullptr);
+            m_context->CopyResource(slot.staging, m_captureOutputTexture);
+        }
         slot.frameId = static_cast<uint32_t>(frameId); slot.timestampNs = now;
         {
             std::lock_guard<std::mutex> queueLock(m_captureQueueMutex);
@@ -1288,6 +1388,10 @@ float4 main(float4 position : SV_POSITION, float2 uv : TEXCOORD0) : SV_TARGET {
                 } else if (hr == DXGI_ERROR_WAS_STILL_DRAWING) {
                     mapPending = true;
                     m_videoReadbackPending.fetch_add(1, std::memory_order_relaxed);
+                    // Keep the resource lock until the slot is back in the
+                    // queue; otherwise Present could reuse it in the gap.
+                    std::lock_guard<std::mutex> queueLock(m_captureQueueMutex);
+                    m_captureQueue.push_front(slotIndex);
                 } else {
                     m_videoReadbackFailures.fetch_add(1, std::memory_order_relaxed);
                     slot.busy.store(false, std::memory_order_release);
@@ -1295,10 +1399,6 @@ float4 main(float4 position : SV_POSITION, float2 uv : TEXCOORD0) : SV_TARGET {
             }
 
             if (mapPending) {
-                {
-                    std::lock_guard<std::mutex> queueLock(m_captureQueueMutex);
-                    m_captureQueue.push_front(slotIndex);
-                }
                 MaybeLogVideoCaptureStats(true, lastStatsNs);
                 std::this_thread::sleep_for(std::chrono::milliseconds(1));
                 continue;
@@ -1342,6 +1442,8 @@ float4 main(float4 position : SV_POSITION, float2 uv : TEXCOORD0) : SV_TARGET {
     }
 
     void ReleaseVideoCaptureResourcesUnlocked() {
+        m_captureResourcesReady = false;
+        m_captureDirectCopy = false;
         for (auto& slot : m_captureSlots) { if (slot.staging) { slot.staging->Release(); slot.staging = nullptr; } slot.busy.store(false); }
         if (m_captureSampler) { m_captureSampler->Release(); m_captureSampler = nullptr; }
         if (m_capturePS) { m_capturePS->Release(); m_capturePS = nullptr; }
@@ -1358,45 +1460,49 @@ float4 main(float4 position : SV_POSITION, float2 uv : TEXCOORD0) : SV_TARGET {
 
     void ShutdownUnlocked() {
         ReleaseVideoCaptureResources();
-        m_pendingReadback = false;
+        m_pendingPresent = false;
         m_sharedHandle = nullptr;
         ReleaseTexture(m_sharedTexture);
-        ReleaseTexture(m_flushTexture);
         if (m_context) { m_context->ClearState(); m_context->Flush(); m_context->Release(); m_context = nullptr; }
         if (m_device) { m_device->Release(); m_device = nullptr; }
         m_adapterLuid = 0;
-        m_lastVsyncTimeSeconds = 0.0;
-        m_vsyncOriginTimeSeconds = 0.0;
+        m_pendingVsyncTimeNs = 0;
         m_lastFrameId = 0;
-        m_frameCounter = 0;
-        m_vsyncOriginFrameCounter = 0;
+        {
+            std::lock_guard<std::mutex> timingLock(m_timingMutex);
+            m_vsyncOriginNs = 0;
+            m_vsyncOriginFrameCounter = 0;
+            m_lastScheduledVsyncNs = 0;
+        }
         m_completedFrameCounter.store(0, std::memory_order_relaxed);
     }
 
     mutable std::mutex m_mutex;
+    std::mutex m_waitMutex;
     ID3D11Device* m_device = nullptr;
     ID3D11DeviceContext* m_context = nullptr;
     ID3D11Texture2D* m_sharedTexture = nullptr;
-    ID3D11Texture2D* m_flushTexture = nullptr;
     HANDLE m_sharedHandle = nullptr;
     uint64_t m_adapterLuid = 0;
     uint64_t m_lastFrameId = 0;
-    uint64_t m_frameCounter = 0;
-    double m_lastVsyncTimeSeconds = 0.0;
-    double m_vsyncOriginTimeSeconds = 0.0;
+    uint64_t m_pendingVsyncTimeNs = 0;
+    bool m_pendingPresent = false;
+    std::mutex m_timingMutex;
+    uint64_t m_vsyncOriginNs = 0;
     uint64_t m_vsyncOriginFrameCounter = 0;
-    bool m_pendingReadback = false;
+    uint64_t m_lastScheduledVsyncNs = 0;
     bool m_loggedOpenFailure = false;
-    bool m_loggedSyncTextureFailure = false;
     bool m_loggedMutexQueryFailure = false;
     uint64_t m_mutexAcquireFailures = 0;
-    uint64_t m_mapFailures = 0;
     uint64_t m_lastMutexFailureLogNs = 0;
-    uint64_t m_lastMapFailureLogNs = 0;
     std::atomic<uint64_t> m_completedFrameCounter{0};
     std::atomic<uint64_t> m_presentCalls{0};
     std::atomic<uint64_t> m_waitCalls{0};
     std::atomic<uint64_t> m_timingCompletedFrames{0};
+    std::atomic<uint64_t> m_waitCallsWithoutPresent{0};
+    std::atomic<uint64_t> m_vsyncNoneCalls{0};
+    std::atomic<uint64_t> m_vsyncWaitRenderCalls{0};
+    std::atomic<uint64_t> m_vsyncNoWaitRenderCalls{0};
     std::atomic<uint64_t> m_maxPresentDurationNs{0};
     std::atomic<uint64_t> m_maxWaitDurationNs{0};
     std::mutex m_captureResourcesMutex;
@@ -1406,6 +1512,8 @@ float4 main(float4 position : SV_POSITION, float2 uv : TEXCOORD0) : SV_TARGET {
     std::array<CaptureSlot, kVideoCaptureSlots> m_captureSlots{};
     ID3D11Texture2D* m_captureInputTexture = nullptr;
     ID3D11Texture2D* m_captureOutputTexture = nullptr;
+    bool m_captureDirectCopy = false;
+    bool m_captureResourcesReady = false;
     ID3D11ShaderResourceView* m_captureSrv = nullptr;
     ID3D11RenderTargetView* m_captureRtv = nullptr;
     ID3D11VertexShader* m_captureVS = nullptr;
@@ -1608,14 +1716,18 @@ public:
                 ? 5.0 : static_cast<double>(now - m_lastDisplayDiagnosticsNs) / 1.0e9;
             m_lastDisplayDiagnosticsNs = now;
             const auto timing = m_redirect->TakeTimingSnapshot();
-            char line[384]{};
+            char line[512]{};
             std::snprintf(line, sizeof(line),
-                          "PhoneVR: virtual display active=%s GetComponent=%llu/%llu Present=%.1fHz WaitForPresent=%.1fHz completed=%.1fHz max-Present=%.2fms max-WaitForPresent=%.2fms refresh=%.1fHz",
+                          "PhoneVR: virtual display active=%s GetComponent=%llu/%llu Present=%.1fHz WaitForPresent=%.1fHz completed=%.1fHz early-wait=%llu VSync[none=%llu wait=%llu nowait=%llu] max-Present=%.2fms max-WaitForPresent=%.2fms refresh=%.1fHz",
                           m_redirect->IsActive() ? "yes" : "no",
                           static_cast<unsigned long long>(m_redirect->ComponentQueryCount()),
                           static_cast<unsigned long long>(m_redirect->ComponentMatchCount()),
                           timing.presentCalls / intervalSeconds, timing.waitCalls / intervalSeconds,
                           timing.completedFrames / intervalSeconds,
+                          static_cast<unsigned long long>(timing.waitCallsWithoutPresent),
+                          static_cast<unsigned long long>(timing.vsyncNoneCalls),
+                          static_cast<unsigned long long>(timing.vsyncWaitRenderCalls),
+                          static_cast<unsigned long long>(timing.vsyncNoWaitRenderCalls),
                           timing.maxPresentNs / 1.0e6, timing.maxWaitNs / 1.0e6,
                           gDisplayRefreshRateHz);
             if (vr::VRDriverLog()) vr::VRDriverLog()->Log(line);

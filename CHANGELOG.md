@@ -1,3 +1,12 @@
+## 0.4.19 - Virtual VSync stability and low-latency follow-up
+
+- Corrected virtual-vsync publication order: `GetTimeSinceLastVsync` sees a VSync only after `WaitForPresent` reaches it. The scheduler now maintains a bounded 72 Hz timeline, advances the virtual frame counter across missed intervals, and serializes wait callbacks.
+- Added `early-wait` and `VSync_None`/`VSync_WaitRender`/`VSync_NoWaitRender` counters to the driver timing line so runtime callback pairing and pacing mode are observable.
+- Replaced coarse `Sleep(1)` timing with a high-resolution Windows waitable timer when supported, followed by a short yield-spin.
+- Reduced the Host's unmatched H.264 timestamp backlog from 12 to 4 frames (about 67 ms at 60 FPS). QSV async depth remains 2 to preserve the throughput measured on the target PC.
+- Confirmed that the current HMD render target is already 1600x720 SBS, matching the encoded stream; this revision does not change eye resolution.
+- Go tests, race tests, vet, Windows/amd64 Host cross-build and 44 Python release tests pass. Native MSVC driver compilation and target-PC/Android runtime latency validation remain pending.
+
 ## 0.4.19 - QSV output stall and nonblocking capture readback follow-up
 
 - Explicitly request NV12 for hardware H.264 encoding, retain YUV420P for software encoders, and use QSV-native AUD insertion.

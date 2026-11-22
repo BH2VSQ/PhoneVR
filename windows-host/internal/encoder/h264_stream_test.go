@@ -90,6 +90,7 @@ func TestH264EncoderSessionEmitsAnnexBAccessUnitsWhenFFmpegAvailable(t *testing.
 	if err != nil {
 		t.Skipf("No locally usable H.264 encoder session: %v", err)
 	}
+	var receivedFrames []received
 	for i := 0; i < 5; i++ {
 		frame := make([]byte, 160*90*4)
 		for j := 0; j < len(frame); j += 4 {
@@ -98,20 +99,37 @@ func TestH264EncoderSessionEmitsAnnexBAccessUnitsWhenFFmpegAvailable(t *testing.
 			frame[j+2] = byte(255 - i*23)
 			frame[j+3] = 255
 		}
-		if err := session.WriteFrame(frame, uint64(i+1)*33_333_333); err != nil {
-			session.Close()
-			t.Fatal(err)
+		for {
+			err := session.WriteFrame(frame, uint64(i+1)*33_333_333)
+			if err == nil {
+				break
+			}
+			if !errors.Is(err, ErrH264Backpressure) {
+				session.Close()
+				t.Fatal(err)
+			}
+			// The four-frame timestamp cap is intentional. Wait for an encoded
+			// access unit to retire one timestamp before submitting another.
+			select {
+			case output := <-frames:
+				receivedFrames = append(receivedFrames, output)
+			case <-ctx.Done():
+				session.Close()
+				t.Fatal("timed out waiting for low-latency encoder backpressure to clear")
+			}
 		}
 	}
 	session.Close()
 	close(frames)
-	count := 0
+	for output := range frames {
+		receivedFrames = append(receivedFrames, output)
+	}
+	count := len(receivedFrames)
 	keyFound := false
-	for frame := range frames {
+	for _, frame := range receivedFrames {
 		if len(frame.data) < 8 || !bytes.Contains(frame.data, []byte{0, 0, 1}) && !bytes.Contains(frame.data, []byte{0, 0, 0, 1}) {
 			t.Fatal("encoder output is not an Annex-B H.264 access unit")
 		}
-		count++
 		keyFound = keyFound || frame.key
 	}
 	if count < 3 {
@@ -128,7 +146,7 @@ func TestRawH264EncoderArgsUseHardwareFormatsAndBoundedQSVQueue(t *testing.T) {
 		t.Fatalf("expected NV12 hardware input and low-latency mux flushing, args: %s", nvenc)
 	}
 	qsv := strings.Join(rawH264EncoderArgs(Capability{Name: "h264_qsv", Codec: CodecH264, Backend: BackendQSV, Hardware: true}, 1600, 720, 60), " ")
-	for _, option := range []string{"-async_depth 4", "-low_delay_brc 1", "-pix_fmt nv12", "-bf 0", "-aud 1"} {
+	for _, option := range []string{"-async_depth 2", "-low_delay_brc 1", "-pix_fmt nv12", "-bf 0", "-aud 1"} {
 		if !strings.Contains(qsv, option) {
 			t.Fatalf("QSV args missing %q: %s", option, qsv)
 		}
@@ -136,11 +154,11 @@ func TestRawH264EncoderArgsUseHardwareFormatsAndBoundedQSVQueue(t *testing.T) {
 	if strings.Contains(qsv, "-pix_fmt yuv420p") || strings.Contains(qsv, "-fflags nobuffer") || strings.Contains(qsv, "h264_metadata") {
 		t.Fatalf("QSV args still request an incompatible output format or discard startup buffering: %s", qsv)
 	}
-	if !strings.Contains(qsv, "-async_depth 4") {
-		t.Fatalf("QSV queue depth must allow hardware parallelism: %s", qsv)
+	if !strings.Contains(qsv, "-async_depth 2") {
+		t.Fatalf("QSV async depth should stay shallow for live VR: %s", qsv)
 	}
-	if h264PendingFrameLimit < 8 || h264PendingFrameLimit > 32 {
-		t.Fatalf("unexpected pending frame backlog limit: %d", h264PendingFrameLimit)
+	if h264PendingFrameLimit != 4 {
+		t.Fatalf("expected a four-frame low-latency timestamp bound, got %d", h264PendingFrameLimit)
 	}
 }
 

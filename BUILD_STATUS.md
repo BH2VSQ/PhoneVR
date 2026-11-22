@@ -1,5 +1,39 @@
 # Build status
 
+Revision: PhoneVR 0.4.19 virtual VSync stability and low-latency follow-up, 2026-11-22
+
+## Changes in this revision
+
+- Fixed virtual VSync publication timing. The last completed VSync timestamp and virtual frame counter are committed only after `WaitForPresent` reaches the scheduled event.
+- Bounded the virtual refresh scheduler to a 72 Hz timeline, accounted for missed intervals without decreasing the frame counter, and serialized concurrent wait callbacks.
+- Added `early-wait` and VSync-mode counts to the SteamVR driver timing log for the next runtime check.
+- Added a high-resolution Windows waitable timer with a short yield-spin tail to avoid coarse `Sleep(1)` wake-up quantization.
+- Reduced the H.264 unmatched-timestamp queue from 12 to 4 frames, keeping QSV async depth at 2.
+- Kept the existing 1600x720 SBS render target, which is already equal to the video capture/encoding profile.
+
+## Passed in this environment
+
+- `go test ./...`
+- `go test -race ./...`
+- `go vet ./...`
+- `GOOS=windows GOARCH=amd64 go build ./cmd/phonevr-host`
+- Python release/integration tests: 44 tests
+- Local FFmpeg H.264 parser/session integration test (software encoder path)
+- ZIP integrity validation
+
+## Not verified in this environment
+
+- Native SteamVR driver build: requires Windows, MSVC and Windows SDK.
+- Runtime precision of the virtual VSync waitable timer on the target Windows installation.
+- Actual Intel QSV throughput and end-to-end latency on the NVIDIA MX450 / Intel Iris Xe PC.
+- Android decode/display latency on Redmi K40 / LineageOS 24.
+
+See `docs/2026-11-22-virtual-vsync-and-end-to-end-latency.md` for the measured evidence and expected next-run diagnostics.
+
+---
+
+# Build status
+
 Revision: PhoneVR 0.4.19 QSV output-stall and nonblocking D3D11 readback follow-up, 2026-11-22
 
 ## Changes in this revision

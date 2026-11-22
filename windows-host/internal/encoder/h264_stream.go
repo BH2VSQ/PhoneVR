@@ -15,7 +15,7 @@ import (
 
 const (
 	h264StreamMaxAccessUnit = 16 * 1024 * 1024
-	h264PendingFrameLimit   = 24 // Bound asynchronous input/output backlog to about 400 ms at 60 FPS.
+	h264PendingFrameLimit   = 4 // Bound encoder timestamp backlog to about 67 ms at 60 FPS.
 	H264OutputStallTimeout  = 2 * time.Second
 )
 
@@ -325,7 +325,7 @@ func testH264Encoder(ctx context.Context, path string, capability Capability, wi
 }
 
 func h264CodecArgs(capability Capability, fps int) []string {
-	gop := fmt.Sprint(fps)
+	gop := fmt.Sprint(max(1, fps/2))
 	switch capability.Backend {
 	case BackendNVENC:
 		return []string{"-c:v", capability.Name, "-preset", "p1", "-tune", "ll", "-rc", "cbr", "-b:v", "8M", "-maxrate", "8M", "-bufsize", "2M", "-g", gop, "-bf", "0", "-zerolatency", "1"}
@@ -336,7 +336,7 @@ func h264CodecArgs(capability Capability, fps int) []string {
 		// otherwise raw BGRA frames can pile up while the compositor keeps
 		// producing newer frames. LowDelayBRC also reduces per-frame bitrate
 		// variance without enabling look-ahead or B-frames.
-		return []string{"-c:v", capability.Name, "-preset", "veryfast", "-async_depth", "4", "-look_ahead", "0", "-low_delay_brc", "1", "-b:v", "8M", "-maxrate", "8M", "-bufsize", "2M", "-g", gop, "-bf", "0"}
+		return []string{"-c:v", capability.Name, "-preset", "veryfast", "-async_depth", "2", "-look_ahead", "0", "-low_delay_brc", "1", "-b:v", "8M", "-maxrate", "8M", "-bufsize", "1M", "-g", gop, "-bf", "0"}
 	default:
 		return []string{"-c:v", capability.Name, "-preset", "ultrafast", "-tune", "zerolatency", "-x264-params", "repeat-headers=1:scenecut=0", "-b:v", "8M", "-g", gop, "-bf", "0"}
 	}

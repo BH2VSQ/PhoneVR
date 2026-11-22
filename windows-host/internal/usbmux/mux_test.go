@@ -1,8 +1,11 @@
 package usbmux
 
 import (
+	"errors"
 	"io"
 	"net"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -63,5 +66,48 @@ func TestMuxCloseUnblocksReaderAndWriter(t *testing.T) {
 	}
 	if err := mux.Close(); err != nil && err != io.ErrClosedPipe {
 		t.Fatalf("unexpected second close result: %v", err)
+	}
+}
+
+type failingWriteStream struct {
+	closed chan struct{}
+	once   sync.Once
+}
+
+func newFailingWriteStream() *failingWriteStream {
+	return &failingWriteStream{closed: make(chan struct{})}
+}
+
+func (s *failingWriteStream) Read([]byte) (int, error) {
+	<-s.closed
+	return 0, io.EOF
+}
+
+func (s *failingWriteStream) Write([]byte) (int, error) {
+	return 0, errors.New("synthetic USB transfer timeout")
+}
+
+func (s *failingWriteStream) Close() error {
+	s.once.Do(func() { close(s.closed) })
+	return nil
+}
+
+func TestMuxClosesByteStreamAfterFailedFrameWrite(t *testing.T) {
+	stream := newFailingWriteStream()
+	mux := New(stream)
+	err := mux.WriteFrame(ChannelVideo, []byte("partial frame"))
+	if err == nil || !strings.Contains(err.Error(), "synthetic USB transfer timeout") {
+		t.Fatalf("WriteFrame error = %v, want synthetic transfer timeout", err)
+	}
+	select {
+	case <-mux.done:
+	case <-time.After(time.Second):
+		t.Fatal("failed frame write did not close the multiplex read loop")
+	}
+	if mux.Err() == nil || !strings.Contains(mux.Err().Error(), "synthetic USB transfer timeout") {
+		t.Fatalf("mux error = %v, want original write failure", mux.Err())
+	}
+	if err := mux.WriteFrame(ChannelControl, []byte("after failure")); !errors.Is(err, ErrClosed) {
+		t.Fatalf("write after a partial frame should be closed, got %v", err)
 	}
 }

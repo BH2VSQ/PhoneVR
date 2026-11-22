@@ -41,6 +41,7 @@ const (
 	videoHeight                = 720
 	videoFrameRate             = 60
 	videoInputQueueDepth       = 2 // one frame may be written to FFmpeg while two newer frames wait
+	videoOutputQueueDepth      = 8 // isolate FFmpeg stdout from potentially blocking USB Bulk writes
 	videoBridgeReadTimeout     = 10 * time.Second
 	discoveryQuery             = "PHONEVR_DISCOVER_V1"
 	discoveryPrefix            = "PHONEVR_HOST_V1 "
@@ -199,40 +200,54 @@ type rawVideoFrame struct {
 	timestampNs uint64
 }
 
+type encodedVideoFrame struct {
+	data        []byte
+	frameID     uint32
+	timestampNs uint64
+	keyFrame    bool
+}
+
+var errNoVideoTarget = errors.New("no paired Android video target")
+
 type HostService struct {
-	lifecycleMu           sync.Mutex
-	mu                    sync.RWMutex
-	config                HostConfig
-	serverName            string
-	localIPv4             []string
-	startedAt             time.Time
-	listener              net.Listener
-	discovery             *net.UDPConn
-	pose                  *net.UDPConn
-	steamVRStatus         *net.UDPConn
-	videoCaptureListener  net.Listener
-	videoUDP              *net.UDPConn
-	videoFFmpegPath       string
-	videoEncoderProbeDone chan struct{}
-	videoEncoderReady     bool
-	videoEncoderSelected  encoder.Capability
-	videoEncoderError     string
-	videoBridgeActive     atomic.Bool
-	videoFrameQueue       chan *rawVideoFrame
-	videoFramePool        sync.Pool
-	videoInputQueueDrops  atomic.Uint64
-	videoRawFrames        atomic.Uint64
-	videoEncodedFrames    atomic.Uint64
-	videoUDPFragments     atomic.Uint64
-	videoDroppedFrames    atomic.Uint64
-	steamVRHeartbeatAt    time.Time
-	steamVRFlags          uint8
-	steamVRFrameCounter   uint64
-	cancel                context.CancelFunc
-	wg                    sync.WaitGroup
-	devices               map[string]activeDevice
-	connections           map[net.Conn]struct{}
-	usbLinks              map[string]*usbmux.Mux
+	lifecycleMu              sync.Mutex
+	mu                       sync.RWMutex
+	config                   HostConfig
+	serverName               string
+	localIPv4                []string
+	startedAt                time.Time
+	listener                 net.Listener
+	discovery                *net.UDPConn
+	pose                     *net.UDPConn
+	steamVRStatus            *net.UDPConn
+	videoCaptureListener     net.Listener
+	videoUDP                 *net.UDPConn
+	videoFFmpegPath          string
+	videoEncoderProbeDone    chan struct{}
+	videoEncoderReady        bool
+	videoEncoderSelected     encoder.Capability
+	videoEncoderError        string
+	videoBridgeActive        atomic.Bool
+	videoFrameQueue          chan *rawVideoFrame
+	videoOutputQueue         chan encodedVideoFrame
+	videoOutputMu            sync.Mutex
+	videoOutputNeedsKeyFrame bool
+	videoFramePool           sync.Pool
+	videoInputQueueDrops     atomic.Uint64
+	videoOutputQueueDrops    atomic.Uint64
+	videoTransportSendMaxNs  atomic.Int64
+	videoRawFrames           atomic.Uint64
+	videoEncodedFrames       atomic.Uint64
+	videoUDPFragments        atomic.Uint64
+	videoDroppedFrames       atomic.Uint64
+	steamVRHeartbeatAt       time.Time
+	steamVRFlags             uint8
+	steamVRFrameCounter      uint64
+	cancel                   context.CancelFunc
+	wg                       sync.WaitGroup
+	devices                  map[string]activeDevice
+	connections              map[net.Conn]struct{}
+	usbLinks                 map[string]*usbmux.Mux
 	// The pose snapshot is immutable after publication. Atomic publication avoids
 	// reader/writer lock stalls when the desktop UI is busy rendering the model.
 	latestPose       atomic.Pointer[PoseSnapshot]
@@ -360,6 +375,13 @@ func (s *HostService) Start(config HostConfig) error {
 	s.videoCaptureListener = videoCaptureListener
 	s.videoUDP = videoUDP
 	s.videoFrameQueue = make(chan *rawVideoFrame, videoInputQueueDepth)
+	s.videoOutputQueue = make(chan encodedVideoFrame, videoOutputQueueDepth)
+	s.videoOutputMu.Lock()
+	s.videoOutputNeedsKeyFrame = false
+	s.videoOutputMu.Unlock()
+	s.videoInputQueueDrops.Store(0)
+	s.videoOutputQueueDrops.Store(0)
+	s.videoTransportSendMaxNs.Store(0)
 	s.videoFramePool = sync.Pool{New: func() any {
 		return &rawVideoFrame{data: make([]byte, videoWidth*videoHeight*4)}
 	}}
@@ -383,7 +405,7 @@ func (s *HostService) Start(config HostConfig) error {
 		s.addLog(fmt.Sprintf("Host interface [%s] %s: %s", address.Kind, address.Name, address.IP))
 	}
 
-	s.wg.Add(7)
+	s.wg.Add(8)
 	go s.acceptLoop(ctx, tcpListener)
 	go s.usbAccessoryLoop(ctx)
 	go s.discoveryLoop(ctx, udpDiscovery, serverName, config.ControlPort)
@@ -391,6 +413,7 @@ func (s *HostService) Start(config HostConfig) error {
 	go s.steamVRStatusLoop(ctx, udpSteamVRStatus)
 	go s.videoCaptureLoop(ctx, videoCaptureListener)
 	go s.videoEncoderLoop(ctx)
+	go s.videoTransportSendLoop(ctx)
 	return nil
 }
 
@@ -485,6 +508,12 @@ func (s *HostService) Stop() {
 	for conn := range s.connections {
 		connections = append(connections, conn)
 	}
+	usbLinks := make([]*usbmux.Mux, 0, len(s.usbLinks))
+	for _, mux := range s.usbLinks {
+		if mux != nil {
+			usbLinks = append(usbLinks, mux)
+		}
+	}
 	s.listener = nil
 	s.discovery = nil
 	s.pose = nil
@@ -519,6 +548,10 @@ func (s *HostService) Stop() {
 	}
 	for _, conn := range connections {
 		_ = conn.Close()
+	}
+	// Abort outstanding WinUSB transfers before waiting for real-time workers.
+	for _, mux := range usbLinks {
+		_ = mux.Close()
 	}
 	s.wg.Wait()
 	s.addLog("Host stopped; TCP and UDP listeners released")
@@ -1355,7 +1388,7 @@ func (s *HostService) currentVideoTarget() (videoTarget, bool) {
 func (s *HostService) sendEncodedVideoFrame(frame []byte, frameID uint32, timestampNs uint64, keyFrame bool) error {
 	target, enabled := s.currentVideoTarget()
 	if !enabled {
-		return nil
+		return errNoVideoTarget
 	}
 	fragments, err := videoprotocol.FragmentFrame(frame, frameID, timestampNs, keyFrame)
 	if err != nil {
@@ -1364,8 +1397,9 @@ func (s *HostService) sendEncodedVideoFrame(frame []byte, frameID uint32, timest
 	if target.USB != nil {
 		for _, packet := range fragments {
 			if err := target.USB.WriteFrame(usbmux.ChannelVideo, packet); err != nil {
-				s.videoDroppedFrames.Add(1)
-				return err
+				// A failed/partial multiplex write invalidates byte-stream framing.
+				_ = target.USB.Close()
+				return fmt.Errorf("USB AOA Bulk OUT: %w", err)
 			}
 			s.videoUDPFragments.Add(1)
 		}
@@ -1379,8 +1413,7 @@ func (s *HostService) sendEncodedVideoFrame(frame []byte, frameID uint32, timest
 	}
 	for _, packet := range fragments {
 		if _, err := udp.WriteToUDP(packet, target.UDP); err != nil {
-			s.videoDroppedFrames.Add(1)
-			return err
+			return fmt.Errorf("Android UDP video send: %w", err)
 		}
 		s.videoUDPFragments.Add(1)
 	}
@@ -1604,6 +1637,7 @@ func (s *HostService) videoEncoderLoop(ctx context.Context) {
 	udpAtWindowStart := s.videoUDPFragments.Load()
 	droppedAtWindowStart := s.videoDroppedFrames.Load()
 	inputDropsAtWindowStart := s.videoInputQueueDrops.Load()
+	outputDropsAtWindowStart := s.videoOutputQueueDrops.Load()
 	logPipelineStats := func(active *encoder.H264EncoderSession) {
 		elapsed := time.Since(statsStart)
 		if elapsed < 5*time.Second {
@@ -1614,23 +1648,26 @@ func (s *HostService) videoEncoderLoop(ctx context.Context) {
 		udpNow := s.videoUDPFragments.Load()
 		droppedNow := s.videoDroppedFrames.Load()
 		inputDropsNow := s.videoInputQueueDrops.Load()
+		outputDropsNow := s.videoOutputQueueDrops.Load()
 		rawNow := s.videoRawFrames.Load()
+		sendMaxMs := float64(s.videoTransportSendMaxNs.Swap(0)) / float64(time.Millisecond)
 		name, pending, outputBytes, outputUnits := "stopped", 0, uint64(0), uint64(0)
 		if active != nil {
 			name, pending, outputBytes, outputUnits = active.EncoderName(), active.PendingFrames(), active.OutputBytes(), active.OutputAccessUnits()
 		}
-		s.addLog(fmt.Sprintf("Video pipeline: raw RX %.1f FPS | submitted %.1f FPS | H.264 %.1f FPS | UDP fragments %d | capture-queue drops %d | encoder drops %d | FFmpeg stdout %d bytes | H.264 access units %d | pending=%d | backend %s",
+		s.addLog(fmt.Sprintf("Video pipeline: raw RX %.1f FPS | submitted %.1f FPS | H.264 %.1f FPS | transport fragments %d | capture-queue drops %d | output-queue drops %d | encoder/transport drops %d | send max %.1f ms | FFmpeg stdout %d bytes | H.264 access units %d | pending=%d | backend %s",
 			float64(rawNow-rawAtWindowStart)/seconds,
 			float64(framesInWindow)/seconds,
 			float64(encodedNow-encodedAtWindowStart)/seconds,
-			udpNow-udpAtWindowStart, inputDropsNow-inputDropsAtWindowStart, droppedNow-droppedAtWindowStart,
-			outputBytes, outputUnits, pending, name))
+			udpNow-udpAtWindowStart, inputDropsNow-inputDropsAtWindowStart, outputDropsNow-outputDropsAtWindowStart,
+			droppedNow-droppedAtWindowStart, sendMaxMs, outputBytes, outputUnits, pending, name))
 		framesInWindow = 0
 		rawAtWindowStart = rawNow
 		encodedAtWindowStart = encodedNow
 		udpAtWindowStart = udpNow
 		droppedAtWindowStart = droppedNow
 		inputDropsAtWindowStart = inputDropsNow
+		outputDropsAtWindowStart = outputDropsNow
 		statsStart = time.Now()
 	}
 	defer func() {
@@ -1673,9 +1710,12 @@ func (s *HostService) videoEncoderLoop(ctx context.Context) {
 				created, createErr := encoder.StartH264EncoderWithCapability(ctx, ffmpegPath, videoWidth, videoHeight, videoFrameRate, selected,
 					func(accessUnit []byte, id uint32, timestamp uint64, key bool) error {
 						s.videoEncodedFrames.Add(1)
-						if sendErr := s.sendEncodedVideoFrame(accessUnit, id, timestamp, key); sendErr != nil {
-							s.addLog("Dropped one H.264 access unit after UDP send failure; persistent encoder remains active: " + sendErr.Error())
-						}
+						// Never perform transport I/O on FFmpeg's stdout reader goroutine.
+						// A blocked WinUSB write would stop stdout draining and look like
+						// an encoder stall. The bounded queue drops stale access units.
+						s.enqueueEncodedVideoFrame(encodedVideoFrame{
+							data: accessUnit, frameID: id, timestampNs: timestamp, keyFrame: key,
+						})
 						return nil
 					}, s.addLog)
 				if createErr != nil {
@@ -1726,6 +1766,99 @@ func (s *HostService) videoEncoderLoop(ctx context.Context) {
 			s.releaseRawVideoFrame(frame)
 			framesInWindow++
 			logPipelineStats(session)
+		}
+	}
+}
+
+// enqueueEncodedVideoFrame is non-blocking because it runs on FFmpeg's stdout
+// reader goroutine. Transport I/O is performed by videoTransportSendLoop.
+// If the sender falls behind, stale access units are purged and delta frames
+// are dropped until a fresh IDR can re-establish decoder state.
+func (s *HostService) enqueueEncodedVideoFrame(frame encodedVideoFrame) {
+	s.videoOutputMu.Lock()
+	defer s.videoOutputMu.Unlock()
+	queue := s.videoOutputQueue
+	if queue == nil {
+		s.videoOutputQueueDrops.Add(1)
+		return
+	}
+	if s.videoOutputNeedsKeyFrame && !frame.keyFrame {
+		s.videoOutputQueueDrops.Add(1)
+		return
+	}
+	select {
+	case queue <- frame:
+		if frame.keyFrame {
+			s.videoOutputNeedsKeyFrame = false
+		}
+		return
+	default:
+	}
+
+	// Queue full: discard old queued frames. The currently transmitted frame,
+	// if any, completes independently and the next queued frame must be IDR.
+	dropped := 0
+	for {
+		select {
+		case <-queue:
+			dropped++
+		default:
+			droppedFrames := dropped
+			if !frame.keyFrame {
+				droppedFrames++
+			}
+			s.videoOutputQueueDrops.Add(uint64(droppedFrames))
+			s.videoOutputNeedsKeyFrame = true
+			if frame.keyFrame {
+				queue <- frame
+				s.videoOutputNeedsKeyFrame = false
+			}
+			return
+		}
+	}
+}
+
+// requireVideoKeyFrame drops queued delta frames after a transport write error.
+func (s *HostService) requireVideoKeyFrame() int {
+	s.videoOutputMu.Lock()
+	defer s.videoOutputMu.Unlock()
+	s.videoOutputNeedsKeyFrame = true
+	dropped := 0
+	for s.videoOutputQueue != nil {
+		select {
+		case <-s.videoOutputQueue:
+			dropped++
+		default:
+			s.videoOutputQueueDrops.Add(uint64(dropped))
+			return dropped
+		}
+	}
+	s.videoOutputQueueDrops.Add(uint64(dropped))
+	return dropped
+}
+
+func (s *HostService) videoTransportSendLoop(ctx context.Context) {
+	defer s.wg.Done()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case frame := <-s.videoOutputQueue:
+			started := time.Now()
+			err := s.sendEncodedVideoFrame(frame.data, frame.frameID, frame.timestampNs, frame.keyFrame)
+			elapsed := time.Since(started).Nanoseconds()
+			for previous := s.videoTransportSendMaxNs.Load(); elapsed > previous; previous = s.videoTransportSendMaxNs.Load() {
+				if s.videoTransportSendMaxNs.CompareAndSwap(previous, elapsed) {
+					break
+				}
+			}
+			if err != nil {
+				s.videoDroppedFrames.Add(1)
+				dropped := s.requireVideoKeyFrame()
+				if !errors.Is(err, errNoVideoTarget) {
+					s.addLog(fmt.Sprintf("Video transport send failed after %.1f ms: %v; dropped %d queued access units and waiting for next IDR", float64(elapsed)/float64(time.Millisecond), err, dropped))
+				}
+			}
 		}
 	}
 }

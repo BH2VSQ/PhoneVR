@@ -33,6 +33,8 @@ const (
 	tokenInformationClassElevation = 20
 	usbDescriptorDevice            = 1
 	usbPipeBulk                    = 2
+	usbPipePolicyTransferTimeout   = 0x03
+	aoaBulkOutTransferTimeoutMs    = 1500
 	usbDirectionIn                 = 0x80
 	usbVendorGoogle                = 0x18D1
 	usbProductAccessory            = 0x2D00
@@ -71,6 +73,7 @@ var (
 	procWinUsbQueryPipe                 = winusb.NewProc("WinUsb_QueryPipe")
 	procWinUsbReadPipe                  = winusb.NewProc("WinUsb_ReadPipe")
 	procWinUsbWritePipe                 = winusb.NewProc("WinUsb_WritePipe")
+	procWinUsbSetPipePolicy             = winusb.NewProc("WinUsb_SetPipePolicy")
 	procWinUsbAbortPipe                 = winusb.NewProc("WinUsb_AbortPipe")
 )
 
@@ -223,8 +226,8 @@ func scanOnce(report func(key, message string), lastProbe map[string]time.Time) 
 				if err := device.findBulkEndpoints(); err == nil {
 					if report != nil {
 						report("bulk-ready:"+path, fmt.Sprintf(
-							"USB AOA Bulk endpoints ready for %04X:%04X: interface=0 IN=0x%02X OUT=0x%02X maxPacket=%d",
-							vid, pid, device.inPipe, device.outPipe, device.maxPacketSize))
+							"USB AOA Bulk endpoints ready for %04X:%04X: interface=0 IN=0x%02X OUT=0x%02X maxPacket=%d OUT-timeout=%dms",
+							vid, pid, device.inPipe, device.outPipe, device.maxPacketSize, aoaBulkOutTransferTimeoutMs))
 					}
 					procSetupDiDestroyDeviceInfoList.Call(classPtr)
 					return device, switched, nil
@@ -540,7 +543,7 @@ func (d *Device) getAOAProtocol() (uint16, error) {
 }
 
 func (d *Device) startAccessoryMode() error {
-	stringsToSend := []string{"VSQ Studio", "PhoneVR", "PhoneVR USB streaming", "0.5.6", "https://github.com/BH2VSQ/PhoneVR", "PhoneVR-Android"}
+	stringsToSend := []string{"VSQ Studio", "PhoneVR", "PhoneVR USB streaming", "0.5.7", "https://github.com/BH2VSQ/PhoneVR", "PhoneVR-Android"}
 	for index, value := range stringsToSend {
 		payload := append([]byte(value), 0)
 		transferred, err := d.controlTransfer(0x40, usbRequestSendString, 0, uint16(index), payload)
@@ -573,7 +576,6 @@ func (d *Device) controlTransfer(requestType, request byte, value, index uint16,
 	}
 	return transferred, nil
 }
-
 
 func describeUSBInterface(descriptor usbInterfaceDescriptor) string {
 	return fmt.Sprintf(
@@ -628,6 +630,25 @@ func (d *Device) findBulkEndpoints() error {
 	if d.inPipe == 0 || d.outPipe == 0 {
 		return fmt.Errorf("AOA interface is missing Bulk IN or OUT endpoints (%s; discovered %s)",
 			describeUSBInterface(descriptor), strings.Join(pipeInfo, ", "))
+	}
+	// Bulk OUT defaults to an infinite wait in WinUSB. Bound it so a stalled
+	// phone receive endpoint cannot hold the shared PVRU writer indefinitely.
+	if err := d.setPipeTransferTimeout(d.outPipe, aoaBulkOutTransferTimeoutMs); err != nil {
+		return fmt.Errorf("configure AOA Bulk OUT transfer timeout: %w", err)
+	}
+	return nil
+}
+
+func (d *Device) setPipeTransferTimeout(pipeID byte, timeoutMs uint32) error {
+	if d == nil || d.iface == 0 || pipeID == 0 || timeoutMs == 0 {
+		return errors.New("invalid WinUSB pipe timeout configuration")
+	}
+	result, _, callErr := procWinUsbSetPipePolicy.Call(
+		d.iface, uintptr(pipeID), uintptr(usbPipePolicyTransferTimeout),
+		uintptr(unsafe.Sizeof(timeoutMs)), uintptr(unsafe.Pointer(&timeoutMs)),
+	)
+	if result == 0 {
+		return formatWindowsCallError("WinUsb_SetPipePolicy(PIPE_TRANSFER_TIMEOUT)", callErr)
 	}
 	return nil
 }

@@ -1,3 +1,12 @@
+## 0.5.7 - USB video backpressure isolation and bounded Bulk writes
+
+- Decoupled H.264 stdout parsing from USB/UDP transport writes with a bounded eight-access-unit sender queue. A slow USB Bulk OUT transfer can no longer block FFmpeg stdout consumption and be misclassified as an encoder stall.
+- When transport backpressure fills the output queue, stale access units are discarded and delta frames are held until the next IDR keyframe, limiting latency and restoring decoder continuity.
+- Added transport-send latency and output-queue-drop telemetry to the periodic video pipeline log.
+- Configured a 1500 ms WinUSB Bulk OUT transfer timeout. A failed or partial PVRU write now closes the multiplex session so the device is re-enumerated rather than continuing with a potentially corrupted byte stream.
+- Host shutdown now aborts active USB multiplex sessions before waiting for video and USB workers.
+- Android `versionName` is 0.5.7 and `versionCode` is 42; repository, Host, driver and AOA descriptors were synchronized.
+
 ## 0.5.6 - AOA accessory handshake deadline and response write fix
 
 - Extended the initial control hello timeout to 30 seconds for USB AOA sessions while retaining the 8-second timeout for LAN clients. This gives Android time to display and receive approval for the USB accessory permission prompt after AOA re-enumeration.

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(PhoneVRSteamVRDriver VERSION 0.5.6 LANGUAGES CXX)
+project(PhoneVRSteamVRDriver VERSION 0.5.7 LANGUAGES CXX)
 
 if(NOT WIN32)
   message(FATAL_ERROR "The first PhoneVR SteamVR driver target is Windows x64 only")

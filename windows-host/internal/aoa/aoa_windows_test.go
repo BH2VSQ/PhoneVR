@@ -33,7 +33,6 @@ func TestFormatWindowsCallErrorIncludesStageAndCode(t *testing.T) {
 	}
 }
 
-
 func TestValidateAOAAccessoryInterfaceAcceptsInterfaceZero(t *testing.T) {
 	err := validateAOAAccessoryInterface(usbInterfaceDescriptor{
 		InterfaceNumber: 0, InterfaceClass: 0xFF, InterfaceSubClass: 0xFF,
@@ -57,5 +56,14 @@ func TestValidateAOAAccessoryInterfaceIdentifiesADBInterface(t *testing.T) {
 		if !strings.Contains(message, expected) {
 			t.Fatalf("interface diagnostic %q does not contain %q", message, expected)
 		}
+	}
+}
+
+func TestAOABulkOutUsesFiniteWinUSBTransferTimeout(t *testing.T) {
+	if usbPipePolicyTransferTimeout != 3 {
+		t.Fatalf("PIPE_TRANSFER_TIMEOUT policy = %d, want 3", usbPipePolicyTransferTimeout)
+	}
+	if aoaBulkOutTransferTimeoutMs <= 0 || aoaBulkOutTransferTimeoutMs > 2000 {
+		t.Fatalf("Bulk OUT timeout = %d ms, want a finite timeout no greater than 2000 ms", aoaBulkOutTransferTimeoutMs)
 	}
 }

@@ -45,6 +45,11 @@ class VideoStreamingIntegrationTests(unittest.TestCase):
         self.assertIn("videoEncoderLoop", HOST_SERVICE)
         self.assertIn("enqueueRawVideoFrame", HOST_SERVICE)
         self.assertIn("videoInputQueueDepth", HOST_SERVICE)
+        self.assertIn("enqueueEncodedVideoFrame", HOST_SERVICE)
+        self.assertIn("videoTransportSendLoop", HOST_SERVICE)
+        self.assertIn("videoOutputQueueDepth", HOST_SERVICE)
+        self.assertIn("videoOutputNeedsKeyFrame", HOST_SERVICE)
+        self.assertIn("output-queue drops", HOST_SERVICE)
         self.assertIn("persistent H.264 encoder", HOST_SERVICE)
         capture_handler = HOST_SERVICE[HOST_SERVICE.index("func (s *HostService) handleVideoCaptureConnection") : HOST_SERVICE.index("// videoEncoderLoop owns exactly one FFmpeg process")]
         self.assertNotIn("StartHardwareH264Encoder", capture_handler)

@@ -31,6 +31,61 @@ func TestHostSnapshotIncludesVideoPipelineCounters(t *testing.T) {
 	}
 }
 
+func TestEncodedVideoQueueDropsStaleFramesAndWaitsForIDR(t *testing.T) {
+	service := NewHostService(false)
+	service.videoOutputQueue = make(chan encodedVideoFrame, 1)
+
+	service.enqueueEncodedVideoFrame(encodedVideoFrame{frameID: 1, keyFrame: true})
+	service.enqueueEncodedVideoFrame(encodedVideoFrame{frameID: 2}) // fills and overflows the one-slot queue
+	service.enqueueEncodedVideoFrame(encodedVideoFrame{frameID: 3}) // delta frame is rejected until IDR
+
+	if got := service.videoOutputQueueDrops.Load(); got != 3 {
+		t.Fatalf("output queue drops = %d, want 3", got)
+	}
+	if !service.videoOutputNeedsKeyFrame {
+		t.Fatal("queue overflow must require a fresh IDR")
+	}
+	if len(service.videoOutputQueue) != 0 {
+		t.Fatalf("stale output queue was not purged: len=%d", len(service.videoOutputQueue))
+	}
+
+	service.enqueueEncodedVideoFrame(encodedVideoFrame{frameID: 4, keyFrame: true})
+	if service.videoOutputNeedsKeyFrame {
+		t.Fatal("a queued IDR should clear the keyframe gate")
+	}
+	select {
+	case frame := <-service.videoOutputQueue:
+		if frame.frameID != 4 || !frame.keyFrame {
+			t.Fatalf("queued frame after recovery = %+v, want IDR frame 4", frame)
+		}
+	default:
+		t.Fatal("fresh IDR was not queued")
+	}
+}
+
+func TestEncodedVideoQueueRetainsNewestIDROnOverflow(t *testing.T) {
+	service := NewHostService(false)
+	service.videoOutputQueue = make(chan encodedVideoFrame, 1)
+
+	service.enqueueEncodedVideoFrame(encodedVideoFrame{frameID: 10, keyFrame: true})
+	service.enqueueEncodedVideoFrame(encodedVideoFrame{frameID: 11, keyFrame: true})
+
+	if got := service.videoOutputQueueDrops.Load(); got != 1 {
+		t.Fatalf("output queue drops = %d, want only the stale queued IDR to be counted", got)
+	}
+	if service.videoOutputNeedsKeyFrame {
+		t.Fatal("retaining a fresh IDR must clear the keyframe gate")
+	}
+	select {
+	case frame := <-service.videoOutputQueue:
+		if frame.frameID != 11 || !frame.keyFrame {
+			t.Fatalf("retained frame = %+v, want newest IDR frame 11", frame)
+		}
+	default:
+		t.Fatal("newest IDR was not retained")
+	}
+}
+
 func TestRawVideoQueueKeepsNewestFramesWhenEncoderFallsBehind(t *testing.T) {
 	service := NewHostService(false)
 	service.videoFrameQueue = make(chan *rawVideoFrame, videoInputQueueDepth)

@@ -1,29 +1,35 @@
-# PhoneVR 0.5.6 build status
+# PhoneVR 0.5.7 build status
 
 ## This revision
 
-- Target-PC 0.5.5 logs confirm the correct AOA interface is now opened: `18D1:2D01`, interface 0 (`MI_00`), Bulk IN `0x81`, Bulk OUT `0x01`, maximum packet size 512.
-- The logs also show the first accessory connection ending almost exactly at the existing 8-second initial hello deadline. The next session paired, but the Pair response failed because `handleControlConnection` had set a 5-second absolute write deadline before waiting for the hello. By the time the response was written, that deadline had already expired.
-- USB AOA now gets a 30-second initial hello window to allow for Android's USB accessory permission prompt. Normal LAN clients retain the existing 8-second handshake window.
-- Initial write deadlines are no longer armed while waiting for hello. JSON responses create a fresh deadline immediately before writing and clear it afterwards. `writeControlJSON` follows the same per-write deadline lifecycle.
-- Added tests for USB-specific handshake timeout selection and refreshing an expired write deadline.
-- Android `versionName` is 0.5.6 and `versionCode` is 41.
+- The 0.5.6 target-PC log confirms that USB AOA interface 0 opens, Android pairs over USB AOA Bulk and H.264 QSV emits access units before the stream stops.
+- H.264 stdout parsing no longer performs synchronous USB/UDP writes. A bounded transport queue isolates FFmpeg from a stalled Bulk OUT endpoint.
+- When the sender queue is full, queued stale frames are purged and delta frames are dropped until the next IDR keyframe, avoiding decoder use of frames after a gap.
+- Periodic video telemetry reports transport fragments, output-queue drops and maximum transport-send duration so a future stall can be attributed to encoding or USB transport.
+- WinUSB Bulk OUT transfers now have a finite 1500 ms timeout. A failed multiplex write tears down the accessory session because partial PVRU frames cannot be resumed safely.
+- Host shutdown explicitly closes active USB multiplex sessions before waiting for workers.
+- Android `versionName` is 0.5.7 and `versionCode` is 42.
 
-## Validation
+## Passed in this environment
 
-- `go test ./...`
-- `go test -race ./...`
-- `go vet ./...`
-- Windows amd64 Host cross-build and AOA package test cross-compilation
-- Python release/integration regression tests
-- Git patch application check and source ZIP integrity
+- `cd windows-host && go test ./...`
+- `cd windows-host && go test -race ./...`
+- `cd windows-host && go vet ./...`
+- `GOOS=windows GOARCH=amd64 go build ./...`
+- Windows amd64 cross-compilation of the Host and AOA test binaries.
+- `python3 -m unittest discover -s tools/release -p 'test_*.py'` (49 tests).
 
-## Still requires target-device validation
+## Not verified in this environment
 
-- Confirm Android USB accessory permission is granted and the Host sends the `welcome` response successfully.
-- Confirm bidirectional PVRU control frames remain active after pairing, then verify HMD pose and H.264 video over USB without Wi-Fi.
-- Android APK packaging remains unverified in this environment because the Android SDK is unavailable and Gradle distribution download is blocked.
-- Sustained USB throughput, disconnect/reconnect recovery and end-to-end latency need measurement on the Redmi K40.
+- Android APK build and full Kotlin type-check against the Android SDK.
+- Native MSVC SteamVR driver build and runtime behavior.
+- Sustained AOA throughput, latency and reconnect behavior on the target phone and Windows PC.
+
+## Remaining hardware validation
+
+- Confirm that the 1500 ms Bulk OUT policy is accepted by the target Windows WinUSB driver.
+- Confirm sustained H.264 transport over USB AOA while pose packets continue at their normal rate.
+- Confirm that an induced USB write stall is reported as a transport failure, releases the encoder reader immediately and allows the phone to reconnect.
 
 # PhoneVR 0.5.5 build status
 

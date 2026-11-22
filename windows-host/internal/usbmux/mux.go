@@ -93,7 +93,14 @@ func (m *Mux) WriteFrame(channel byte, payload []byte) error {
 		return ErrClosed
 	default:
 	}
-	return WriteFrame(m.stream, Frame{Channel: channel, Sequence: m.sequence.Add(1), Payload: payload})
+	err := WriteFrame(m.stream, Frame{Channel: channel, Sequence: m.sequence.Add(1), Payload: payload})
+	if err != nil {
+		// A failed write may have sent only part of a multiplex frame. The peer
+		// cannot recover framing on this byte stream, so tear down the session.
+		m.setError(err)
+		_ = m.Close()
+	}
+	return err
 }
 
 func (m *Mux) Close() error {

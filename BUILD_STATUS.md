@@ -1,3 +1,30 @@
+# PhoneVR 0.5.6 build status
+
+## This revision
+
+- Target-PC 0.5.5 logs confirm the correct AOA interface is now opened: `18D1:2D01`, interface 0 (`MI_00`), Bulk IN `0x81`, Bulk OUT `0x01`, maximum packet size 512.
+- The logs also show the first accessory connection ending almost exactly at the existing 8-second initial hello deadline. The next session paired, but the Pair response failed because `handleControlConnection` had set a 5-second absolute write deadline before waiting for the hello. By the time the response was written, that deadline had already expired.
+- USB AOA now gets a 30-second initial hello window to allow for Android's USB accessory permission prompt. Normal LAN clients retain the existing 8-second handshake window.
+- Initial write deadlines are no longer armed while waiting for hello. JSON responses create a fresh deadline immediately before writing and clear it afterwards. `writeControlJSON` follows the same per-write deadline lifecycle.
+- Added tests for USB-specific handshake timeout selection and refreshing an expired write deadline.
+- Android `versionName` is 0.5.6 and `versionCode` is 41.
+
+## Validation
+
+- `go test ./...`
+- `go test -race ./...`
+- `go vet ./...`
+- Windows amd64 Host cross-build and AOA package test cross-compilation
+- Python release/integration regression tests
+- Git patch application check and source ZIP integrity
+
+## Still requires target-device validation
+
+- Confirm Android USB accessory permission is granted and the Host sends the `welcome` response successfully.
+- Confirm bidirectional PVRU control frames remain active after pairing, then verify HMD pose and H.264 video over USB without Wi-Fi.
+- Android APK packaging remains unverified in this environment because the Android SDK is unavailable and Gradle distribution download is blocked.
+- Sustained USB throughput, disconnect/reconnect recovery and end-to-end latency need measurement on the Redmi K40.
+
 # PhoneVR 0.5.5 build status
 
 ## This revision

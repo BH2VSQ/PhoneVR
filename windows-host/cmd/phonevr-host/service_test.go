@@ -892,3 +892,48 @@ func TestClassifyHostInterface(t *testing.T) {
 		}
 	}
 }
+
+func TestControlHandshakeTimeoutExtendsForUSBAccessory(t *testing.T) {
+	server, client := net.Pipe()
+	defer server.Close()
+	defer client.Close()
+
+	usbConn := &taggedNetConn{Conn: server, remote: taggedAddr("USB-AOA:test-accessory")}
+	if got := controlHandshakeTimeoutFor(usbConn); got != usbControlHandshakeTimeout {
+		t.Fatalf("USB handshake timeout = %s, want %s", got, usbControlHandshakeTimeout)
+	}
+	if got := controlHandshakeTimeoutFor(server); got != controlHandshakeTimeout {
+		t.Fatalf("ordinary pipe/network handshake timeout = %s, want %s", got, controlHandshakeTimeout)
+	}
+}
+
+func TestWriteJSONLineWithDeadlineRefreshesExpiredDeadline(t *testing.T) {
+	server, client := net.Pipe()
+	defer server.Close()
+	defer client.Close()
+
+	if err := server.SetWriteDeadline(time.Now().Add(-time.Second)); err != nil {
+		t.Fatalf("set expired write deadline: %v", err)
+	}
+	readResult := make(chan error, 1)
+	go func() {
+		line, err := bufio.NewReader(client).ReadString('\n')
+		if err == nil && !strings.Contains(line, `"type":"welcome"`) {
+			err = fmt.Errorf("unexpected JSON line: %s", line)
+		}
+		readResult <- err
+	}()
+
+	if err := writeJSONLineWithDeadline(server, map[string]string{"type": "welcome"}); err != nil {
+		t.Fatalf("writeJSONLineWithDeadline() failed after stale deadline: %v", err)
+	}
+	if err := <-readResult; err != nil {
+		t.Fatalf("peer could not read refreshed write: %v", err)
+	}
+
+	// The helper clears its deadline after the write, so later writes establish
+	// their own timeout rather than inheriting an expired absolute timestamp.
+	if err := server.SetWriteDeadline(time.Time{}); err != nil {
+		t.Fatalf("clear write deadline: %v", err)
+	}
+}

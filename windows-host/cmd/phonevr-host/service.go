@@ -26,23 +26,25 @@ import (
 )
 
 const (
-	protocolVersion         = 1
-	controlIdleTimeout      = 15 * time.Second
-	controlWriteTimeout     = 5 * time.Second
-	discoveryPortDefault    = 48100
-	controlPortDefault      = 48101
-	posePortDefault         = 48102
-	steamVRStatusPort       = 48105
-	steamVRVideoCapturePort = 48106
-	androidVideoPort        = 48104
-	videoWidth              = 1600
-	videoHeight             = 720
-	videoFrameRate          = 60
-	videoInputQueueDepth    = 2 // one frame may be written to FFmpeg while two newer frames wait
-	videoBridgeReadTimeout  = 10 * time.Second
-	discoveryQuery          = "PHONEVR_DISCOVER_V1"
-	discoveryPrefix         = "PHONEVR_HOST_V1 "
-	maxLogEntries           = 250
+	protocolVersion            = 1
+	controlHandshakeTimeout    = 8 * time.Second
+	usbControlHandshakeTimeout = 30 * time.Second
+	controlIdleTimeout         = 15 * time.Second
+	controlWriteTimeout        = 5 * time.Second
+	discoveryPortDefault       = 48100
+	controlPortDefault         = 48101
+	posePortDefault            = 48102
+	steamVRStatusPort          = 48105
+	steamVRVideoCapturePort    = 48106
+	androidVideoPort           = 48104
+	videoWidth                 = 1600
+	videoHeight                = 720
+	videoFrameRate             = 60
+	videoInputQueueDepth       = 2 // one frame may be written to FFmpeg while two newer frames wait
+	videoBridgeReadTimeout     = 10 * time.Second
+	discoveryQuery             = "PHONEVR_DISCOVER_V1"
+	discoveryPrefix            = "PHONEVR_HOST_V1 "
+	maxLogEntries              = 250
 )
 
 type HostConfig struct {
@@ -984,8 +986,11 @@ func (s *HostService) poseLoop(ctx context.Context, conn *net.UDPConn) {
 func (s *HostService) handleControlConnection(ctx context.Context, conn net.Conn) {
 	defer conn.Close()
 	defer s.removeConnection(conn)
-	_ = conn.SetReadDeadline(time.Now().Add(8 * time.Second))
-	_ = conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+	handshakeTimeout := controlHandshakeTimeoutFor(conn)
+	_ = conn.SetReadDeadline(time.Now().Add(handshakeTimeout))
+	if conn.RemoteAddr() != nil && conn.RemoteAddr().Network() == "usb" {
+		s.addLog(fmt.Sprintf("USB AOA control handshake: allowing %s for Android accessory permission and hello", handshakeTimeout))
+	}
 	reader := bufio.NewScanner(conn)
 	reader.Buffer(make([]byte, 1024), 64*1024)
 	if !reader.Scan() {
@@ -993,11 +998,11 @@ func (s *HostService) handleControlConnection(ctx context.Context, conn net.Conn
 	}
 	var hello helloMessage
 	if err := json.Unmarshal(reader.Bytes(), &hello); err != nil {
-		_ = writeJSONLine(conn, map[string]any{"type": "error", "message": "invalid hello JSON"})
+		_ = writeJSONLineWithDeadline(conn, map[string]any{"type": "error", "message": "invalid hello JSON"})
 		return
 	}
 	if hello.Type != "hello" || hello.Protocol != protocolVersion {
-		_ = writeJSONLine(conn, map[string]any{"type": "error", "message": "protocol mismatch"})
+		_ = writeJSONLineWithDeadline(conn, map[string]any{"type": "error", "message": "protocol mismatch"})
 		return
 	}
 	if strings.TrimSpace(hello.DeviceName) == "" {
@@ -1093,7 +1098,7 @@ func (s *HostService) handleControlConnection(ctx context.Context, conn net.Conn
 		welcome.VideoReason = fmt.Sprintf("Android needs a hardware H.264 decoder supporting %dx%d@%d", videoWidth, videoHeight, videoFrameRate)
 		s.addLog(fmt.Sprintf("Video streaming disabled for %s: Android did not advertise hardware H.264 %dx%d@%d support", hello.DeviceName, videoWidth, videoHeight, videoFrameRate))
 	}
-	if err := writeJSONLine(conn, welcome); err != nil {
+	if err := writeJSONLineWithDeadline(conn, welcome); err != nil {
 		s.addLog("Pair response failed: " + err.Error())
 		return
 	}
@@ -1129,8 +1134,7 @@ func (s *HostService) handleControlConnection(ctx context.Context, conn net.Conn
 		}
 		var message controlMessage
 		if err := json.Unmarshal(reader.Bytes(), &message); err != nil {
-			_ = conn.SetWriteDeadline(time.Now().Add(controlWriteTimeout))
-			_ = writeJSONLine(conn, map[string]any{"type": "error", "message": "invalid control JSON"})
+			_ = writeJSONLineWithDeadline(conn, map[string]any{"type": "error", "message": "invalid control JSON"})
 			continue
 		}
 		switch message.Type {
@@ -1845,6 +1849,30 @@ func quaternionEuler(x, y, z, w float32) (yaw, pitch, roll float64) {
 }
 
 func radiansToDegrees(value float64) float64 { return value * 180 / math.Pi }
+
+func controlHandshakeTimeoutFor(conn net.Conn) time.Duration {
+	if conn != nil {
+		if remote := conn.RemoteAddr(); remote != nil && remote.Network() == "usb" {
+			// Android may display an accessory permission prompt after AOA
+			// re-enumeration. Give the user enough time to approve it; the
+			// LAN handshake remains short to reject stale network clients.
+			return usbControlHandshakeTimeout
+		}
+	}
+	return controlHandshakeTimeout
+}
+
+func writeJSONLineWithDeadline(conn net.Conn, value any) error {
+	if conn == nil {
+		return net.ErrClosed
+	}
+	_ = conn.SetWriteDeadline(time.Now().Add(controlWriteTimeout))
+	err := writeJSONLine(conn, value)
+	// Do not leave an absolute write deadline behind. The next control write
+	// establishes its own deadline, independent of the handshake wait time.
+	_ = conn.SetWriteDeadline(time.Time{})
+	return err
+}
 
 func writeJSONLine(conn net.Conn, value any) error { return json.NewEncoder(conn).Encode(value) }
 

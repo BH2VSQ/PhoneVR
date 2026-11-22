@@ -1,3 +1,12 @@
+## 0.5.6 - AOA accessory handshake deadline and response write fix
+
+- Extended the initial control hello timeout to 30 seconds for USB AOA sessions while retaining the 8-second timeout for LAN clients. This gives Android time to display and receive approval for the USB accessory permission prompt after AOA re-enumeration.
+- Removed the write deadline that was set before the Host waited for the initial hello. That absolute 5-second deadline could expire before Android completed the accessory permission flow, causing the later welcome response to fail with `write pipe: i/o timeout`.
+- Apply a fresh 5-second deadline immediately around each direct JSON response and clear it after the write. Control-message writes now also clear their per-write deadline.
+- Added regression tests proving USB gets the extended handshake window and an expired stale write deadline is refreshed before sending the welcome response.
+- Synchronized repository, Android, Windows Host, SteamVR driver and AOA accessory metadata to 0.5.6. Android `versionCode` is now 41.
+- Go tests, race tests, vet, Windows amd64 Host cross-build and Python regression tests pass. AOA Bulk session and sustained data transfer remain subject to target-device validation.
+
 ## 0.5.5 - AOA accessory interface and Bulk endpoint diagnostics
 
 - Confirmed from the 0.5.4 target-PC log that AOA v2 negotiation and `START_ACCESSORY` succeed, and that Redmi K40 re-enumerates as `18D1:2D01`.

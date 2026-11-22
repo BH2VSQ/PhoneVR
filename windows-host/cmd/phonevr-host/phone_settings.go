@@ -110,7 +110,9 @@ func writeControlJSON(device activeDevice, value any) error {
 		defer device.WriteMu.Unlock()
 	}
 	_ = device.Conn.SetWriteDeadline(time.Now().Add(controlWriteTimeout))
-	return json.NewEncoder(device.Conn).Encode(value)
+	err := json.NewEncoder(device.Conn).Encode(value)
+	_ = device.Conn.SetWriteDeadline(time.Time{})
+	return err
 }
 
 // SendPhoneAction forwards a supported device-side operation to the active HMD.

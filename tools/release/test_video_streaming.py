@@ -37,7 +37,7 @@ class VideoStreamingIntegrationTests(unittest.TestCase):
         self.assertIn('"-async_depth", "2"', ENCODER)
 
     def test_host_uses_loopback_capture_and_android_udp(self):
-        self.assertIn("steamVRVideoCapturePort = 48106", HOST_SERVICE)
+        self.assertRegex(HOST_SERVICE, r"steamVRVideoCapturePort\s*=\s*48106")
         self.assertRegex(HOST_SERVICE, r"androidVideoPort\s*=\s*48104")
         self.assertIn("videoCaptureLoop", HOST_SERVICE)
         self.assertIn("sendEncodedVideoFrame", HOST_SERVICE)

@@ -32,6 +32,8 @@ class VideoStreamReceiver(
     private val decoderName: String,
     private val outputSurface: Surface,
     private val transportLabel: String = "UDP",
+    private val additionalAllowedAddresses: Set<String> = emptySet(),
+    private val onPathProbe: (String) -> Unit = {},
     private val onStatus: (String) -> Unit = {},
     private val onStats: (VideoStreamStats) -> Unit = {},
 ) {
@@ -51,6 +53,7 @@ class VideoStreamReceiver(
     private val lastDatagramNs = AtomicLong(0)
     private val lastCompleteFrameNs = AtomicLong(0)
     private val lastDecodedFrameNs = AtomicLong(0)
+    private val lastSourceAddress = java.util.concurrent.atomic.AtomicReference<String?>(null)
     private val frameArrivalReported = AtomicBoolean(false)
     private val decodedFrameReported = AtomicBoolean(false)
     private val pendingFrames = ArrayBlockingQueue<CompletedVideoFrame>(2)
@@ -104,7 +107,14 @@ class VideoStreamReceiver(
 
     private fun receiveLoop(udp: DatagramSocket) {
         setThreadPriority(Process.THREAD_PRIORITY_DEFAULT)
-        val expectedAddress = runCatching { InetAddress.getByName(hostAddress).hostAddress }.getOrNull()
+        val expectedAddresses = buildSet {
+            if (hostAddress.isNotBlank()) {
+                runCatching { InetAddress.getByName(hostAddress).hostAddress }.getOrNull()?.let(::add)
+            }
+            additionalAllowedAddresses.forEach { address ->
+                runCatching { InetAddress.getByName(address).hostAddress }.getOrNull()?.let(::add)
+            }
+        }
         val buffer = ByteArray(VideoFragmentReassembler.MAX_DATAGRAM_SIZE)
         val datagram = DatagramPacket(buffer, buffer.size)
         var previousFrameId: Long? = null
@@ -125,7 +135,15 @@ class VideoStreamReceiver(
                 windowStartNs = publishStatsIfDue(windowStartNs, System.nanoTime())
                 continue
             }
-            if (expectedAddress != null && datagram.address.hostAddress != expectedAddress) continue
+            val sourceAddress = datagram.address.hostAddress
+            if (expectedAddresses.isNotEmpty() && sourceAddress !in expectedAddresses) continue
+            if (isVideoPathProbe(datagram.data, datagram.length)) {
+                val transport = if (sourceAddress == "127.0.0.1" || sourceAddress == "::1") "usb" else "network"
+                runCatching { onPathProbe(transport) }
+                    .onFailure { Log.w(TAG, "Video path probe acknowledgement failed", it) }
+                continue
+            }
+            lastSourceAddress.set(sourceAddress)
 
             val now = System.nanoTime()
             val previousDatagramNs = lastDatagramNs.getAndSet(now)
@@ -169,6 +187,11 @@ class VideoStreamReceiver(
         }
     }
 
+    private fun isVideoPathProbe(data: ByteArray, length: Int): Boolean =
+        length == 5 && data[0] == 'P'.code.toByte() &&
+            data[1] == 'V'.code.toByte() && data[2] == 'R'.code.toByte() &&
+            data[3] == 'P'.code.toByte() && data[4] == 1.toByte()
+
     private fun publishStatsIfDue(windowStartNs: Long, now: Long): Long {
         val elapsed = now - windowStartNs
         if (elapsed < STATS_INTERVAL_NS) return windowStartNs
@@ -207,6 +230,7 @@ class VideoStreamReceiver(
                 lastPacketAgeMs = packetAge,
                 lastCompleteFrameAgeMs = completeAge,
                 lastDecodedAgeMs = decodedAge,
+                lastSourceAddress = lastSourceAddress.get(),
             ),
         )
         if (state == "解码停滞") {

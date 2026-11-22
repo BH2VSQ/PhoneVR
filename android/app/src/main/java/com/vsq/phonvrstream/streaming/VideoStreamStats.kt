@@ -17,4 +17,5 @@ data class VideoStreamStats(
     val lastPacketAgeMs: Long = -1L,
     val lastCompleteFrameAgeMs: Long = -1L,
     val lastDecodedAgeMs: Long = -1L,
+    val lastSourceAddress: String? = null,
 )

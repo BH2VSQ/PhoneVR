@@ -88,33 +88,34 @@ type PoseSnapshot struct {
 }
 
 type HostSnapshot struct {
-	Running                  bool             `json:"running"`
-	ServerName               string           `json:"serverName"`
-	ListenAddress            string           `json:"listenAddress"`
-	LocalIPv4                []string         `json:"localIPv4"`
-	DiscoveryPort            int              `json:"discoveryPort"`
-	ControlPort              int              `json:"controlPort"`
-	PosePort                 int              `json:"posePort"`
-	ConnectedDevices         []DeviceSnapshot `json:"connectedDevices"`
-	LatestPose               *PoseSnapshot    `json:"latestPose,omitempty"`
-	PacketsReceived          uint64           `json:"packetsReceived"`
-	LastPacketAt             string           `json:"lastPacketAt,omitempty"`
-	Uptime                   string           `json:"uptime,omitempty"`
-	LastError                string           `json:"lastError,omitempty"`
-	SteamVRConnected         bool             `json:"steamVRConnected"`
-	SteamVRDriverLoaded      bool             `json:"steamVRDriverLoaded"`
-	SteamVRHMDActive         bool             `json:"steamVRHmdActive"`
-	SteamVRPoseValid         bool             `json:"steamVRPoseValid"`
-	SteamVRDisplayActive     bool             `json:"steamVRDisplayActive"`
-	SteamVRHasPresentedFrame bool             `json:"steamVRHasPresentedFrame"`
-	SteamVRFrameCounter      uint64           `json:"steamVRFrameCounter"`
-	SteamVRHeartbeatAgeMS    int64            `json:"steamVRHeartbeatAgeMs,omitempty"`
-	VideoCaptureBridgeActive bool             `json:"videoCaptureBridgeActive"`
-	VideoRawFrames           uint64           `json:"videoRawFrames"`
-	VideoEncodedFrames       uint64           `json:"videoEncodedFrames"`
-	VideoUDPFragments        uint64           `json:"videoUdpFragments"`
-	VideoDroppedFrames       uint64           `json:"videoDroppedFrames"`
-	Logs                     []string         `json:"logs"`
+	Running                  bool                   `json:"running"`
+	ServerName               string                 `json:"serverName"`
+	ListenAddress            string                 `json:"listenAddress"`
+	LocalIPv4                []string               `json:"localIPv4"`
+	DiscoveryPort            int                    `json:"discoveryPort"`
+	ControlPort              int                    `json:"controlPort"`
+	PosePort                 int                    `json:"posePort"`
+	ConnectedDevices         []DeviceSnapshot       `json:"connectedDevices"`
+	LatestPose               *PoseSnapshot          `json:"latestPose,omitempty"`
+	PacketsReceived          uint64                 `json:"packetsReceived"`
+	LastPacketAt             string                 `json:"lastPacketAt,omitempty"`
+	Uptime                   string                 `json:"uptime,omitempty"`
+	LastError                string                 `json:"lastError,omitempty"`
+	SteamVRConnected         bool                   `json:"steamVRConnected"`
+	SteamVRDriverLoaded      bool                   `json:"steamVRDriverLoaded"`
+	SteamVRHMDActive         bool                   `json:"steamVRHmdActive"`
+	SteamVRPoseValid         bool                   `json:"steamVRPoseValid"`
+	SteamVRDisplayActive     bool                   `json:"steamVRDisplayActive"`
+	SteamVRHasPresentedFrame bool                   `json:"steamVRHasPresentedFrame"`
+	SteamVRFrameCounter      uint64                 `json:"steamVRFrameCounter"`
+	SteamVRHeartbeatAgeMS    int64                  `json:"steamVRHeartbeatAgeMs,omitempty"`
+	VideoCaptureBridgeActive bool                   `json:"videoCaptureBridgeActive"`
+	VideoRawFrames           uint64                 `json:"videoRawFrames"`
+	VideoEncodedFrames       uint64                 `json:"videoEncodedFrames"`
+	VideoUDPFragments        uint64                 `json:"videoUdpFragments"`
+	VideoDroppedFrames       uint64                 `json:"videoDroppedFrames"`
+	VideoTransport           VideoTransportSnapshot `json:"videoTransport"`
+	Logs                     []string               `json:"logs"`
 }
 
 type PoseFrameSnapshot struct {
@@ -128,6 +129,7 @@ type helloMessage struct {
 	DeviceName        string          `json:"deviceName"`
 	DeviceID          string          `json:"deviceId"`
 	Client            string          `json:"client"`
+	VideoOnly         bool            `json:"videoOnly,omitempty"`
 	MediaCapabilities json.RawMessage `json:"mediaCapabilities,omitempty"`
 }
 
@@ -157,16 +159,20 @@ type welcomeMessage struct {
 }
 
 type controlMessage struct {
-	Type         string                `json:"type"`
-	RequestID    string                `json:"requestId,omitempty"`
-	Settings     *PhoneDisplaySettings `json:"settings,omitempty"`
-	Presets      []OpticalPreset       `json:"presets,omitempty"`
-	PresetID     string                `json:"presetId,omitempty"`
-	Action       string                `json:"action,omitempty"`
-	Status       string                `json:"status,omitempty"`
-	Message      string                `json:"message,omitempty"`
-	BatteryLevel *int                  `json:"batteryLevel,omitempty"`
-	Charging     bool                  `json:"charging,omitempty"`
+	Type             string                `json:"type"`
+	RequestID        string                `json:"requestId,omitempty"`
+	Settings         *PhoneDisplaySettings `json:"settings,omitempty"`
+	Presets          []OpticalPreset       `json:"presets,omitempty"`
+	PresetID         string                `json:"presetId,omitempty"`
+	Action           string                `json:"action,omitempty"`
+	Status           string                `json:"status,omitempty"`
+	Message          string                `json:"message,omitempty"`
+	BatteryLevel     *int                  `json:"batteryLevel,omitempty"`
+	Charging         bool                  `json:"charging,omitempty"`
+	VideoTransport   string                `json:"videoTransport,omitempty"`
+	LastPacketAgeMS  int64                 `json:"lastPacketAgeMs,omitempty"`
+	LastDecodedAgeMS int64                 `json:"lastDecodedAgeMs,omitempty"`
+	VideoProbe       bool                  `json:"videoProbe,omitempty"`
 }
 
 type activeDevice struct {
@@ -176,11 +182,16 @@ type activeDevice struct {
 	WriteMu      *sync.Mutex
 	Ready        bool
 	VideoEnabled bool
+	VideoOnly    bool
+	LastPingAt   time.Time
 }
 
 type videoTarget struct {
-	UDP *net.UDPAddr
-	USB *usbmux.Mux
+	UDP       *net.UDPAddr
+	USB       *usbmux.Mux
+	Transport string
+	DeviceID  string
+	Switched  bool
 }
 
 type taggedNetConn struct {
@@ -210,44 +221,53 @@ type encodedVideoFrame struct {
 var errNoVideoTarget = errors.New("no paired Android video target")
 
 type HostService struct {
-	lifecycleMu              sync.Mutex
-	mu                       sync.RWMutex
-	config                   HostConfig
-	serverName               string
-	localIPv4                []string
-	startedAt                time.Time
-	listener                 net.Listener
-	discovery                *net.UDPConn
-	pose                     *net.UDPConn
-	steamVRStatus            *net.UDPConn
-	videoCaptureListener     net.Listener
-	videoUDP                 *net.UDPConn
-	videoFFmpegPath          string
-	videoEncoderProbeDone    chan struct{}
-	videoEncoderReady        bool
-	videoEncoderSelected     encoder.Capability
-	videoEncoderError        string
-	videoBridgeActive        atomic.Bool
-	videoFrameQueue          chan *rawVideoFrame
-	videoOutputQueue         chan encodedVideoFrame
-	videoOutputMu            sync.Mutex
-	videoOutputNeedsKeyFrame bool
-	videoFramePool           sync.Pool
-	videoInputQueueDrops     atomic.Uint64
-	videoOutputQueueDrops    atomic.Uint64
-	videoTransportSendMaxNs  atomic.Int64
-	videoRawFrames           atomic.Uint64
-	videoEncodedFrames       atomic.Uint64
-	videoUDPFragments        atomic.Uint64
-	videoDroppedFrames       atomic.Uint64
-	steamVRHeartbeatAt       time.Time
-	steamVRFlags             uint8
-	steamVRFrameCounter      uint64
-	cancel                   context.CancelFunc
-	wg                       sync.WaitGroup
-	devices                  map[string]activeDevice
-	connections              map[net.Conn]struct{}
-	usbLinks                 map[string]*usbmux.Mux
+	lifecycleMu               sync.Mutex
+	mu                        sync.RWMutex
+	config                    HostConfig
+	serverName                string
+	localIPv4                 []string
+	startedAt                 time.Time
+	listener                  net.Listener
+	discovery                 *net.UDPConn
+	pose                      *net.UDPConn
+	steamVRStatus             *net.UDPConn
+	videoCaptureListener      net.Listener
+	videoUDP                  *net.UDPConn
+	videoFFmpegPath           string
+	videoEncoderProbeDone     chan struct{}
+	videoEncoderReady         bool
+	videoEncoderSelected      encoder.Capability
+	videoEncoderError         string
+	videoBridgeActive         atomic.Bool
+	videoFrameQueue           chan *rawVideoFrame
+	videoOutputQueue          chan encodedVideoFrame
+	videoOutputMu             sync.Mutex
+	videoOutputNeedsKeyFrame  bool
+	videoFramePool            sync.Pool
+	videoInputQueueDrops      atomic.Uint64
+	videoOutputQueueDrops     atomic.Uint64
+	videoTransportSendMaxNs   atomic.Int64
+	videoRawFrames            atomic.Uint64
+	videoEncodedFrames        atomic.Uint64
+	videoUDPFragments         atomic.Uint64
+	videoDroppedFrames        atomic.Uint64
+	steamVRHeartbeatAt        time.Time
+	steamVRFlags              uint8
+	steamVRFrameCounter       uint64
+	cancel                    context.CancelFunc
+	wg                        sync.WaitGroup
+	devices                   map[string]activeDevice
+	connections               map[net.Conn]struct{}
+	usbLinks                  map[string]*usbmux.Mux
+	transportMode             VideoTransportMode
+	transportPreference       VideoTransportPreference
+	activeVideoTransport      string
+	activeVideoDeviceID       string
+	activeVideoSince          time.Time
+	lastTransportSwitchAt     time.Time
+	lastTransportSwitchReason string
+	lastVideoPathProbeAt      time.Time
+	transportHealth           map[string]transportHealth
 	// The pose snapshot is immutable after publication. Atomic publication avoids
 	// reader/writer lock stalls when the desktop UI is busy rendering the model.
 	latestPose       atomic.Pointer[PoseSnapshot]
@@ -261,7 +281,8 @@ type HostService struct {
 func NewHostService(consoleLogs bool) *HostService {
 	return &HostService{
 		devices: make(map[string]activeDevice), connections: make(map[net.Conn]struct{}), usbLinks: make(map[string]*usbmux.Mux),
-		consoleLogs: consoleLogs,
+		transportMode: VideoTransportAuto, transportPreference: VideoPreferUSB,
+		transportHealth: make(map[string]transportHealth), consoleLogs: consoleLogs,
 	}
 }
 
@@ -584,8 +605,40 @@ func (s *HostService) Snapshot() HostSnapshot {
 	snapshot.VideoEncodedFrames = s.videoEncodedFrames.Load()
 	snapshot.VideoUDPFragments = s.videoUDPFragments.Load()
 	snapshot.VideoDroppedFrames = s.videoDroppedFrames.Load()
-	for _, device := range s.devices {
-		snapshot.ConnectedDevices = append(snapshot.ConnectedDevices, device.Snapshot)
+	snapshot.VideoTransport = s.videoTransportSnapshotLocked()
+	deviceByID := make(map[string]int)
+	for key, device := range s.devices {
+		item := device.Snapshot
+		identity := strings.TrimSpace(item.DeviceID)
+		if identity == "" {
+			identity = "legacy:" + key
+		}
+		if index, exists := deviceByID[identity]; exists {
+			current := &snapshot.ConnectedDevices[index]
+			if !strings.Contains(current.Transport, item.Transport) {
+				if current.Transport == "" {
+					current.Transport = item.Transport
+				} else if item.Transport != "" {
+					current.Transport += " + " + item.Transport
+				}
+			}
+			if item.BatteryLevel != nil {
+				current.BatteryLevel = item.BatteryLevel
+				current.Charging = item.Charging
+			}
+			if item.DisplaySettings != nil {
+				current.DisplaySettings = item.DisplaySettings
+			}
+			if len(item.OpticalPresets) > 0 {
+				current.OpticalPresets = item.OpticalPresets
+			}
+			if item.ConnectedAt < current.ConnectedAt {
+				current.ConnectedAt = item.ConnectedAt
+			}
+			continue
+		}
+		deviceByID[identity] = len(snapshot.ConnectedDevices)
+		snapshot.ConnectedDevices = append(snapshot.ConnectedDevices, item)
 	}
 	if running {
 		snapshot.Uptime = time.Since(s.startedAt).Round(time.Second).String()
@@ -1107,11 +1160,15 @@ func (s *HostService) handleControlConnection(ctx context.Context, conn net.Conn
 		Name: hello.DeviceName, DeviceID: hello.DeviceID, Client: hello.Client, Transport: transportName,
 		Address: remote, ConnectedAt: time.Now().Format(time.RFC3339),
 		MediaCapabilities: append(json.RawMessage(nil), mediaCapabilities...),
-	}, Conn: conn, USBLink: usbLink, WriteMu: &sync.Mutex{}, VideoEnabled: videoEnabled}
+	}, Conn: conn, USBLink: usbLink, WriteMu: &sync.Mutex{}, VideoEnabled: videoEnabled, VideoOnly: hello.VideoOnly, LastPingAt: time.Now()}
 	s.mu.Lock()
 	s.devices[remote] = device
 	s.mu.Unlock()
-	s.addLog(fmt.Sprintf("Device paired: %s via %s (%s)", hello.DeviceName, transportName, remote))
+	if hello.VideoOnly {
+		s.addLog(fmt.Sprintf("Additional video path paired: %s via %s (%s)", hello.DeviceName, transportName, remote))
+	} else {
+		s.addLog(fmt.Sprintf("Device paired: %s via %s (%s)", hello.DeviceName, transportName, remote))
+	}
 	defer func() {
 		s.mu.Lock()
 		delete(s.devices, remote)
@@ -1176,19 +1233,20 @@ func (s *HostService) handleControlConnection(ctx context.Context, conn net.Conn
 	}
 	s.mu.Unlock()
 
-	// Ask Android for its persistent optical preset catalogue. The response is
-	// independent from pose transport and must not be treated as proof that the
-	// TCP session itself is unhealthy. Retry a few times if the initial request
-	// was missed while the Android activity/UI was starting.
+	// The auxiliary AOA video session deliberately carries no device-management
+	// traffic. The network control session remains authoritative for settings,
+	// presets, and user actions.
 	presetRequestCount := 1
-	presetResponseReceived := false
+	presetResponseReceived := hello.VideoOnly
 	nextPresetRetry := time.Now().Add(2 * time.Second)
-	if err := writeControlJSON(device, map[string]any{
-		"type": "get_optical_presets", "requestId": newSessionID(),
-	}); err != nil {
-		s.addLog("Optical preset request failed: " + err.Error())
-	} else {
-		s.addLog("Requested Android optical preset catalogue")
+	if !hello.VideoOnly {
+		if err := writeControlJSON(device, map[string]any{
+			"type": "get_optical_presets", "requestId": newSessionID(),
+		}); err != nil {
+			s.addLog("Optical preset request failed: " + err.Error())
+		} else {
+			s.addLog("Requested Android optical preset catalogue")
+		}
 	}
 
 	for {
@@ -1206,6 +1264,12 @@ func (s *HostService) handleControlConnection(ctx context.Context, conn net.Conn
 		}
 		switch message.Type {
 		case "ping":
+			s.mu.Lock()
+			if current, ok := s.devices[remote]; ok && current.Conn == conn {
+				current.LastPingAt = time.Now()
+				s.devices[remote] = current
+			}
+			s.mu.Unlock()
 			if message.BatteryLevel != nil {
 				level := *message.BatteryLevel
 				if level < 0 {
@@ -1225,7 +1289,12 @@ func (s *HostService) handleControlConnection(ctx context.Context, conn net.Conn
 			if err := writeControlJSON(device, map[string]any{"type": "pong", "timeMs": time.Now().UnixMilli()}); err != nil {
 				return
 			}
+		case "video_feedback":
+			s.updateVideoTransportFeedback(hello.DeviceID, message.VideoTransport, message.LastPacketAgeMS, message.LastDecodedAgeMS, message.VideoProbe)
 		case "optical_presets":
+			if hello.VideoOnly {
+				continue
+			}
 			presets := normalizeOpticalPresets(message.Presets)
 			presetResponseReceived = true
 			s.mu.Lock()
@@ -1240,6 +1309,9 @@ func (s *HostService) handleControlConnection(ctx context.Context, conn net.Conn
 				s.addLog(fmt.Sprintf("Received %d optical presets from %s (request %s)", len(presets), hello.DeviceName, message.RequestID))
 			}
 		case "optical_presets_ack":
+			if hello.VideoOnly {
+				continue
+			}
 			if message.Status == "applied" {
 				s.addLog(fmt.Sprintf("Android saved %d optical presets", len(message.Presets)))
 				s.mu.Lock()
@@ -1252,6 +1324,9 @@ func (s *HostService) handleControlConnection(ctx context.Context, conn net.Conn
 				s.addLog("Android rejected optical presets: " + message.Message)
 			}
 		case "display_settings":
+			if hello.VideoOnly {
+				continue
+			}
 			if message.Settings == nil {
 				_ = writeControlJSON(device, map[string]any{"type": "error", "message": "missing display settings"})
 				continue
@@ -1264,12 +1339,18 @@ func (s *HostService) handleControlConnection(ctx context.Context, conn net.Conn
 			}
 			s.mu.Unlock()
 		case "device_action_ack":
+			if hello.VideoOnly {
+				continue
+			}
 			if message.Status == "applied" {
 				s.addLog("Phone action applied: " + message.RequestID)
 			} else if message.Status == "rejected" {
 				s.addLog("Phone action rejected: " + message.Message)
 			}
 		case "display_settings_ack":
+			if hello.VideoOnly {
+				continue
+			}
 			if message.Settings != nil && message.Status == "applied" {
 				settings := message.Settings.Normalized()
 				s.mu.Lock()
@@ -1286,7 +1367,7 @@ func (s *HostService) handleControlConnection(ctx context.Context, conn net.Conn
 			_ = writeControlJSON(device, map[string]any{"type": "error", "message": "unsupported control message"})
 		}
 
-		if !presetResponseReceived && time.Now().After(nextPresetRetry) {
+		if !hello.VideoOnly && !presetResponseReceived && time.Now().After(nextPresetRetry) {
 			if presetRequestCount < 4 {
 				presetRequestCount++
 				requestID := newSessionID()
@@ -1400,29 +1481,15 @@ func maxDurationSeconds(value time.Duration) float64 {
 	return seconds
 }
 
-func (s *HostService) currentVideoTarget() (videoTarget, bool) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	for _, device := range s.devices {
-		if !device.Ready || !device.VideoEnabled || device.Conn == nil {
-			continue
-		}
-		if device.USBLink != nil {
-			return videoTarget{USB: device.USBLink}, true
-		}
-		tcp, ok := device.Conn.RemoteAddr().(*net.TCPAddr)
-		if !ok || tcp.IP == nil {
-			continue
-		}
-		return videoTarget{UDP: &net.UDPAddr{IP: append(net.IP(nil), tcp.IP...), Port: androidVideoPort}}, true
-	}
-	return videoTarget{}, false
-}
+var errVideoTransportAwaitingIDR = errors.New("video transport changed; waiting for next IDR")
 
 func (s *HostService) sendEncodedVideoFrame(frame []byte, frameID uint32, timestampNs uint64, keyFrame bool) error {
 	target, enabled := s.currentVideoTarget()
 	if !enabled {
 		return errNoVideoTarget
+	}
+	if target.Switched && !keyFrame {
+		return errVideoTransportAwaitingIDR
 	}
 	fragments, err := videoprotocol.FragmentFrame(frame, frameID, timestampNs, keyFrame)
 	if err != nil {
@@ -1433,6 +1500,7 @@ func (s *HostService) sendEncodedVideoFrame(frame []byte, frameID uint32, timest
 			if err := target.USB.WriteFrame(usbmux.ChannelVideo, packet); err != nil {
 				// A failed/partial multiplex write invalidates byte-stream framing.
 				_ = target.USB.Close()
+				s.markVideoTransportFailure(target, err)
 				return fmt.Errorf("USB AOA Bulk OUT: %w", err)
 			}
 			s.videoUDPFragments.Add(1)
@@ -1443,10 +1511,13 @@ func (s *HostService) sendEncodedVideoFrame(frame []byte, frameID uint32, timest
 	udp := s.videoUDP
 	s.mu.RUnlock()
 	if udp == nil {
-		return errors.New("video UDP sender is unavailable")
+		err := errors.New("video UDP sender is unavailable")
+		s.markVideoTransportFailure(target, err)
+		return err
 	}
 	for _, packet := range fragments {
 		if _, err := udp.WriteToUDP(packet, target.UDP); err != nil {
+			s.markVideoTransportFailure(target, err)
 			return fmt.Errorf("Android UDP video send: %w", err)
 		}
 		s.videoUDPFragments.Add(1)
@@ -1873,10 +1944,14 @@ func (s *HostService) requireVideoKeyFrame() int {
 
 func (s *HostService) videoTransportSendLoop(ctx context.Context) {
 	defer s.wg.Done()
+	probeTicker := time.NewTicker(time.Second)
+	defer probeTicker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
+		case <-probeTicker.C:
+			s.probeStandbyVideoPaths()
 		case frame := <-s.videoOutputQueue:
 			started := time.Now()
 			err := s.sendEncodedVideoFrame(frame.data, frame.frameID, frame.timestampNs, frame.keyFrame)
@@ -1889,8 +1964,10 @@ func (s *HostService) videoTransportSendLoop(ctx context.Context) {
 			if err != nil {
 				s.videoDroppedFrames.Add(1)
 				dropped := s.requireVideoKeyFrame()
-				if !errors.Is(err, errNoVideoTarget) {
+				if !errors.Is(err, errNoVideoTarget) && !errors.Is(err, errVideoTransportAwaitingIDR) {
 					s.addLog(fmt.Sprintf("Video transport send failed after %.1f ms: %v; dropped %d queued access units and waiting for next IDR", float64(elapsed)/float64(time.Millisecond), err, dropped))
+				} else if errors.Is(err, errVideoTransportAwaitingIDR) {
+					s.addLog("Video transport changed; dropped delta frames and waiting for the next IDR")
 				}
 			}
 		}

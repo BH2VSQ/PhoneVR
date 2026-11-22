@@ -262,11 +262,10 @@ class MainActivity : Activity(), SensorEventListener {
         updateTopHud()
         updatePoseText("IMU 初始化中")
         root.post {
-            if (intent?.action == "android.hardware.usb.action.USB_ACCESSORY_ATTACHED") {
-                networkClient.connectUsb(Build.MODEL ?: "Android")
-            } else {
-                startStartupDiscovery()
-            }
+            // Keep AOA armed as an independent backup while LAN discovery and
+            // the primary network control/pose session run normally.
+            networkClient.connectUsbVideoBackup(Build.MODEL ?: "Android")
+            startStartupDiscovery()
         }
     }
 
@@ -274,7 +273,10 @@ class MainActivity : Activity(), SensorEventListener {
         super.onNewIntent(intent)
         setIntent(intent)
         if (intent?.action == "android.hardware.usb.action.USB_ACCESSORY_ATTACHED") {
-            if (::networkClient.isInitialized) networkClient.connectUsb(Build.MODEL ?: "Android")
+            if (::networkClient.isInitialized) {
+                networkClient.connectUsbVideoBackup(Build.MODEL ?: "Android")
+                startStartupDiscovery()
+            }
         }
     }
 

@@ -1,3 +1,14 @@
+## 0.5.13 - Dual-path USB AOA and network video failover
+
+- Added a Windows Host video-transport selector with **Automatic failover**, **USB AOA only** and **Network only** modes. Automatic mode also lets the user choose USB AOA or network as the preferred initial route.
+- The Android client now advertises a persistent device ID. Its LAN control/pose connection and an independent AOA video-only session can stay connected at the same time and are grouped as one phone by the Host.
+- Both paths remain available while the Host sends each H.264 access unit over only the selected path. Android forwards AOA Bulk video packets into the same UDP receiver and MediaCodec pipeline used for LAN video, avoiding duplicate decoding and competing frame queues.
+- Added per-path heartbeats, Android receiver feedback and one-second `PVRP` probes over each standby video path. The Host verifies the actual UDP or AOA Bulk receive path before selecting a standby route, so a healthy control connection cannot mask a broken video data path. Explicit write failures and silent active-path receive timeouts trigger failover without restarting capture or the H.264 encoder.
+- On a path change, the Host drops queued delta frames and waits for the next IDR before sending on the new route. Android continues to accept both Host UDP packets and AOA loopback packets.
+- The AOA auxiliary session also sends head pose only while the network TCP control route is unavailable, so a complete LAN control outage can keep orientation tracking alive over USB. It remains silent during healthy LAN operation to avoid duplicate pose samples.
+- Bumped Android `versionName` to `0.5.13` and `versionCode` to `48`; synchronized the Host executable, repository version and AOA descriptor metadata.
+- `go test ./...`, `go test -race ./...`, `go vet ./...` and Windows amd64 Host cross-build pass. Android Gradle compilation, APK packaging and physical USB/network failover tests remain pending because this source bundle has no `gradle-wrapper.jar` and this runtime has no installed Gradle distribution or Android SDK.
+
 ## 0.5.12 - Fix Android AOA USB packet truncation and add wire diagnostics
 
 - Fixed the Android AOA receive path to request 16 KiB raw reads before parsing PVRU frames. The previous code requested only 16 bytes for a frame header, which was smaller than a USB bulk packet and could cause the remainder of that packet to be discarded by the AOA file-descriptor read path.

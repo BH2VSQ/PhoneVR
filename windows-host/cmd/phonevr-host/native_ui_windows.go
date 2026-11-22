@@ -237,6 +237,7 @@ const (
 	idMenu           = 106
 	idAppearance     = 107
 	idDriverManager  = 108
+	idTransport      = 109
 	idProfile        = 200
 	idApply          = 201
 	idDialogCenter   = 202
@@ -259,6 +260,9 @@ const (
 	idNetworkStop    = 401
 	idNetworkStart   = 402
 	idLogsRefresh    = 500
+	idTransportMode  = 800
+	idTransportPref  = 801
+	idTransportApply = 802
 )
 
 type nativePoint struct{ X, Y int32 }
@@ -965,6 +969,11 @@ func (app *nativeUI) refreshPoseFrame() {
 }
 func (app *nativeUI) refreshStatusSnapshot() {
 	app.snapshot = app.service.Snapshot()
+	for _, dialog := range app.dialogs {
+		if dialog.kind == "transport" && dialog.status != 0 {
+			setNativeText(dialog.status, app.transportDialogStatusText(app.snapshot.VideoTransport))
+		}
+	}
 	if len(app.snapshot.ConnectedDevices) > 0 {
 		device := app.snapshot.ConnectedDevices[len(app.snapshot.ConnectedDevices)-1]
 		if device.DisplaySettings != nil {
@@ -1018,6 +1027,7 @@ func (app *nativeUI) mainMenuItems() []nativeMenuItem {
 		{ID: idAppearance, Chinese: "外观与主题", English: "Appearance & Theme"},
 		{ID: idLogs, Chinese: "运行日志", English: "Logs"},
 		{ID: idDriverManager, Chinese: "SteamVR 驱动管理", English: "SteamVR Driver"},
+		{ID: idTransport, Chinese: "视频传输模式", English: "Video Transport"},
 		{ID: idLanguage, Chinese: "切换为 English", English: "Switch to 中文"},
 	}
 }
@@ -1098,6 +1108,8 @@ func (app *nativeUI) handleMainCommand(id int) {
 		app.openDialog("presets")
 	case idNetwork:
 		app.openDialog("network")
+	case idTransport:
+		app.openDialog("transport")
 	case idLogs:
 		app.openDialog("logs")
 	case idDriverManager:
@@ -1150,6 +1162,8 @@ func (app *nativeUI) openDialog(kind string) {
 		width, height, title = 900, 660, app.text("光学预设", "Optical Presets")
 	case "network":
 		width, height, title = 760, 560, app.text("网络设置", "Network Settings")
+	case "transport":
+		width, height, title = 720, 500, app.text("视频传输模式", "Video Transport")
 	case "logs":
 		width, height, title = 980, 680, app.text("运行日志", "Runtime Logs")
 	case "appearance":
@@ -1298,6 +1312,32 @@ func (app *nativeUI) createDialogControls(d *nativeDialog) {
 		addButton(idThemeModeDark, app.text("夜间模式", "Dark"))
 		// Palette swatches are painted directly on the dialog. This avoids
 		// native button chrome and lets the parent receive right-click gestures.
+		addButton(idClose, app.text("关闭", "Close"))
+
+	case "transport":
+		addLabel(d.hwnd, 0, app.text("传输模式", "TRANSPORT MODE"))
+		addLabel(d.hwnd, 1, app.text("自动模式的优先链路", "AUTO MODE PREFERENCE"))
+		modeStyle := uint32(wsChild | wsVisible | wsTabStop | wsVScroll | 0x0003) // CBS_DROPDOWNLIST
+		d.controls[idTransportMode] = app.createControl(d.hwnd, "COMBOBOX", "", modeStyle, 0, 0, 10, 10, idTransportMode)
+		for _, item := range []string{
+			app.text("自动切换（双链路备用）", "Automatic failover (dual-path standby)"),
+			app.text("仅 USB AOA", "USB AOA only"),
+			app.text("仅网络", "Network only"),
+		} {
+			app.addComboItem(d.controls[idTransportMode], item)
+		}
+		d.controls[idTransportPref] = app.createControl(d.hwnd, "COMBOBOX", "", modeStyle, 0, 0, 10, 10, idTransportPref)
+		for _, item := range []string{
+			app.text("优先 USB AOA，网络备用", "Prefer USB AOA, network backup"),
+			app.text("优先网络，USB AOA 备用", "Prefer network, USB AOA backup"),
+		} {
+			app.addComboItem(d.controls[idTransportPref], item)
+		}
+		transportStatus := app.service.videoTransportStatus()
+		sendNativeMessage(d.controls[idTransportMode], 0x014E, comboTransportModeIndex(transportStatus.Mode), 0)
+		sendNativeMessage(d.controls[idTransportPref], 0x014E, comboTransportPreferenceIndex(transportStatus.Preferred), 0)
+		d.status = app.createControl(d.hwnd, "STATIC", app.transportDialogStatusText(transportStatus), wsChild|wsVisible, 0, 0, 10, 10, 0)
+		addButton(idTransportApply, app.text("应用模式", "Apply Mode"))
 		addButton(idClose, app.text("关闭", "Close"))
 
 	case "network":
@@ -1476,6 +1516,16 @@ func (app *nativeUI) layoutDialog(d *nativeDialog) {
 		move(d.controls[idNetworkStart], margin+buttonWidth+gapX, buttonY, buttonWidth, 38)
 		move(d.controls[idNetworkStop], margin+2*(buttonWidth+gapX), buttonY, buttonWidth, 38)
 		move(d.controls[idClose], margin+3*(buttonWidth+gapX), buttonY, buttonWidth, 38)
+
+	case "transport":
+		margin := 28
+		move(d.labels[0], margin, 112, w-2*margin, 26)
+		move(d.controls[idTransportMode], margin, 142, w-2*margin, 40)
+		move(d.labels[1], margin, 206, w-2*margin, 26)
+		move(d.controls[idTransportPref], margin, 236, w-2*margin, 40)
+		move(d.status, margin, 302, w-2*margin, 104)
+		move(d.controls[idTransportApply], margin, h-54, 170, 38)
+		move(d.controls[idClose], w-margin-116, h-54, 116, 38)
 
 	case "logs":
 		margin := 18
@@ -1812,6 +1862,22 @@ func (app *nativeUI) handleDialogCommand(d *nativeDialog, id int) {
 		case idClose:
 			pDestroyWindow.Call(d.hwnd)
 		}
+	case "transport":
+		if id == idTransportApply {
+			modeIndex := int(sendNativeMessage(d.controls[idTransportMode], 0x0147, 0, 0))
+			prefIndex := int(sendNativeMessage(d.controls[idTransportPref], 0x0147, 0, 0))
+			mode := []string{"auto", "usb", "network"}[clampInt(modeIndex, 0, 2)]
+			preferred := []string{"usb", "network"}[clampInt(prefIndex, 0, 1)]
+			if err := app.service.SetVideoTransport(mode, preferred); err != nil {
+				setNativeText(d.status, app.text("应用失败：", "Apply failed: ")+err.Error())
+				return
+			}
+			app.refreshStatusSnapshot()
+			setNativeText(d.status, app.transportDialogStatusText(app.snapshot.VideoTransport))
+		} else if id == idClose {
+			pDestroyWindow.Call(d.hwnd)
+		}
+
 	case "logs":
 		if id == idLogsRefresh {
 			app.refreshLogDialog(d)
@@ -2330,6 +2396,61 @@ func (app *nativeUI) updatePendingSettingsAcks() {
 		}
 	}
 }
+func comboTransportModeIndex(mode VideoTransportMode) uintptr {
+	switch mode {
+	case VideoTransportUSB:
+		return 1
+	case VideoTransportNetwork:
+		return 2
+	default:
+		return 0
+	}
+}
+
+func comboTransportPreferenceIndex(preference VideoTransportPreference) uintptr {
+	if preference == VideoPreferNetwork {
+		return 1
+	}
+	return 0
+}
+
+func (app *nativeUI) transportDialogStatusText(status VideoTransportSnapshot) string {
+	modeText := app.text("自动切换", "Automatic failover")
+	switch status.Mode {
+	case VideoTransportUSB:
+		modeText = app.text("仅 USB AOA", "USB AOA only")
+	case VideoTransportNetwork:
+		modeText = app.text("仅网络", "Network only")
+	}
+	activeText := app.text("未选择", "Not selected")
+	switch status.Active {
+	case "usb":
+		activeText = "USB AOA"
+	case "network":
+		activeText = app.text("网络串流", "Network streaming")
+	}
+	usbState := app.text("不可用", "Unavailable")
+	if status.USBAvailable {
+		usbState = app.text("已连接", "Connected")
+	}
+	networkState := app.text("不可用", "Unavailable")
+	if status.NetworkAvailable {
+		networkState = app.text("已连接", "Connected")
+	}
+	lines := []string{
+		app.text("当前模式：", "Mode: ") + modeText,
+		app.text("当前视频链路：", "Active video path: ") + activeText,
+		"USB AOA: " + usbState + "    " + app.text("网络：", "Network: ") + networkState,
+	}
+	if status.LastSwitchReason != "" {
+		lines = append(lines, app.text("最近切换原因：", "Last switch reason: ")+status.LastSwitchReason)
+	}
+	if status.LastSwitchAt != "" {
+		lines = append(lines, app.text("最近切换时间：", "Last switch: ")+status.LastSwitchAt)
+	}
+	return strings.Join(lines, "\r\n")
+}
+
 func (app *nativeUI) toggleLanguage() {
 	if app.language == "en" {
 		app.language = "zh"

@@ -281,8 +281,9 @@ func (app *nativeUI) paintMain(hdc uintptr) {
 	if app.snapshot.VideoCaptureBridgeActive {
 		videoState = "驱动视频桥接已连接"
 	}
-	videoSummary := fmt.Sprintf("VIDEO  %s    RAW %d    H.264 %d    FRAGMENTS %d    DROPPED %d",
-		videoState, app.snapshot.VideoRawFrames, app.snapshot.VideoEncodedFrames,
+	transportState := app.videoTransportSummaryText(app.snapshot.VideoTransport)
+	videoSummary := fmt.Sprintf("VIDEO  %s    %s    RAW %d    H.264 %d    FRAGMENTS %d    DROPPED %d",
+		videoState, transportState, app.snapshot.VideoRawFrames, app.snapshot.VideoEncodedFrames,
 		app.snapshot.VideoUDPFragments, app.snapshot.VideoDroppedFrames)
 	drawNativeText(hdc, videoSummary, nativeRect{28, 76, int32(w - 28), 102}, p.Muted, app.fontSmall, dtVCenter|dtSingleLine|dtEndEllipsis|dtNoPrefix)
 
@@ -305,6 +306,31 @@ func (app *nativeUI) paintMain(hdc uintptr) {
 		drawNativeText(hdc, labels[i], nativeRect{int32(x + 4), int32(metricY + 6), int32(x + metricW - 4), int32(metricY + 27)}, p.Muted, app.fontSmall, dtCenter|dtVCenter|dtSingleLine|dtNoPrefix)
 		drawNativeText(hdc, values[i], nativeRect{int32(x + 4), int32(metricY + 26), int32(x + metricW - 4), int32(metricY + 68)}, p.Accent, app.fontValue, dtCenter|dtVCenter|dtSingleLine|dtNoPrefix)
 	}
+}
+
+func (app *nativeUI) videoTransportSummaryText(status VideoTransportSnapshot) string {
+	mode := app.text("自动", "AUTO")
+	switch status.Mode {
+	case VideoTransportUSB:
+		mode = "USB ONLY"
+	case VideoTransportNetwork:
+		mode = "NETWORK ONLY"
+	}
+	active := app.text("等待链路", "WAITING")
+	backup := ""
+	switch status.Active {
+	case "usb":
+		active = "USB AOA"
+		if status.NetworkAvailable {
+			backup = " + NET READY"
+		}
+	case "network":
+		active = "NETWORK"
+		if status.USBAvailable {
+			backup = " + USB READY"
+		}
+	}
+	return mode + " / " + active + backup
 }
 
 func (app *nativeUI) paintMainMenu(hdc uintptr) {

@@ -75,7 +75,7 @@ func (s *HostService) SendPhoneDisplaySettings(settings PhoneDisplaySettings) er
 	found := false
 	latest := time.Time{}
 	for _, device := range s.devices {
-		if !device.Ready {
+		if !device.Ready || device.VideoOnly {
 			continue
 		}
 		connectedAt, _ := time.Parse(time.RFC3339, device.Snapshot.ConnectedAt)
@@ -125,7 +125,7 @@ func (s *HostService) SendPhoneAction(action string) error {
 	found := false
 	latest := time.Time{}
 	for _, device := range s.devices {
-		if !device.Ready {
+		if !device.Ready || device.VideoOnly {
 			continue
 		}
 		connectedAt, _ := time.Parse(time.RFC3339, device.Snapshot.ConnectedAt)
@@ -190,7 +190,7 @@ func (s *HostService) latestReadyDevice() (activeDevice, error) {
 	found := false
 	latest := time.Time{}
 	for _, device := range s.devices {
-		if !device.Ready || device.Conn == nil || device.WriteMu == nil {
+		if !device.Ready || device.VideoOnly || device.Conn == nil || device.WriteMu == nil {
 			continue
 		}
 		connectedAt, _ := time.Parse(time.RFC3339, device.Snapshot.ConnectedAt)

@@ -1,4 +1,4 @@
-# PhoneVR Host 0.5.12 bundled SteamVR driver and live SBS video
+# PhoneVR Host 0.5.13 bundled SteamVR driver and live SBS video
 
 Executable version is injected from the repository root `VERSION` file during builds.
 
@@ -12,7 +12,7 @@ The Host runs a bounded FFmpeg encoder-candidate probe at startup. Use `PhoneVRH
 
 `PhoneVRHost.exe` creates a native Win32 top-level application window. The UI is drawn with Win32/GDI+ and the HMD pose preview uses WGL/OpenGL. There is no WebView, browser runtime or local HTTP dashboard.
 
-The dashboard shows Host/SteamVR/HMD status, phone battery, the 3D HMD model and Yaw/Pitch/Roll. The SteamVR state pill adapts to English and Chinese labels. The preview keeps a reserved gap above the telemetry cards.
+The dashboard shows Host/SteamVR/HMD status, phone battery, the 3D HMD model and Yaw/Pitch/Roll. The SteamVR state pill adapts to English and Chinese labels. The preview keeps a reserved gap above the telemetry cards. It also shows the active H.264 route and whether the alternate transport is available. The Video Transport dialog provides automatic failover, USB AOA-only and network-only modes.
 
 The main menu provides:
 
@@ -20,6 +20,7 @@ The main menu provides:
 - Network Settings
 - Appearance & Theme
 - Runtime Logs
+- Video Transport mode and automatic AOA/network failover
 - SteamVR Driver management
 - Center View and language switching
 

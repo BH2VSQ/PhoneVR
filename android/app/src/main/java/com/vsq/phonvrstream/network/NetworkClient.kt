@@ -31,6 +31,7 @@ import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
+import java.util.UUID
 
 /** LAN and USB-AOA connection management with low-latency pose and H.264 transports. */
 class NetworkClient(
@@ -46,9 +47,20 @@ class NetworkClient(
     private val videoStatsListener: (VideoStreamStats) -> Unit = {},
 ) {
     private val appContext = context.applicationContext
+    private val stableDeviceId: String by lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
+        val preferences = appContext.getSharedPreferences("phone_vr_identity", Context.MODE_PRIVATE)
+        preferences.getString("device_id", null)?.takeIf { it.isNotBlank() } ?: UUID.randomUUID().toString().also { id ->
+            preferences.edit().putString("device_id", id).apply()
+        }
+    }
     private val mainHandler = Handler(Looper.getMainLooper())
     private val discoveryExecutor = Executors.newSingleThreadExecutor()
     private val sessionExecutor = Executors.newSingleThreadExecutor()
+    private val auxiliaryUsbExecutor = Executors.newSingleThreadExecutor()
+    private val auxiliaryPoseExecutor = Executors.newSingleThreadExecutor()
+    private val auxiliaryUsbGeneration = AtomicLong(0L)
+    private val auxiliaryUsbRunning = AtomicBoolean(false)
+    private val auxiliaryUsbLock = Any()
     // UI callbacks only enqueue control replies. All socket writes happen on this
     // dedicated worker, never on Android's main thread.
     private val controlWriteExecutor = Executors.newSingleThreadExecutor()
@@ -75,12 +87,16 @@ class NetworkClient(
     @Volatile private var controlSocket: Socket? = null
     @Volatile private var poseSocket: DatagramSocket? = null
     @Volatile private var usbSession: UsbAccessorySession? = null
+    @Volatile private var auxiliaryUsbSession: UsbAccessorySession? = null
+    @Volatile private var auxiliaryUsbWriter: BufferedWriter? = null
+    @Volatile private var auxiliaryUsbWriterGeneration: Long = -1L
     @Volatile private var usbVideoForwardSocket: DatagramSocket? = null
     @Volatile private var usbVideoForwardPort: Int = -1
     @Volatile private var activeControlWriter: BufferedWriter? = null
     @Volatile private var activeControlGeneration: Long = -1L
     private data class VideoSessionConfig(val host: String, val port: Int, val width: Int, val height: Int, val fps: Int, val decoderName: String, val generation: Long, val transport: String)
     private val videoLifecycleExecutor = Executors.newSingleThreadExecutor()
+    private val videoSessionGeneration = AtomicLong(0L)
     private val videoLock = Any()
     @Volatile private var videoSurface: Surface? = null
     @Volatile private var videoConfig: VideoSessionConfig? = null
@@ -97,7 +113,7 @@ class NetworkClient(
         restartVideoReceiver()
     }
 
-    private fun configureVideoStream(generation: Long, host: String, welcome: JSONObject) {
+    private fun configureVideoStream(host: String, welcome: JSONObject) {
         if (!welcome.optBoolean("videoEnabled", false) ||
             welcome.optString("videoCodec", "") != "h264" ||
             welcome.optString("videoMimeType", "") != "video/avc") {
@@ -106,7 +122,7 @@ class NetworkClient(
             val reason = welcome.optString("videoReason", "当前未协商到兼容的 H.264 解码器")
             videoStatusText = "视频未启用：$reason"
             publishVideoStats(VideoStreamStats(state = "视频未启用"))
-            stopVideoReceiverAsync(generation)
+            if (!isUsbVideoBackupConnected()) stopVideoReceiverAsync()
             return
         }
         val transport = welcome.optString("videoTransport", "udp").lowercase()
@@ -118,7 +134,7 @@ class NetworkClient(
             height = welcome.optInt("videoHeight", DEFAULT_VIDEO_HEIGHT),
             fps = welcome.optInt("videoFps", DEFAULT_VIDEO_FPS),
             decoderName = welcome.optString("videoDecoderName", "").trim(),
-            generation = generation,
+            generation = videoSessionGeneration.incrementAndGet(),
             transport = if (useUsb) "usb" else "udp",
         )
         if (config.width <= 0 || config.height <= 0 || config.fps !in 1..120 ||
@@ -126,7 +142,7 @@ class NetworkClient(
             videoConfig = null
             videoStatusText = "PC 返回的视频流参数无效"
             publishVideoStats(VideoStreamStats(state = "视频参数无效"))
-            stopVideoReceiverAsync(generation)
+            if (!isUsbVideoBackupConnected()) stopVideoReceiverAsync()
             return
         }
         videoConfig = config
@@ -146,23 +162,28 @@ class NetworkClient(
                 usbVideoForwardSocket = null
                 usbVideoForwardPort = -1
                 val config = videoConfig ?: return@synchronized
-                if (!isSessionActive(config.generation)) return@synchronized
+                if (videoConfig !== config || !isVideoSessionActive(config.generation)) return@synchronized
                 val surface = videoSurface ?: return@synchronized
                 try {
                     val receiver = VideoStreamReceiver(
                         config.host, config.port, config.width, config.height, config.fps, config.decoderName, surface,
                         transportLabel = if (config.transport == "usb") "USB Bulk" else "UDP",
+                        // Network UDP and AOA Bulk loopback packets share this receiver.
+                        additionalAllowedAddresses = setOf("127.0.0.1"),
+                        onPathProbe = { transport -> sendVideoPathProbeFeedback(config.generation, transport) },
                         onStatus = { status -> updateVideoStatus(config.generation, status) },
                         onStats = { stats -> updateVideoStats(config.generation, stats) },
                     )
                     receiver.start()
                     videoReceiver = receiver
-                    if (config.transport == "usb") {
-                        val forwarder = DatagramSocket()
-                        usbVideoForwardSocket?.close()
-                        usbVideoForwardSocket = forwarder
-                        usbVideoForwardPort = receiver.localPort
-                        videoStatusText = "USB Bulk 视频通道已启动，等待 PC 首帧"
+                    val forwarder = DatagramSocket()
+                    usbVideoForwardSocket?.close()
+                    usbVideoForwardSocket = forwarder
+                    usbVideoForwardPort = receiver.localPort
+                    videoStatusText = if (config.transport == "usb") {
+                        "USB Bulk 视频通道已启动，等待 PC 首帧"
+                    } else {
+                        "网络视频接收已启动，AOA 备用入口可并行接入"
                     }
                 } catch (error: Throwable) {
                     updateVideoStatus(config.generation, "视频接收启动失败：${error.message ?: error.javaClass.simpleName}")
@@ -184,13 +205,17 @@ class NetworkClient(
         socket.send(DatagramPacket(payload, payload.size, InetAddress.getByName("127.0.0.1"), port))
     }
 
+    private fun isVideoSessionActive(generation: Long): Boolean {
+        return videoConfig?.generation == generation && (running.get() || isUsbVideoBackupConnected())
+    }
+
     private fun updateVideoStatus(generation: Long, status: String) {
-        if (!isSessionActive(generation)) return
+        if (!isVideoSessionActive(generation)) return
         videoStatusText = status
     }
 
     private fun updateVideoStats(generation: Long, stats: VideoStreamStats) {
-        if (!isSessionActive(generation)) return
+        if (!isVideoSessionActive(generation)) return
         val now = System.nanoTime()
         val previous = lastVideoStatsNs.getAndSet(now)
         val elapsedSeconds = if (previous > 0L) ((now - previous).coerceAtLeast(1L) / 1_000_000_000.0) else 1.0
@@ -201,7 +226,48 @@ class NetworkClient(
             stats.copy(displayFps = displayFps)
         }
         latestVideoStats = combined
+        val source = stats.lastSourceAddress
+        val transport = when (source) {
+            "127.0.0.1", "::1" -> "usb"
+            null, "" -> ""
+            else -> "network"
+        }
+        if (transport.isNotEmpty()) {
+            sendVideoTransportFeedback(transport, stats.lastPacketAgeMs, stats.lastDecodedAgeMs, probe = false)
+        }
         mainHandler.post { videoStatsListener(combined) }
+    }
+
+    private fun sendVideoPathProbeFeedback(generation: Long, transport: String) {
+        if (!isVideoSessionActive(generation)) return
+        sendVideoTransportFeedback(transport, -1L, latestVideoStats.lastDecodedAgeMs, probe = true)
+    }
+
+    private fun sendVideoTransportFeedback(transport: String, packetAgeMs: Long, decodedAgeMs: Long, probe: Boolean) {
+        if (transport != "usb" && transport != "network") return
+        val feedback = JSONObject()
+            .put("type", "video_feedback")
+            .put("videoTransport", transport)
+            .put("lastPacketAgeMs", packetAgeMs)
+            .put("lastDecodedAgeMs", decodedAgeMs)
+            .put("videoProbe", probe)
+        val writer = activeControlWriter
+        val generation = activeControlGeneration
+        if (writer != null && isSessionActive(generation)) {
+            queueControlMessage(writer, generation, feedback, "视频链路状态反馈失败")
+        }
+        val auxWriter = auxiliaryUsbWriter
+        val auxGeneration = auxiliaryUsbWriterGeneration
+        if (auxWriter != null && isUsbVideoBackupActive(auxGeneration)) {
+            runCatching {
+                controlWriteExecutor.execute {
+                    if (isUsbVideoBackupActive(auxGeneration)) {
+                        runCatching { writeControlMessage(auxWriter, feedback) }
+                            .onFailure { Log.w(TAG, "AOA video feedback write failed: ${it.message}") }
+                    }
+                }
+            }
+        }
     }
 
     private fun publishVideoStats(stats: VideoStreamStats) {
@@ -214,7 +280,7 @@ class NetworkClient(
     /** Called by the GL renderer after SurfaceTexture accepts a newly decoded frame. */
     fun reportVideoFrameRendered() {
         val config = videoConfig ?: return
-        if (!isSessionActive(config.generation)) return
+        if (!isVideoSessionActive(config.generation)) return
         renderedFramesSinceStats.incrementAndGet()
         if (firstRenderedVideoGeneration.compareAndSet(-1L, config.generation)) {
             videoStatusText = "SteamVR 双目画面已到达显示纹理"
@@ -474,8 +540,212 @@ class NetworkClient(
         }
     }
 
+    /**
+     * Opens AOA as an independent video-only path while the LAN control/pose
+     * session remains active. Both video paths feed the same bounded UDP receive
+     * queue and therefore share one MediaCodec decoder.
+     */
+    fun connectUsbVideoBackup(deviceName: String = "Android") {
+        val generation = auxiliaryUsbGeneration.incrementAndGet()
+        auxiliaryUsbRunning.set(true)
+        synchronized(auxiliaryUsbLock) {
+            auxiliaryUsbSession?.close()
+            auxiliaryUsbSession = null
+            auxiliaryUsbWriter = null
+            auxiliaryUsbWriterGeneration = -1L
+        }
+        auxiliaryUsbExecutor.execute { usbVideoBackupLoop(generation, deviceName) }
+    }
+
+    fun stopUsbVideoBackup() {
+        auxiliaryUsbRunning.set(false)
+        auxiliaryUsbGeneration.incrementAndGet()
+        synchronized(auxiliaryUsbLock) {
+            auxiliaryUsbSession?.close()
+            auxiliaryUsbSession = null
+            auxiliaryUsbWriter = null
+            auxiliaryUsbWriterGeneration = -1L
+        }
+    }
+
+    private fun isUsbVideoBackupActive(generation: Long): Boolean =
+        auxiliaryUsbRunning.get() && auxiliaryUsbGeneration.get() == generation
+
+    private fun isUsbVideoBackupConnected(): Boolean =
+        auxiliaryUsbRunning.get() && auxiliaryUsbSession?.isClosed == false
+
+    private fun usbVideoBackupLoop(generation: Long, deviceName: String) {
+        var retryDelayMs = INITIAL_RECONNECT_DELAY_MS
+        val mediaCapabilities = runCatching { currentMediaCapabilities() }.getOrDefault(JSONArray())
+        while (isUsbVideoBackupActive(generation)) {
+            var session: UsbAccessorySession? = null
+            try {
+                val opened = UsbAccessorySession.openFirstAccessory(appContext)
+                session = opened
+                opened.videoPacketListener = { packet -> forwardUsbVideoPacket(packet) }
+                synchronized(auxiliaryUsbLock) {
+                    if (isUsbVideoBackupActive(generation)) auxiliaryUsbSession = opened else opened.close()
+                }
+                if (!isUsbVideoBackupActive(generation)) return
+
+                val reader = ControlLineReader(opened.controlInput)
+                val writer = BufferedWriter(OutputStreamWriter(opened.controlOutput, StandardCharsets.UTF_8))
+                val hello = JSONObject()
+                    .put("type", "hello")
+                    .put("protocol", PROTOCOL_VERSION)
+                    .put("deviceName", deviceName.take(80))
+                    .put("deviceId", stableDeviceId)
+                    .put("client", CLIENT_VERSION)
+                    .put("transport", "usb-aoa-video")
+                    .put("videoOnly", true)
+                    .put("mediaCapabilities", mediaCapabilities)
+                writeControlMessage(writer, hello)
+
+                val handshakeStartedNs = System.nanoTime()
+                val welcomeLine = reader.readLine {
+                    if (System.nanoTime() - handshakeStartedNs > USB_HANDSHAKE_TIMEOUT_NS) {
+                        throw SocketTimeoutException("AOA 备用视频链路握手超时")
+                    }
+                } ?: error("PC 在 AOA 备用视频链路握手前关闭连接")
+                val welcome = parseControlJSONObject(welcomeLine, "AOA video-only welcome")
+                check(welcome.optString("type") == "welcome") {
+                    welcome.optString("message", "PC 返回了无法识别的 AOA 视频响应")
+                }
+                if (welcome.optInt("protocol") != PROTOCOL_VERSION) {
+                    throw ProtocolMismatchException("PC AOA 视频链路协议版本不兼容")
+                }
+                if (videoConfig == null) {
+                    configureVideoStream("127.0.0.1", welcome)
+                }
+                if (!welcome.optBoolean("videoEnabled", false)) {
+                    throw IOException(welcome.optString("videoReason", "PC 未启用兼容的视频编码器"))
+                }
+                synchronized(auxiliaryUsbLock) {
+                    if (isUsbVideoBackupActive(generation)) {
+                        auxiliaryUsbWriter = writer
+                        auxiliaryUsbWriterGeneration = generation
+                    }
+                }
+                retryDelayMs = INITIAL_RECONNECT_DELAY_MS
+                postStatus("USB AOA 备用视频链路已连接，网络控制链路保持独立", true)
+                auxiliaryPoseExecutor.execute { sendAuxiliaryPoseLoop(generation, opened) }
+                runUsbVideoBackupControlLoop(generation, opened, reader, writer)
+                if (isUsbVideoBackupActive(generation)) throw SocketTimeoutException("AOA 备用视频链路控制通道已关闭")
+            } catch (error: ProtocolMismatchException) {
+                if (isUsbVideoBackupActive(generation)) {
+                    postStatus("AOA 备用视频链路失败：${error.message}", false)
+                    return
+                }
+            } catch (error: Exception) {
+                if (!isUsbVideoBackupActive(generation)) return
+                Log.i(TAG, "AOA video backup is waiting/retrying: ${error.message ?: error.javaClass.simpleName}")
+            } finally {
+                session?.close()
+                synchronized(auxiliaryUsbLock) {
+                    if (auxiliaryUsbSession === session) auxiliaryUsbSession = null
+                    if (auxiliaryUsbWriterGeneration == generation) {
+                        auxiliaryUsbWriter = null
+                        auxiliaryUsbWriterGeneration = -1L
+                    }
+                }
+            }
+            if (!isUsbVideoBackupActive(generation)) return
+            sleepBeforeAuxiliaryRetry(retryDelayMs, generation)
+            retryDelayMs = (retryDelayMs * 2L).coerceAtMost(MAX_RECONNECT_DELAY_MS)
+        }
+    }
+
+    private fun hasActiveNetworkControl(): Boolean {
+        val socket = controlSocket ?: return false
+        if (activeControlWriter == null) return false
+        val generation = activeControlGeneration
+        return isSessionActive(generation) && socket.isConnected && !socket.isClosed
+    }
+
+    /**
+     * The AOA backup also carries head pose when the TCP control/pose route is
+     * unavailable. It stays silent while the LAN session is healthy, avoiding
+     * duplicate pose samples during normal dual-link operation.
+     */
+    private fun sendAuxiliaryPoseLoop(generation: Long, session: UsbAccessorySession) {
+        var sequence = 0
+        var lastErrorReportAtNs = 0L
+        val throttle = PoseSendThrottle(MAX_POSE_SEND_HZ)
+        while (isUsbVideoBackupActive(generation) && !session.isClosed) {
+            if (hasActiveNetworkControl()) {
+                sleepNanos(POSE_IDLE_SLEEP_NS)
+                continue
+            }
+            val pose = latestPose.get()
+            if (pose == null) {
+                sleepNanos(POSE_IDLE_SLEEP_NS)
+                continue
+            }
+            val nowNs = System.nanoTime()
+            if (throttle.tryAcquire(pose.timestampNs, nowNs)) {
+                try {
+                    session.sendPose(PosePacket.encode(sequence, pose))
+                    sequence++
+                } catch (error: Exception) {
+                    if (!isUsbVideoBackupActive(generation) || session.isClosed) return
+                    if (nowNs - lastErrorReportAtNs >= POSE_ERROR_REPORT_INTERVAL_NS) {
+                        Log.w(TAG, "AOA backup pose send failed: ${error.message}")
+                        lastErrorReportAtNs = nowNs
+                    }
+                }
+            }
+            val remainingNs = throttle.nanosUntilNextAllowed(System.nanoTime())
+            sleepNanos(if (remainingNs > 0L) remainingNs else POSE_IDLE_SLEEP_NS)
+        }
+    }
+
+    private fun runUsbVideoBackupControlLoop(
+        generation: Long,
+        session: UsbAccessorySession,
+        reader: ControlLineReader,
+        writer: BufferedWriter,
+    ) {
+        var lastHeartbeatNs = 0L
+        var lastPongNs = System.nanoTime()
+        fun serviceHeartbeat() {
+            val now = System.nanoTime()
+            if (now - lastHeartbeatNs >= HEARTBEAT_INTERVAL_NS) {
+                writeControlMessage(writer, JSONObject().put("type", "ping").put("sentAtNs", now))
+                lastHeartbeatNs = now
+            }
+            if (now - lastPongNs > HEARTBEAT_TIMEOUT_NS) {
+                throw SocketTimeoutException("AOA 视频链路心跳响应超时")
+            }
+        }
+        while (isUsbVideoBackupActive(generation) && !session.isClosed) {
+            serviceHeartbeat()
+            val line = reader.readLine { serviceHeartbeat() } ?: error("PC 已关闭 AOA 视频链路")
+            if (line.isBlank()) continue
+            val message = parseControlJSONObject(line, "AOA video-only control")
+            when (message.optString("type")) {
+                "pong" -> lastPongNs = System.nanoTime()
+                "error" -> Log.w(TAG, "AOA video-only host message: ${message.optString("message")}")
+            }
+        }
+    }
+
+    private fun sleepBeforeAuxiliaryRetry(durationMs: Long, generation: Long) {
+        var remaining = durationMs
+        while (remaining > 0L && isUsbVideoBackupActive(generation)) {
+            val slice = minOf(remaining, 100L)
+            try {
+                Thread.sleep(slice)
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+                return
+            }
+            remaining -= slice
+        }
+    }
+
     /** Connect over the native Android Open Accessory (AOA) Bulk interface. */
     fun connectUsb(deviceName: String = "Android") {
+        stopUsbVideoBackup()
         val generation = synchronized(sessionControlLock) {
             val next = sessionGeneration.incrementAndGet()
             running.set(true)
@@ -506,6 +776,7 @@ class NetworkClient(
                     .put("type", "hello")
                     .put("protocol", PROTOCOL_VERSION)
                     .put("deviceName", deviceName.take(80))
+                    .put("deviceId", stableDeviceId)
                     .put("client", CLIENT_VERSION)
                     .put("transport", "usb-aoa-bulk")
                     .put("mediaCapabilities", mediaCapabilities)
@@ -528,7 +799,7 @@ class NetworkClient(
                 if (welcome.optInt("protocol") != PROTOCOL_VERSION) {
                     throw ProtocolMismatchException("PC USB 通信协议版本不兼容")
                 }
-                configureVideoStream(generation, "127.0.0.1", welcome)
+                configureVideoStream("127.0.0.1", welcome)
                 synchronized(socketLock) {
                     activeControlWriter = writer
                     activeControlGeneration = generation
@@ -559,7 +830,7 @@ class NetworkClient(
                         activeControlGeneration = -1L
                     }
                 }
-                stopVideoReceiverAsync(generation)
+                stopVideoReceiverAsync()
             }
             if (!isSessionActive(generation)) return
             sleepBeforeRetry(retryDelayMs, generation)
@@ -596,6 +867,7 @@ class NetworkClient(
     }
 
     fun disconnect() {
+        stopUsbVideoBackup()
         synchronized(sessionControlLock) {
             sessionGeneration.incrementAndGet()
             running.set(false)
@@ -607,6 +879,7 @@ class NetworkClient(
     }
 
     fun shutdown() {
+        stopUsbVideoBackup()
         synchronized(sessionControlLock) {
             sessionGeneration.incrementAndGet()
             running.set(false)
@@ -615,6 +888,8 @@ class NetworkClient(
         stopVideoReceiverAsync()
         discoveryExecutor.shutdownNow()
         sessionExecutor.shutdownNow()
+        auxiliaryUsbExecutor.shutdownNow()
+        auxiliaryPoseExecutor.shutdownNow()
         poseExecutor.shutdownNow()
         controlWriteExecutor.shutdownNow()
         videoLifecycleExecutor.shutdown()
@@ -656,6 +931,7 @@ class NetworkClient(
                     .put("type", "hello")
                     .put("protocol", PROTOCOL_VERSION)
                     .put("deviceName", deviceName.take(80))
+                    .put("deviceId", stableDeviceId)
                     .put("client", CLIENT_VERSION)
                     .put("mediaCapabilities", mediaCapabilities)
                 writer.write(hello.toString())
@@ -672,7 +948,7 @@ class NetworkClient(
                 if (welcome.optInt("protocol") != PROTOCOL_VERSION) {
                     throw ProtocolMismatchException("PC 通信协议版本不兼容")
                 }
-                configureVideoStream(generation, address, welcome)
+                configureVideoStream(address, welcome)
 
                 synchronized(socketLock) {
                     activeControlWriter = writer
@@ -720,7 +996,7 @@ class NetworkClient(
                 )
             } finally {
                 closeAttemptSockets(tcp, udp)
-                stopVideoReceiverAsync(generation)
+                if (!isUsbVideoBackupConnected()) stopVideoReceiverAsync()
             }
 
             if (!isSessionActive(generation)) return
@@ -1042,7 +1318,7 @@ class NetworkClient(
         const val DEFAULT_VIDEO_FPS = 60
         const val DISCOVERY_PORT = 48100
         private const val PROTOCOL_VERSION = 1
-        private const val CLIENT_VERSION = "PhoneVRStream-0.5.12"
+        private const val CLIENT_VERSION = "PhoneVRStream-0.5.13"
         private const val DISCOVERY_REQUEST = "PHONEVR_DISCOVER_V1"
         private const val DISCOVERY_RESPONSE_PREFIX = "PHONEVR_HOST_V1 "
         private const val DISCOVERY_WINDOW_MS = 1800L

@@ -1,3 +1,36 @@
+# PhoneVR 0.5.13 build status
+
+## This revision
+
+- Added Host transport modes: automatic failover, USB AOA only, and network only. Automatic mode has a selectable preferred path.
+- The Android app now maintains independent LAN and AOA sessions under one persistent `deviceId`. The Host combines these paths into one Android device entry and excludes the auxiliary AOA video-only session from phone settings and optical preset management.
+- Host video transmission uses one path at a time. UDP network packets and AOA Bulk video packets reach the same Android receiver and decoder. The receiver reports which source delivered the latest packets.
+- Host health checks use per-path control heartbeats, Android media feedback and one-second `PVRP` probe acknowledgements over each standby video path. This verifies actual UDP or AOA Bulk delivery before selecting the alternate path. Explicit send errors trigger a temporary route penalty; lack of end-to-end media feedback on the selected path also marks it unhealthy.
+- A route change purges queued delta frames and waits for an IDR before sending on the new path. Video capture and the H.264 encoder remain alive across the switch.
+- Android's AOA auxiliary session carries head-pose samples only when the network TCP control session is unavailable. This avoids duplicate pose delivery when the LAN link is healthy.
+- Android is `versionName 0.5.13`, `versionCode 48`. Root `VERSION`, Windows Host executable version, and AOA accessory descriptor metadata are updated to `0.5.13`. The embedded SteamVR driver payload itself is unchanged.
+
+## Validation status
+
+- `cd windows-host && go test ./...`: passed, including USB-preferred selection, USB-to-network failover, manual transport restrictions, silent active-path loss, and standby-probe gating.
+- `cd windows-host && go test -race ./...`: passed.
+- `cd windows-host && go vet ./...`: passed.
+- `cd windows-host && GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build ./...`: passed, including the Windows native UI and Host executable packages.
+- `cd windows-host && GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go test -c ./cmd/phonevr-host`: passed. This compiles the Windows-only native UI and Host package for Windows amd64.
+- Android Gradle tasks could not start: `android/gradle/wrapper/gradle-wrapper.jar` is absent from the supplied source bundle, no system Gradle executable is installed, and no Android SDK environment is configured. The Kotlin compiler parse check reported no syntax errors, but it cannot perform Android type checking without the Android SDK and project dependencies.
+- APK packaging, Android unit tests, Windows runtime behavior and physical AOA/network switching have not been verified in this environment.
+
+## Target-device validation
+
+1. Install matching PhoneVR 0.5.13 Android and Windows Host builds. In Host **Video Transport**, select **Automatic failover** and keep both AOA and LAN connections established.
+2. With USB preferred, confirm the Host reports `USB AOA` as active and `NET READY` as backup. Disconnect the USB cable or interrupt AOA Bulk, then confirm the Host changes to `NETWORK` after the transport failure is detected and the next IDR arrives.
+3. Restore AOA, choose network preference, then interrupt LAN video delivery while keeping the AOA cable attached. Confirm the Host changes to `USB AOA` and the Android video receiver reports loopback source `127.0.0.1`.
+4. Select **USB AOA only** and verify no network video fallback occurs. Select **Network only** and verify AOA is not used for video. The AOA auxiliary control path may remain connected in either mode.
+5. In each switch, verify that H.264 capture and encoder counters continue increasing, Android resumes decoding after an IDR, and no duplicate video frames are produced by simultaneous USB and UDP transmission.
+6. Disable LAN connectivity completely and verify that AOA video and pose continue. Restore LAN and confirm its control/pose path resumes without forcing a video route change while the current route remains healthy.
+
+---
+
 # PhoneVR 0.5.12 build status
 
 ## This revision

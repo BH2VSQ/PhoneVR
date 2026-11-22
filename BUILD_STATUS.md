@@ -1,17 +1,16 @@
-# PhoneVR 0.4.19 build status
+# PhoneVR 0.5.1 build status
 
-Revision: Android stream resilience, pose scheduling and headset UI update, 2026-11-22
+Revision: USB AOA Bulk transport and Windows enumeration diagnostics, 2026-11-22
 
 ## Changes in this revision
 
-- Removed a high-priority MediaCodec busy-wait path. The decoder thread now uses normal priority and a 1 ms retry backoff whenever MediaCodec has no immediately available input buffer.
-- Added stale-UDP recovery: after at least one second without packets, clear stale fragment assemblies and queued access units, request an IDR boundary and flush MediaCodec on the decoder thread.
-- Added receiver observability for packet age, complete-frame age, decoded-frame age, expired assemblies, queue depth, dropped frames, decoder input waits and recovery count.
-- When video becomes stale after playback starts, the renderer blanks the old frame instead of leaving a frozen image visible. The initial diagnostic scene remains available before first video playback.
-- Moved PC connection and pose details into the Android menu. Added a compact top-edge stream status pill and menu diagnostics for receive/decode/display FPS, UDP fragments, reassembly state, decoder queue and drops.
-- Added a persisted 180-degree reverse-landscape toggle. This changes the charging connector side without changing the SBS left/right stream layout; sensor coordinate remapping follows the display rotation.
-- Kept Host pose snapshots lock-free through atomic pointer publication; the metric now reports pose publish duration rather than a removed mutex wait.
-- Added full exception stack logging for failed device actions. Control-channel writes remain on a dedicated background writer executor.
+- Added native Android Open Accessory (AOA) mode switching from the Windows Host using `GET_PROTOCOL`, six `SEND_STRING` descriptors and `START_ACCESSORY`.
+- Added Windows WinUSB Bulk IN/OUT transport and a shared `PVRU` framing layer for control, HMD pose and H.264 video channels.
+- Added Android accessory attach handling, USB permission flow, `UsbManager.openAccessory()` stream management and USB AOA connection controls.
+- Routed USB control, pose and video into the existing Host control handler, pose processing, H.264 encoder and Android MediaCodec decoder. Wi-Fi transport remains available and unchanged.
+- Added WinUSB registry discovery for both `DeviceInterfaceGUID` and `DeviceInterfaceGUIDs`, with diagnostics for detected interface GUIDs, device paths, open failures and AOA control-transfer failures.
+- Updated Android, Windows Host, SteamVR driver, AOA accessory descriptors and repository metadata to version 0.5.1. Android `versionCode` is now 36.
+- Retained Android stale-video recovery, lock-free Host pose snapshots, reverse-landscape support and the Host Day theme default from the preceding revisions.
 
 ## Passed in this environment
 
@@ -19,43 +18,16 @@ Revision: Android stream resilience, pose scheduling and headset UI update, 2026
 - `go test -race ./...`
 - `go vet ./...`
 - `GOOS=windows GOARCH=amd64 go build ./cmd/phonevr-host`
-- Python release/integration tests: 49 tests
-- Standalone Kotlin compile of `VideoFragmentReassembler.kt` and `VideoStreamStats.kt`
-- Kotlin reassembler expiration smoke test
-- Kotlin syntax scan of changed Android files: no parser errors reported
+- Windows amd64 cross-compilation of Host and AOA packages
+- Python release and integration regression tests
+- Kotlin AOA/PVRU framing and USB session compile smoke checks against Android API stubs
+- Source archive integrity and patch application checks
 
 ## Not verified in this environment
 
-- Android APK build. The wrapper could not download Gradle 9.6.1 from `services.gradle.org` because network/DNS access is unavailable, and no Android SDK is installed.
-- Full Android/Kotlin type-check against Android SDK and runtime test on Redmi K40 / LineageOS 24.
-- Native SteamVR driver build and in-runtime validation. This revision did not modify the SteamVR C++ source, but the complete Windows package still needs target-machine integration verification.
-- End-to-end measurement of frame latency, Wi-Fi packet loss and actual 72 Hz headset presentation on the user's PC/phone.
+- Android APK build and full Kotlin type-check against the Android SDK. The Android SDK is unavailable and Gradle distribution download is blocked by DNS/network access.
+- Physical AOA mode switching and re-enumeration on the Redmi K40 / LineageOS 24.
+- WinUSB binding behavior on the target PC, sustained Bulk throughput, USB disconnect/reconnect recovery and end-to-end pose/video latency.
+- Native MSVC SteamVR driver build and runtime validation on the target Windows machine.
 
-See `docs/2026-11-22-stream-freeze-pose-priority-and-android-ui.md` for implementation details and device-side diagnostics.
-
-## Android menu layout refinement
-
-- MainActivity layout source updated: three-dot menu trigger is horizontally centered at the top of the landscape screen.
-- Removed explanatory orientation text below the screen-flip control.
-- Android Gradle/APK build has not been run in this environment; Windows/Android device rendering still requires target-device verification.
-
-
-## Windows Host theme default and control order
-
-- Default theme mode is now `light` (Day mode) when no saved preference exists.
-- Existing explicit `dark` preferences remain unchanged; invalid/missing mode values normalize to `light`.
-- Appearance & Theme controls are ordered Day on the left, Night on the right.
-- Added Windows-specific tests for the default, normalization, and explicit Night preference.
-
-## USB AOA Bulk transport
-
-
-- Added Windows AOA detection and host-side AOA mode switching through `GET_PROTOCOL`, `SEND_STRING` and `START_ACCESSORY`; AOA Bulk IN/OUT runs through WinUSB.
-- Added the cross-platform Go `usbmux` framing/multiplexer and Kotlin-compatible `PVRU` wire format with control, pose and video channels.
-- Added Android accessory attach intent handling, permission request, `UsbManager.openAccessory()` stream management, pose sender and video fragment forwarding.
-- Host routes USB control into the existing control handler, USB pose into its existing local UDP pose input, and H.264 fragments through Bulk channel 3. LAN transport remains unchanged.
-- Windows driver requirement: WinUSB must be bound to the original Android function for the AOA switch and to the re-enumerated AOA accessory interface. No ADB protocol/interface, USB tethering or RNDIS is used.
-- USB verification completed: `go test ./...`, `go test -race ./...`, and `go vet ./...` all pass.
-- Windows USB/Host cross-build completed: `GOOS=windows GOARCH=amd64 go build ./cmd/phonevr-host`, plus Windows amd64 test-binary compilation for `internal/aoa` and `cmd/phonevr-host`.
-- Android USB Kotlin session and framing classes compile against minimal Android API stubs; the shared PVRU header smoke test passes. This does not replace an Android SDK build.
-- Physical phone/PC AOA negotiation, WinUSB binding, sustained USB throughput and end-to-end video/pose latency have not been verified in this environment. Android Gradle/APK build is currently blocked by unavailable Gradle distribution DNS and missing Android SDK.
+The Host now logs WinUSB interface GUID enumeration, device paths and the exact AOA control-transfer error. Use those logs to diagnose the next physical-device test.

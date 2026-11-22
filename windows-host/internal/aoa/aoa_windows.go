@@ -24,6 +24,7 @@ const (
 	deviceRegistryScopeGlobal   = 0x00000001
 	deviceRegistryKey           = 0x00000001
 	registryKeyRead             = 0x00020019
+	registryString              = 1
 	registryMultiString         = 7
 	usbDescriptorDevice         = 1
 	usbDescriptorTypeInterface  = 4
@@ -114,16 +115,37 @@ type Device struct {
 }
 
 func NextAccessory(ctx context.Context) (*Device, error) {
+	return NextAccessoryWithStatus(ctx, nil)
+}
+
+// NextAccessoryWithStatus scans for an AOA device and reports throttled
+// diagnostics. AOA failures are otherwise easy to mistake for a silent wait
+// on the Android side because the phone cannot enter accessory mode until
+// the host completes the endpoint-zero control handshake.
+func NextAccessoryWithStatus(ctx context.Context, report func(string)) (*Device, error) {
+	lastReport := make(map[string]time.Time)
+	emit := func(key, message string) {
+		if report == nil {
+			return
+		}
+		now := time.Now()
+		if previous, ok := lastReport[key]; ok && now.Sub(previous) < 15*time.Second {
+			return
+		}
+		lastReport[key] = now
+		report(message)
+	}
 	for {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		device, switched, err := scanOnce()
+		device, _, err := scanOnce(emit)
 		if device != nil {
 			return device, nil
 		}
-		_ = err      // The Host reports stable scanner status instead of each poll failure.
-		_ = switched // Re-enumeration is detected on the next scan iteration.
+		if err != nil {
+			emit("scan-error:"+err.Error(), "USB AOA scanner error: "+err.Error())
+		}
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
@@ -132,15 +154,23 @@ func NextAccessory(ctx context.Context) (*Device, error) {
 	}
 }
 
-func scanOnce() (*Device, bool, error) {
+func scanOnce(report func(key, message string)) (*Device, bool, error) {
 	switched := false
 	seenPaths := make(map[string]struct{})
-	for _, interfaceGUID := range enumerateWinUSBInterfaceGUIDs() {
+	interfaceGUIDs := enumerateWinUSBInterfaceGUIDs()
+	if report != nil {
+		report("guid-count", fmt.Sprintf("USB AOA scanner: enumerating %d WinUSB interface GUID(s)", len(interfaceGUIDs)))
+	}
+	seenCount := 0
+	for _, interfaceGUID := range interfaceGUIDs {
 		classPtr, _, _ := procSetupDiGetClassDevs.Call(
 			uintptr(unsafe.Pointer(&interfaceGUID)), 0, 0,
 			setupPresent|setupDeviceInterface,
 		)
 		if classPtr == invalidHandle {
+			if report != nil {
+				report("setupapi-class:"+formatGUID(interfaceGUID), fmt.Sprintf("USB AOA scanner: SetupDiGetClassDevs failed for interface GUID %s", formatGUID(interfaceGUID)))
+			}
 			continue
 		}
 		for index := uint32(0); ; index++ {
@@ -156,20 +186,33 @@ func scanOnce() (*Device, bool, error) {
 			}
 			path, err := interfacePath(classPtr, &data)
 			if err != nil {
+				if report != nil {
+					report("interface-path:"+formatGUID(interfaceGUID), "USB AOA scanner: unable to read a WinUSB device interface path: "+err.Error())
+				}
 				continue
 			}
 			if _, duplicate := seenPaths[path]; duplicate {
 				continue
 			}
 			seenPaths[path] = struct{}{}
+			seenCount++
 			device, err := openWinUSB(path)
 			if err != nil {
+				if report != nil {
+					report("open:"+path, fmt.Sprintf("USB AOA scanner: WinUSB open failed for %s: %v", path, err))
+				}
 				continue
 			}
 			vid, pid, class, err := device.deviceDescriptor()
 			if err != nil {
+				if report != nil {
+					report("descriptor:"+path, fmt.Sprintf("USB AOA scanner: device descriptor read failed for %s: %v", path, err))
+				}
 				device.Close()
 				continue
+			}
+			if isLikelyAndroidVendor(vid) && report != nil {
+				report("device:"+path, fmt.Sprintf("USB AOA scanner: Android USB device %04X:%04X (bDeviceClass=0x%02X)", vid, pid, class))
 			}
 			if vid == usbVendorGoogle && isAccessoryProduct(pid) {
 				if err := device.findBulkEndpoints(); err == nil {
@@ -179,19 +222,48 @@ func scanOnce() (*Device, bool, error) {
 				device.Close()
 				continue
 			}
-			// Android composite devices commonly report bDeviceClass 0xEF
-			// (Miscellaneous), while some report 0 or vendor-specific 0xFF.
-			// AOA control requests target the device default control endpoint.
-			if isLikelyAndroidVendor(vid) && (class == 0 || class == 0xEF || class == 0xFF) {
-				if protocol, getErr := device.getAOAProtocol(); getErr == nil && protocol >= 1 {
+			// Android devices can expose a vendor-specific ADB interface class
+			// (0xFF/0x42/0x01), as on this user's 18D1:4E11 device. AOA control
+			// requests still target device endpoint zero; no ADB bulk endpoints
+			// or ADB protocol messages are used by PhoneVR.
+			if isLikelyAndroidVendor(vid) {
+				if report != nil {
+					report("candidate:"+path, fmt.Sprintf("USB AOA scanner: probing AOA GET_PROTOCOL on %04X:%04X (WinUSB path: %s)", vid, pid, path))
+				}
+				protocol, getErr := device.getAOAProtocol()
+				if getErr != nil {
+					if report != nil {
+						report("get-protocol:"+path, fmt.Sprintf("USB AOA GET_PROTOCOL failed for %04X:%04X: %v", vid, pid, getErr))
+					}
+				} else if protocol < 1 {
+					if report != nil {
+						report("protocol-version:"+path, fmt.Sprintf("USB AOA protocol version %d is unsupported on %04X:%04X", protocol, vid, pid))
+					}
+				} else {
+					if report != nil {
+						report("protocol-ok:"+path, fmt.Sprintf("USB AOA GET_PROTOCOL succeeded for %04X:%04X (protocol v%d)", vid, pid, protocol))
+					}
 					if startErr := device.startAccessoryMode(); startErr == nil {
 						switched = true
+						if report != nil {
+							report("start-request:"+path, fmt.Sprintf("USB AOA START_ACCESSORY accepted for %04X:%04X; waiting for USB re-enumeration", vid, pid))
+						}
+					} else {
+						if report != nil {
+							report("start-failed:"+path, fmt.Sprintf("USB AOA START_ACCESSORY failed for %04X:%04X: %v", vid, pid, startErr))
+						}
 					}
 				}
 			}
 			device.Close()
 		}
 		procSetupDiDestroyDeviceInfoList.Call(classPtr)
+	}
+	if report != nil {
+		report("path-count", fmt.Sprintf("USB AOA scanner: enumerated %d present WinUSB device interface path(s)", seenCount))
+		if seenCount == 0 {
+			report("no-winusb-paths", "USB AOA scanner: no present WinUSB device interface paths found; check DeviceInterfaceGUID / DeviceInterfaceGUIDs registration")
+		}
 	}
 	return nil, switched, nil
 }
@@ -247,19 +319,35 @@ func readDeviceInterfaceGUIDs(infoSet uintptr, info *deviceInfoData) []string {
 		return nil
 	}
 	defer procRegCloseKey.Call(parameterKey)
-	valueName, _ := syscall.UTF16PtrFromString("DeviceInterfaceGUIDs")
+
+	// Microsoft permits either a REG_SZ DeviceInterfaceGUID or a REG_MULTI_SZ
+	// DeviceInterfaceGUIDs value. Zadig and vendor INF files do not all use
+	// the same form, so support both instead of silently missing valid devices.
+	values := append(readRegistryGUIDValue(parameterKey, "DeviceInterfaceGUIDs"), readRegistryGUIDValue(parameterKey, "DeviceInterfaceGUID")...)
+	return values
+}
+
+func readRegistryGUIDValue(key uintptr, name string) []string {
+	valueName, _ := syscall.UTF16PtrFromString(name)
 	var valueType uint32
 	var size uint32
-	status, _, _ = procRegQueryValueEx.Call(parameterKey, uintptr(unsafe.Pointer(valueName)), 0, uintptr(unsafe.Pointer(&valueType)), 0, uintptr(unsafe.Pointer(&size)))
-	if status != 0 || valueType != registryMultiString || size < 4 || size > 64*1024 {
+	status, _, _ := procRegQueryValueEx.Call(key, uintptr(unsafe.Pointer(valueName)), 0, uintptr(unsafe.Pointer(&valueType)), 0, uintptr(unsafe.Pointer(&size)))
+	if status != 0 || (valueType != registryString && valueType != registryMultiString) || size < 2 || size > 64*1024 || size%2 != 0 {
 		return nil
 	}
 	buffer := make([]byte, size)
-	status, _, _ = procRegQueryValueEx.Call(parameterKey, uintptr(unsafe.Pointer(valueName)), 0, uintptr(unsafe.Pointer(&valueType)), uintptr(unsafe.Pointer(&buffer[0])), uintptr(unsafe.Pointer(&size)))
+	status, _, _ = procRegQueryValueEx.Call(key, uintptr(unsafe.Pointer(valueName)), 0, uintptr(unsafe.Pointer(&valueType)), uintptr(unsafe.Pointer(&buffer[0])), uintptr(unsafe.Pointer(&size)))
 	if status != 0 || size < 2 {
 		return nil
 	}
 	units := unsafe.Slice((*uint16)(unsafe.Pointer(&buffer[0])), int(size/2))
+	if valueType == registryString {
+		value := strings.TrimSpace(syscall.UTF16ToString(units))
+		if value == "" {
+			return nil
+		}
+		return []string{value}
+	}
 	var values []string
 	for offset := 0; offset < len(units); {
 		end := offset
@@ -269,10 +357,15 @@ func readDeviceInterfaceGUIDs(infoSet uintptr, info *deviceInfoData) []string {
 		if end == offset {
 			break
 		}
-		values = append(values, string(syscall.UTF16ToString(units[offset:end])))
+		values = append(values, strings.TrimSpace(syscall.UTF16ToString(units[offset:end])))
 		offset = end + 1
 	}
 	return values
+}
+
+func formatGUID(value guid) string {
+	return fmt.Sprintf("{%08X-%04X-%04X-%02X%02X-%02X%02X%02X%02X%02X%02X}", value.Data1, value.Data2, value.Data3,
+		value.Data4[0], value.Data4[1], value.Data4[2], value.Data4[3], value.Data4[4], value.Data4[5], value.Data4[6], value.Data4[7])
 }
 
 func interfacePath(infoSet uintptr, data *deviceInterfaceData) (string, error) {
@@ -335,7 +428,7 @@ func (d *Device) getAOAProtocol() (uint16, error) {
 }
 
 func (d *Device) startAccessoryMode() error {
-	stringsToSend := []string{"VSQ Studio", "PhoneVR", "PhoneVR USB streaming", "0.4.19", "https://github.com/BH2VSQ/PhoneVR", "PhoneVR-Android"}
+	stringsToSend := []string{"VSQ Studio", "PhoneVR", "PhoneVR USB streaming", "0.5.1", "https://github.com/BH2VSQ/PhoneVR", "PhoneVR-Android"}
 	for index, value := range stringsToSend {
 		payload := append([]byte(value), 0)
 		transferred, err := d.controlTransfer(0x40, usbRequestSendString, 0, uint16(index), payload)

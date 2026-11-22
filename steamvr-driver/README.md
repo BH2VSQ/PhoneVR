@@ -1,4 +1,4 @@
-# PhoneVR SteamVR Driver — 0.4.19 (DisplayRedirect diagnostics)
+# PhoneVR SteamVR Driver — 0.5.1 (DisplayRedirect diagnostics)
 
 Windows x64 OpenVR server driver foundation for the PhoneVR wireless HMD.
 

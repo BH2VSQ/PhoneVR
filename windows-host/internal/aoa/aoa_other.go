@@ -10,6 +10,13 @@ import (
 var ErrUnsupported = errors.New("PhoneVR AOA USB transport currently requires Windows amd64")
 
 func NextAccessory(ctx context.Context) (*Device, error) {
+	return NextAccessoryWithStatus(ctx, nil)
+}
+
+func NextAccessoryWithStatus(ctx context.Context, report func(string)) (*Device, error) {
+	if report != nil {
+		report(ErrUnsupported.Error())
+	}
 	<-ctx.Done()
 	return nil, ctx.Err()
 }

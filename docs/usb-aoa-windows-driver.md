@@ -1,6 +1,6 @@
 # PhoneVR USB AOA Bulk transport
 
-PhoneVR 0.4.19 adds a direct USB transport built on Android Open Accessory (AOA). The Windows Host switches the connected Android device into accessory mode, then exchanges a framed byte stream through the AOA interface's Bulk IN and Bulk OUT endpoints.
+PhoneVR 0.5.1 provides a direct USB transport built on Android Open Accessory (AOA). The Windows Host switches the connected Android device into accessory mode, then exchanges a framed byte stream through the AOA interface's Bulk IN and Bulk OUT endpoints.
 
 The USB mode does not use USB tethering, RNDIS, an IP address, ADB commands, the ADB interface, or an ADB server. The Host only opens AOA interface 0. For product ID `18D1:2D01`, which exposes an additional ADB interface, PhoneVR leaves that second interface unopened. `18D1:2D00` is the accessory-only product ID.
 
@@ -10,11 +10,13 @@ The Windows Host implementation uses Microsoft's WinUSB user-mode API. Windows m
 
 This driver binding is separate from ADB. It is not an ADB installation and PhoneVR does not communicate using the ADB protocol. Windows does not provide a universal WinUSB binding for every Android vendor/product combination, so the first connection may require a one-time driver binding with a WinUSB-capable driver installer such as [Zadig](https://zadig.akeo.ie/). Use the official Zadig distribution and select the exact Android USB interface, not an unrelated USB device. After AOA re-enumeration, check the new `Google Inc.` / `18D1:2D00` or `18D1:2D01` device and bind its accessory interface to WinUSB as well if Windows has not associated it automatically.
 
-The Host reads `DeviceInterfaceGUIDs` from the Windows USB device registry and enumerates those registered interface GUIDs. This also covers WinUSB interfaces for which Zadig generated a per-device GUID; the Host does not require a fixed GUID to be entered manually.
+The Host reads both `DeviceInterfaceGUIDs` (REG_MULTI_SZ) and `DeviceInterfaceGUID` (REG_SZ) from the Windows USB device registry and enumerates those registered interface GUIDs. This covers WinUSB interfaces for which Zadig or a vendor INF generated a per-device GUID; the Host does not require a fixed GUID to be entered manually.
 
-Caution: changing a device interface's function driver can make that interface unavailable to MTP or vendor-specific phone-management tools until its original driver is restored. Avoid replacing every interface on a composite phone. Do not bind WinUSB to the ADB interface. The Host only needs the AOA control/Accessory interface.
+AOA mode switching uses vendor-specific control requests on the USB device's default control endpoint (endpoint zero). A phone may label its current function `Android ADB Interface` and report interface class `FF/42/01`; that label describes the USB function and does not mean PhoneVR sends ADB protocol messages. PhoneVR uses the WinUSB handle only to issue the device-level AOA requests (`GET_PROTOCOL`, `SEND_STRING`, `START_ACCESSORY`). It does not open or exchange data on ADB bulk endpoints, start an ADB server, or use USB debugging. After AOA re-enumeration, data moves through the AOA accessory Bulk IN/OUT endpoints.
 
-If Device Manager shows the accessory interface without a WinUSB driver, the Host will keep scanning and the phone will remain in accessory mode; install/bind WinUSB for that accessory interface and the Host should detect it. If the initial Android function cannot be opened through WinUSB, the Host cannot send the AOA mode-switch requests.
+Caution: changing a device interface's function driver can make that interface unavailable to MTP, ADB tools or vendor-specific phone-management tools until its original driver is restored. Avoid replacing every interface on a composite phone. Bind WinUSB only to the USB function needed to expose the AOA device-level control endpoint, and separately to the AOA accessory interface after re-enumeration if Windows does not bind it automatically.
+
+If Device Manager shows the accessory interface without a WinUSB driver, the Host will keep scanning and the phone will remain in accessory mode; install/bind WinUSB for that accessory interface and the Host should detect it. If the initial Android function cannot be opened through WinUSB, the Host cannot send the AOA mode-switch requests. The Host runtime log reports enumerated WinUSB interface GUIDs, device paths, descriptor/open failures and the exact AOA `GET_PROTOCOL` or `START_ACCESSORY` error. For a device that remains in its original VID/PID, inspect those messages before changing drivers.
 
 ## Connection procedure
 
@@ -26,7 +28,7 @@ If Device Manager shows the accessory interface without a WinUSB driver, the Hos
 6. If Windows has not already bound WinUSB to the new AOA accessory interface, bind it once. The Host then opens interface 0 and the Android app receives the accessory permission prompt. Grant it.
 7. The PhoneVR status should report that USB AOA Bulk is connected. Control, HMD pose and H.264 video then use the same full-duplex USB stream.
 
-The accessory filter descriptors are `VSQ Studio` / `PhoneVR` / `0.4.19`. The accessory mode attach intent can launch the Android app when it is not already running.
+The accessory filter descriptors are `VSQ Studio` / `PhoneVR` / `0.5.1`. The accessory mode attach intent can launch the Android app when it is not already running.
 
 ## Transport framing
 

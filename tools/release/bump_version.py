@@ -59,6 +59,38 @@ def bump_repository(root: Path, bump: str) -> tuple[str, int]:
         f'var appVersion = "{version}"',
     )
     replace_one(
+        root / "windows-host/internal/aoa/aoa_windows.go",
+        r'(stringsToSend := \[\]string\{"VSQ Studio", "PhoneVR", "PhoneVR USB streaming", ")[^"]+(")',
+        rf'\g<1>{version}\g<2>',
+    )
+    replace_one(
+        root / "android/app/src/main/res/xml/accessory_filter.xml",
+        r'(<usb-accessory[^>]*\bversion=")[^"]+(\")',
+        rf'\g<1>{version}\g<2>',
+    )
+    replace_one(
+        root / "steamvr-driver/src/driver.cpp",
+        r'PhoneVR [0-9]+\.[0-9]+\.[0-9]+ DisplayRedirect order-fix diagnostics SteamVR driver initialized',
+        f'PhoneVR {version} DisplayRedirect order-fix diagnostics SteamVR driver initialized',
+    )
+    aoa_doc = root / "docs/usb-aoa-windows-driver.md"
+    aoa_doc_text = aoa_doc.read_text(encoding="utf-8")
+    aoa_doc_text, doc_intro_count = re.subn(
+        r'PhoneVR [0-9]+\.[0-9]+\.[0-9]+ provides a direct USB transport',
+        f'PhoneVR {version} provides a direct USB transport',
+        aoa_doc_text,
+        count=1,
+    )
+    aoa_doc_text, doc_filter_count = re.subn(
+        r'(The accessory filter descriptors are `VSQ Studio` / `PhoneVR` / `)[0-9]+\.[0-9]+\.[0-9]+(`\.)',
+        rf'\g<1>{version}\g<2>',
+        aoa_doc_text,
+        count=1,
+    )
+    if doc_intro_count != 1 or doc_filter_count != 1:
+        raise RuntimeError("Could not update current AOA version documentation")
+    aoa_doc.write_text(aoa_doc_text, encoding="utf-8", newline="\n")
+    replace_one(
         root / "README.md",
         r'Repository revision: \*\*[^*]+\*\*\. Windows Host: \*\*[^*]+\*\*\. Android client: \*\*[^*]+\*\*\.',
         f'Repository revision: **{version}**. Windows Host: **{version}**. Android client: **{version}**.',

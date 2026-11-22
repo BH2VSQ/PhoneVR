@@ -1,3 +1,11 @@
+## 0.5.1 - Native USB AOA Bulk streaming and enumeration diagnostics
+
+- Added Windows-initiated Android Open Accessory mode negotiation and a full-duplex WinUSB Bulk transport. The USB stream multiplexes control, HMD pose and H.264 video without USB network sharing, RNDIS or ADB data-channel use.
+- Added Android accessory attach/permission/session handling and reused the existing Host control, pose, H.264 encoding and Android MediaCodec paths.
+- Improved WinUSB device-interface discovery to read both `DeviceInterfaceGUID` and `DeviceInterfaceGUIDs`; added detailed device enumeration and AOA control-transfer diagnostics.
+- Synchronized repository, Android, Windows Host, SteamVR driver and AOA accessory descriptor versions to 0.5.1; Android `versionCode` is now 36.
+- Go tests, race tests, vet and Windows amd64 Host cross-build pass. Physical AOA switching, sustained USB throughput, Android APK build and native SteamVR runtime validation remain pending on the target devices.
+
 ## 0.4.19 - Virtual VSync stability and low-latency follow-up
 
 - Corrected virtual-vsync publication order: `GetTimeSinceLastVsync` sees a VSync only after `WaitForPresent` reaches it. The scheduler now maintains a bounded 72 Hz timeline, advances the virtual frame counter across missed intervals, and serializes wait callbacks.
@@ -349,3 +357,9 @@
 - Integrated Android `UsbManager.openAccessory()` permission handling and USB accessory attach intents. The Android client forwards USB video fragments into the existing local video receiver to reuse reassembly and MediaCodec decoding.
 - Added a Windows WinUSB AOA scanner and routed USB pose packets into the existing Host pose receiver. The ADB interface is not opened or used; USB tethering/RNDIS is not used.
 - Documented the WinUSB driver binding prerequisite and physical-device validation limitations.
+
+### USB AOA scanner diagnostics and WinUSB GUID compatibility
+
+- Added support for both `DeviceInterfaceGUID` (REG_SZ) and `DeviceInterfaceGUIDs` (REG_MULTI_SZ) registry values when discovering WinUSB device interfaces.
+- Added throttled Host runtime diagnostics for WinUSB GUID enumeration, device paths, descriptor reads, AOA `GET_PROTOCOL`, `SEND_STRING`, and `START_ACCESSORY` failures.
+- Clarified that an Android interface labelled ADB may provide the WinUSB handle used solely for device-level AOA control requests; PhoneVR does not exchange ADB protocol data.

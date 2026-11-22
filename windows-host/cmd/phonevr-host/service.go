@@ -590,7 +590,7 @@ func (s *HostService) PoseFrame() PoseFrameSnapshot {
 func (s *HostService) usbAccessoryLoop(ctx context.Context) {
 	defer s.wg.Done()
 	for ctx.Err() == nil {
-		device, err := aoa.NextAccessory(ctx)
+		device, err := aoa.NextAccessoryWithStatus(ctx, s.addLog)
 		if err != nil {
 			if ctx.Err() != nil {
 				return

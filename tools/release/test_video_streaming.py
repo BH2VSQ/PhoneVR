@@ -83,7 +83,7 @@ class VideoStreamingIntegrationTests(unittest.TestCase):
     def test_android_legacy_codec_probe_and_video_stage_status(self):
         self.assertIn("isLikelySoftwareCodec", ANDROID_CAPS)
         self.assertIn("hardwareClassificationReliable", ANDROID_CAPS)
-        for stage in ("UDP 视频接收已启动", "已收到完整 H.264 帧", "H.264 解码器已启动"):
+        for stage in ("$transportLabel 视频接收已启动", "已收到完整 H.264 帧", "H.264 解码器已启动"):
             self.assertIn(stage, ANDROID_RECEIVER)
         self.assertIn("reportVideoFrameRendered", ANDROID_NETWORK)
         self.assertIn("videoFrameListener", ANDROID_RENDERER)

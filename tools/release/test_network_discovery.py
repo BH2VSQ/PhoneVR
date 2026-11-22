@@ -43,10 +43,19 @@ class NetworkDiscoveryTests(unittest.TestCase):
         gradle = (ROOT / "android/app/build.gradle.kts").read_text(encoding="utf-8")
         network = (ROOT / "android/app/src/main/java/com/vsq/phonvrstream/network/NetworkClient.kt").read_text(encoding="utf-8")
         cmake = (ROOT / "steamvr-driver/CMakeLists.txt").read_text(encoding="utf-8")
-        self.assertEqual(version, "0.4.19")
+        host = (ROOT / "windows-host/cmd/phonevr-host/main.go").read_text(encoding="utf-8")
+        aoa = (ROOT / "windows-host/internal/aoa/aoa_windows.go").read_text(encoding="utf-8")
+        accessory_filter = (ROOT / "android/app/src/main/res/xml/accessory_filter.xml").read_text(encoding="utf-8")
+        driver = (ROOT / "steamvr-driver/src/driver.cpp").read_text(encoding="utf-8")
+        self.assertRegex(version, r"^\d+\.\d+\.\d+$")
         self.assertIn(f'versionName = "{version}"', gradle)
+        self.assertRegex(gradle, r"versionCode\s*=\s*\d+")
         self.assertIn(f"PhoneVRStream-{version}", network)
+        self.assertIn(f'var appVersion = "{version}"', host)
+        self.assertIn(f'"PhoneVR USB streaming", "{version}"', aoa)
+        self.assertIn(f'version="{version}"', accessory_filter)
         self.assertIn(f"VERSION {version} LANGUAGES CXX", cmake)
+        self.assertIn(f"PhoneVR {version} DisplayRedirect", driver)
 
 
 if __name__ == "__main__":

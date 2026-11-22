@@ -244,3 +244,11 @@ Revision: WinUSB CreateFile wrapper and in-process access diagnostics, 2026-11-2
 - Native MSVC SteamVR driver build and runtime validation on the target Windows machine.
 
 The Host now logs every registered WinUSB interface GUID, device path, in-process read/write access probes and token elevation state when opening fails. For the Redmi K40 test, the path should still end with `{F72FE0D4-CBCB-407D-8814-9ED673D0DD6B}`; compare the Host-side read-only/write-only probe results with the PowerShell results before changing any driver permissions.
+
+## 0.5.14 follow-up: virtual HMD height and network-only default
+
+- The tracked 3DoF HMD pose now reports a virtual standing eye position of 1.65 m on the SteamVR Y axis, including the initial untracked pose. The DisplayRedirect device origin remains unchanged.
+- Windows Host now defaults to Network only with Network preference. Automatic failover and USB AOA only remain selectable explicitly.
+- Android metadata synchronized to versionName 0.5.14 / versionCode 49.
+- Validation: Python release tests 59/59 passed; `go test -race ./...` passed; `go vet ./...` passed; Windows amd64 Go Host cross-build passed.
+- Limitation: this Linux environment does not contain the Windows MSVC toolchain/OpenVR SDK checkout needed to compile the updated SteamVR C++ driver DLL. Build the full Windows Host with `scripts/build-windows-host.ps1` on Windows so the updated driver is compiled and embedded. Android source files are unchanged, so no APK rebuild is required for this change.

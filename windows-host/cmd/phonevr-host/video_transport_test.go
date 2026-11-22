@@ -59,6 +59,9 @@ func TestAutoVideoTransportPrefersUSBAndFallsBackToNetwork(t *testing.T) {
 	service := NewHostService(false)
 	addVideoTransportTestDevice(t, service, "phone-1", "USB-AOA:test", "USB AOA Bulk")
 	addVideoTransportTestDevice(t, service, "phone-1", "192.0.2.10:50000", "Wi-Fi / LAN")
+	if err := service.SetVideoTransport(string(VideoTransportAuto), string(VideoPreferUSB)); err != nil {
+		t.Fatal(err)
+	}
 
 	target, ok := service.currentVideoTarget()
 	if !ok || target.Transport != "usb" || target.USB == nil {
@@ -73,6 +76,20 @@ func TestAutoVideoTransportPrefersUSBAndFallsBackToNetwork(t *testing.T) {
 	}
 	if target.UDP.IP.String() != "192.0.2.10" || target.UDP.Port != androidVideoPort {
 		t.Fatalf("network target address = %v; want 192.0.2.10:%d", target.UDP, androidVideoPort)
+	}
+}
+
+func TestDefaultVideoTransportIsNetworkOnly(t *testing.T) {
+	service := NewHostService(false)
+	status := service.videoTransportStatus()
+	if status.Mode != VideoTransportNetwork {
+		t.Fatalf("default transport mode = %q; want network-only", status.Mode)
+	}
+	if status.Preferred != VideoPreferNetwork {
+		t.Fatalf("default transport preference = %q; want network", status.Preferred)
+	}
+	if normalizeVideoTransportMode("") != VideoTransportNetwork {
+		t.Fatal("empty transport mode should default to network-only")
 	}
 }
 
@@ -100,6 +117,9 @@ func TestManualVideoTransportModesDoNotUseTheOtherPath(t *testing.T) {
 
 func TestActiveVideoTransportRequiresRecentEndToEndFeedback(t *testing.T) {
 	service := NewHostService(false)
+	if err := service.SetVideoTransport(string(VideoTransportAuto), string(VideoPreferNetwork)); err != nil {
+		t.Fatal(err)
+	}
 	addVideoTransportTestDevice(t, service, "phone-1", "USB-AOA:test", "USB AOA Bulk")
 	addVideoTransportTestDevice(t, service, "phone-1", "192.0.2.10:50000", "Wi-Fi / LAN")
 	service.transportPreference = VideoPreferNetwork
@@ -124,6 +144,9 @@ func TestActiveVideoTransportRequiresRecentEndToEndFeedback(t *testing.T) {
 
 func TestStandbyVideoPathRequiresRecentProbeAcknowledgement(t *testing.T) {
 	service := NewHostService(false)
+	if err := service.SetVideoTransport(string(VideoTransportAuto), string(VideoPreferNetwork)); err != nil {
+		t.Fatal(err)
+	}
 	addVideoTransportTestDevice(t, service, "phone-1", "USB-AOA:test", "USB AOA Bulk")
 	addVideoTransportTestDevice(t, service, "phone-1", "192.0.2.10:50000", "Wi-Fi / LAN")
 	service.transportPreference = VideoPreferNetwork

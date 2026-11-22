@@ -1,3 +1,11 @@
+## 0.5.14 - Virtual HMD height and network-first default
+
+- Set the 3DoF SteamVR HMD virtual position to 1.65 m above the standing floor, including its initial untracked pose, preventing the headset origin from being placed at floor level.
+- Keep the DisplayRedirect device origin unchanged; the height offset applies only to the tracked HMD.
+- Change the Host default video transport to Network only, with Network as the default preference. USB AOA and automatic failover remain available when explicitly selected.
+- Add release and Go regression tests for the HMD height and network-only default.
+- Increment Android versionName to 0.5.14 and versionCode to 49 to keep release metadata synchronized.
+
 ## 0.5.13 - Dual-path USB AOA and network video failover
 
 - Added a Windows Host video-transport selector with **Automatic failover**, **USB AOA only** and **Network only** modes. Automatic mode also lets the user choose USB AOA or network as the preferred initial route.

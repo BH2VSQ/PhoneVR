@@ -281,7 +281,7 @@ type HostService struct {
 func NewHostService(consoleLogs bool) *HostService {
 	return &HostService{
 		devices: make(map[string]activeDevice), connections: make(map[net.Conn]struct{}), usbLinks: make(map[string]*usbmux.Mux),
-		transportMode: VideoTransportAuto, transportPreference: VideoPreferUSB,
+		transportMode: VideoTransportNetwork, transportPreference: VideoPreferNetwork,
 		transportHealth: make(map[string]transportHealth), consoleLogs: consoleLogs,
 	}
 }

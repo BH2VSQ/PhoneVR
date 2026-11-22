@@ -1,11 +1,13 @@
-# PhoneVR SteamVR Driver — 0.5.12 (DisplayRedirect diagnostics)
+# PhoneVR SteamVR Driver — 0.5.14 (DisplayRedirect diagnostics)
 
 Windows x64 OpenVR server driver foundation for the PhoneVR wireless HMD.
 
 ## Devices
 
 - `PHONEVR-HMD-001`: `TrackedDeviceClass_HMD`, 3DoF orientation sourced from
-  Android `PVSP` packets forwarded by the Go Host.
+  Android `PVSP` packets forwarded by the Go Host. Its virtual standing eye
+  position is fixed at 1.65 m above the SteamVR floor because this revision
+  does not provide positional tracking.
 - `PHONEVR-DISPLAY-001`: `TrackedDeviceClass_DisplayRedirect`, exposing
   `IVRVirtualDisplay` so SteamVR can provide the final composited backbuffer
   for a wireless output path.

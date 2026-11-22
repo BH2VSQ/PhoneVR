@@ -46,6 +46,11 @@ constexpr double DisplayFrameIntervalSeconds() { return 1.0 / gDisplayRefreshRat
 // pose becomes untracked, but it must never disconnect the HMD device itself.
 constexpr uint64_t kTrackingPoseTimeoutNs = 1000000000ULL;
 
+// PhoneVR currently provides 3DoF orientation only. Place the virtual HMD at
+// a realistic standing eye height above the SteamVR floor instead of leaving
+// vecPosition at the origin (which puts the headset at floor level).
+constexpr double kDefaultHeadHeightMeters = 1.65;
+
 // Stable four-character PhoneVR tag (PHVR in ASCII).
 // SteamVR requires the JSON universeID (uint32) to match the HMD's
 // Prop_CurrentUniverseId_Uint64 property.
@@ -537,7 +542,8 @@ public:
             return vr::VRInitError_Driver_Unknown;
         }
         if (vr::VRDriverLog()) {
-            vr::VRDriverLog()->Log("PhoneVR: HMD activation published; pose updates use dedicated event-driven worker");
+            vr::VRDriverLog()->Log("PhoneVR: HMD activation published; 3DoF virtual head height=1.65m above SteamVR floor");
+            vr::VRDriverLog()->Log("PhoneVR: pose updates use dedicated event-driven worker");
             char refreshLine[160]{};
             std::snprintf(refreshLine, sizeof(refreshLine),
                           "PhoneVR: pose publisher priority=ABOVE_NORMAL, keepalive=10ms; virtual display refresh=%.1fHz",
@@ -588,6 +594,9 @@ public:
         pose.qWorldFromDriverRotation = {1.0, 0.0, 0.0, 0.0};
         pose.qDriverFromHeadRotation = {1.0, 0.0, 0.0, 0.0};
         pose.qRotation = {1.0, 0.0, 0.0, 0.0};
+        pose.vecPosition[0] = 0.0;
+        pose.vecPosition[1] = kDefaultHeadHeightMeters;
+        pose.vecPosition[2] = 0.0;
         pose.result = vr::TrackingResult_Uninitialized;
         pose.deviceIsConnected = true;
         pose.poseIsValid = false;
@@ -1698,7 +1707,7 @@ public:
         if (!host->TrackedDeviceAdded("PHONEVR-HMD-001", vr::TrackedDeviceClass_HMD, m_hmd)) {
             Cleanup(); return vr::VRInitError_Driver_Unknown;
         }
-        if (vr::VRDriverLog()) vr::VRDriverLog()->Log("PhoneVR 0.5.13 DisplayRedirect order-fix diagnostics SteamVR driver initialized");
+        if (vr::VRDriverLog()) vr::VRDriverLog()->Log("PhoneVR 0.5.14 DisplayRedirect order-fix diagnostics SteamVR driver initialized");
         return vr::VRInitError_None;
     }
     void Cleanup() override {

@@ -38,6 +38,18 @@ class NetworkDiscoveryTests(unittest.TestCase):
         self.assertIn("net.JoinHostPort(config.ListenAddress", service)
         self.assertIn("Host interface [%s] %s: %s", service)
 
+    def test_3dof_hmd_uses_standing_eye_height(self):
+        driver = (ROOT / "steamvr-driver/src/driver.cpp").read_text(encoding="utf-8")
+        self.assertIn("constexpr double kDefaultHeadHeightMeters = 1.65;", driver)
+        self.assertIn("pose.vecPosition[1] = kDefaultHeadHeightMeters;", driver)
+
+    def test_default_video_transport_is_network_only(self):
+        service = (ROOT / "windows-host/cmd/phonevr-host/service.go").read_text(encoding="utf-8")
+        transport = (ROOT / "windows-host/cmd/phonevr-host/video_transport.go").read_text(encoding="utf-8")
+        self.assertIn("transportMode: VideoTransportNetwork, transportPreference: VideoPreferNetwork", service)
+        self.assertIn("return VideoTransportNetwork", transport)
+        self.assertIn("preferred = VideoPreferNetwork", transport)
+
     def test_version_metadata_is_synchronized(self):
         version = (ROOT / "VERSION").read_text(encoding="ascii").strip()
         gradle = (ROOT / "android/app/build.gradle.kts").read_text(encoding="utf-8")

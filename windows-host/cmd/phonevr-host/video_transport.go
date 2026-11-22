@@ -55,20 +55,22 @@ type transportCandidateGroup struct {
 
 func normalizeVideoTransportMode(mode string) VideoTransportMode {
 	switch VideoTransportMode(strings.ToLower(strings.TrimSpace(mode))) {
+	case VideoTransportAuto:
+		return VideoTransportAuto
 	case VideoTransportUSB:
 		return VideoTransportUSB
 	case VideoTransportNetwork:
 		return VideoTransportNetwork
 	default:
-		return VideoTransportAuto
+		return VideoTransportNetwork
 	}
 }
 
 func normalizeVideoTransportPreference(preference string) VideoTransportPreference {
-	if strings.EqualFold(strings.TrimSpace(preference), string(VideoPreferNetwork)) {
-		return VideoPreferNetwork
+	if strings.EqualFold(strings.TrimSpace(preference), string(VideoPreferUSB)) {
+		return VideoPreferUSB
 	}
-	return VideoPreferUSB
+	return VideoPreferNetwork
 }
 
 // SetVideoTransport changes the requested video route without restarting the
@@ -98,11 +100,11 @@ func (s *HostService) SetVideoTransport(mode, preferred string) error {
 func (s *HostService) videoTransportSnapshotLocked() VideoTransportSnapshot {
 	mode := s.transportMode
 	if mode == "" {
-		mode = VideoTransportAuto
+		mode = VideoTransportNetwork
 	}
 	preferred := s.transportPreference
 	if preferred == "" {
-		preferred = VideoPreferUSB
+		preferred = VideoPreferNetwork
 	}
 	groups := s.transportCandidatesLocked()
 	var usbAvailable, networkAvailable bool
@@ -228,11 +230,11 @@ func (s *HostService) currentVideoTarget() (videoTarget, bool) {
 	}
 	mode := s.transportMode
 	if mode == "" {
-		mode = VideoTransportAuto
+		mode = VideoTransportNetwork
 	}
 	preferred := s.transportPreference
 	if preferred == "" {
-		preferred = VideoPreferUSB
+		preferred = VideoPreferNetwork
 	}
 	for _, group := range ordered {
 		usbOK := s.transportCandidateHealthyLocked(group.deviceID, "usb", group.usb)

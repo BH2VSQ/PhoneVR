@@ -1,6 +1,6 @@
-# PhoneVR 0.5.1 build status
+# PhoneVR 0.5.2 build status
 
-Revision: USB AOA Bulk transport and Windows enumeration diagnostics, 2026-11-22
+Revision: OEM-independent USB AOA discovery and version update, 2026-11-22
 
 ## Changes in this revision
 
@@ -9,7 +9,10 @@ Revision: USB AOA Bulk transport and Windows enumeration diagnostics, 2026-11-22
 - Added Android accessory attach handling, USB permission flow, `UsbManager.openAccessory()` stream management and USB AOA connection controls.
 - Routed USB control, pose and video into the existing Host control handler, pose processing, H.264 encoder and Android MediaCodec decoder. Wi-Fi transport remains available and unchanged.
 - Added WinUSB registry discovery for both `DeviceInterfaceGUID` and `DeviceInterfaceGUIDs`, with diagnostics for detected interface GUIDs, device paths, open failures and AOA control-transfer failures.
-- Updated Android, Windows Host, SteamVR driver, AOA accessory descriptors and repository metadata to version 0.5.1. Android `versionCode` is now 36.
+- Reworked WinUSB discovery to read `DeviceInterfaceGUID` / `DeviceInterfaceGUIDs` only from USB device instances whose Windows function service is `WinUSB`, then enumerate each currently present interface. No particular per-PC interface GUID is compiled into PhoneVR.
+- Removed the Android OEM VID allow-list from the AOA handshake path. The scanner tries the standard device-level AOA `GET_PROTOCOL` request on present WinUSB functions and sends `SEND_STRING` / `START_ACCESSORY` only for recognized AOA protocol v1 or v2 responses. Failed candidates are rate-limited to one probe every five seconds.
+- Clarified that some Windows installations expose the initial endpoint-zero AOA control handle as an `Android ADB Interface` node. PhoneVR does not send ADB protocol messages or use ADB bulk endpoints.
+- Updated Android, Windows Host, SteamVR driver, AOA accessory descriptors and repository metadata to version 0.5.2. Android `versionCode` is now 37.
 - Retained Android stale-video recovery, lock-free Host pose snapshots, reverse-landscape support and the Host Day theme default from the preceding revisions.
 
 ## Passed in this environment
@@ -17,6 +20,7 @@ Revision: USB AOA Bulk transport and Windows enumeration diagnostics, 2026-11-22
 - `go test ./...`
 - `go test -race ./...`
 - `go vet ./...`
+- AOA registry service filtering and AOA protocol-version unit tests
 - `GOOS=windows GOARCH=amd64 go build ./cmd/phonevr-host`
 - Windows amd64 cross-compilation of Host and AOA packages
 - Python release and integration regression tests
@@ -30,4 +34,4 @@ Revision: USB AOA Bulk transport and Windows enumeration diagnostics, 2026-11-22
 - WinUSB binding behavior on the target PC, sustained Bulk throughput, USB disconnect/reconnect recovery and end-to-end pose/video latency.
 - Native MSVC SteamVR driver build and runtime validation on the target Windows machine.
 
-The Host now logs WinUSB interface GUID enumeration, device paths and the exact AOA control-transfer error. Use those logs to diagnose the next physical-device test.
+The Host now logs every registered WinUSB interface GUID, the corresponding interface paths and the exact AOA control-transfer error. For the Redmi K40 test, confirm that the path ends with `{F72FE0D4-CBCB-407D-8814-9ED673D0DD6B}` and that the scanner reports a successful WinUSB open before interpreting any AOA protocol result.

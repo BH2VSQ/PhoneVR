@@ -44,3 +44,26 @@ func parseGUID(value string) (guid, error) {
 	copy(result.Data4[:], data4)
 	return result, nil
 }
+
+// parseUniqueGUIDs converts registry values into unique interface GUIDs.
+// It intentionally does not add GUID_DEVINTERFACE_USB_DEVICE as a fallback:
+// only GUIDs explicitly registered by a device function driver are valid
+// WinUSB interface enumeration classes.
+func parseUniqueGUIDs(values ...[]string) []guid {
+	seen := make(map[guid]struct{})
+	result := make([]guid, 0)
+	for _, group := range values {
+		for _, value := range group {
+			parsed, err := parseGUID(value)
+			if err != nil {
+				continue
+			}
+			if _, exists := seen[parsed]; exists {
+				continue
+			}
+			seen[parsed] = struct{}{}
+			result = append(result, parsed)
+		}
+	}
+	return result
+}

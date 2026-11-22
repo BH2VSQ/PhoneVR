@@ -1,8 +1,16 @@
+## 0.5.2 - OEM-independent AOA discovery
+
+- Made WinUSB interface discovery generic: the Host reads each installed USB function's `DeviceInterfaceGUID` / `DeviceInterfaceGUIDs` registration and only enumerates interfaces assigned to the WinUSB service. Interface GUIDs are not hard-coded to a particular PC or phone.
+- Removed the Android OEM VID allow-list from AOA probing. The Host sends the standard device-level `GET_PROTOCOL` request to present WinUSB functions and proceeds only for AOA protocol v1/v2 responses. Failed probes are rate-limited to once every five seconds per device path.
+- Added tests for AOA v1/v2 validation and WinUSB service filtering. Updated the Windows driver guide to clarify ADB-labelled control interfaces, dynamic GUID discovery and hardware-specific AOA support.
+- Bumped repository, Android, Windows Host, SteamVR driver and accessory descriptors to 0.5.2. Android `versionCode` is now 37.
+
 ## 0.5.1 - Native USB AOA Bulk streaming and enumeration diagnostics
 
 - Added Windows-initiated Android Open Accessory mode negotiation and a full-duplex WinUSB Bulk transport. The USB stream multiplexes control, HMD pose and H.264 video without USB network sharing, RNDIS or ADB data-channel use.
 - Added Android accessory attach/permission/session handling and reused the existing Host control, pose, H.264 encoding and Android MediaCodec paths.
 - Improved WinUSB device-interface discovery to read both `DeviceInterfaceGUID` and `DeviceInterfaceGUIDs`; added detailed device enumeration and AOA control-transfer diagnostics.
+- Fixed a GUID-selection defect found during Redmi K40 testing: the scanner previously fell back to the generic `GUID_DEVINTERFACE_USB_DEVICE` (`A5DCBF10-...`) and attempted WinUSB operations on generic USB device paths. It now enumerates only GUIDs explicitly registered under each USB device instance's `Device Parameters` key, including the reported `F72FE0D4-CBCB-407D-8814-9ED673D0DD6B` interface.
 - Synchronized repository, Android, Windows Host, SteamVR driver and AOA accessory descriptor versions to 0.5.1; Android `versionCode` is now 36.
 - Go tests, race tests, vet and Windows amd64 Host cross-build pass. Physical AOA switching, sustained USB throughput, Android APK build and native SteamVR runtime validation remain pending on the target devices.
 

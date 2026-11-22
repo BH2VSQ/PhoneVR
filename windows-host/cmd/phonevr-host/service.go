@@ -18,8 +18,10 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/vsq-studio/phonevr-host/internal/aoa"
 	"github.com/vsq-studio/phonevr-host/internal/encoder"
 	"github.com/vsq-studio/phonevr-host/internal/protocol"
+	"github.com/vsq-studio/phonevr-host/internal/usbmux"
 	"github.com/vsq-studio/phonevr-host/internal/videoprotocol"
 )
 
@@ -56,6 +58,7 @@ func DefaultHostConfig() HostConfig {
 
 type DeviceSnapshot struct {
 	Name              string                `json:"name"`
+	Transport         string                `json:"transport,omitempty"`
 	DeviceID          string                `json:"deviceId,omitempty"`
 	Client            string                `json:"client,omitempty"`
 	Address           string                `json:"address"`
@@ -142,6 +145,7 @@ type welcomeMessage struct {
 	VideoPort        int      `json:"videoPort,omitempty"`
 	VideoCodec       string   `json:"videoCodec,omitempty"`
 	VideoMimeType    string   `json:"videoMimeType,omitempty"`
+	VideoTransport   string   `json:"videoTransport,omitempty"`
 	VideoWidth       int      `json:"videoWidth,omitempty"`
 	VideoHeight      int      `json:"videoHeight,omitempty"`
 	VideoFPS         int      `json:"videoFps,omitempty"`
@@ -165,10 +169,28 @@ type controlMessage struct {
 type activeDevice struct {
 	Snapshot     DeviceSnapshot
 	Conn         net.Conn
+	USBLink      *usbmux.Mux
 	WriteMu      *sync.Mutex
 	Ready        bool
 	VideoEnabled bool
 }
+
+type videoTarget struct {
+	UDP *net.UDPAddr
+	USB *usbmux.Mux
+}
+
+type taggedNetConn struct {
+	net.Conn
+	remote net.Addr
+}
+
+func (c *taggedNetConn) RemoteAddr() net.Addr { return c.remote }
+
+type taggedAddr string
+
+func (a taggedAddr) Network() string { return "usb" }
+func (a taggedAddr) String() string  { return string(a) }
 
 type rawVideoFrame struct {
 	data        []byte
@@ -208,6 +230,7 @@ type HostService struct {
 	wg                    sync.WaitGroup
 	devices               map[string]activeDevice
 	connections           map[net.Conn]struct{}
+	usbLinks              map[string]*usbmux.Mux
 	// The pose snapshot is immutable after publication. Atomic publication avoids
 	// reader/writer lock stalls when the desktop UI is busy rendering the model.
 	latestPose       atomic.Pointer[PoseSnapshot]
@@ -220,7 +243,7 @@ type HostService struct {
 
 func NewHostService(consoleLogs bool) *HostService {
 	return &HostService{
-		devices: make(map[string]activeDevice), connections: make(map[net.Conn]struct{}),
+		devices: make(map[string]activeDevice), connections: make(map[net.Conn]struct{}), usbLinks: make(map[string]*usbmux.Mux),
 		consoleLogs: consoleLogs,
 	}
 }
@@ -346,19 +369,21 @@ func (s *HostService) Start(config HostConfig) error {
 	s.cancel = cancel
 	s.devices = make(map[string]activeDevice)
 	s.connections = make(map[net.Conn]struct{})
+	s.usbLinks = make(map[string]*usbmux.Mux)
 	s.lastError = ""
 	s.mu.Unlock()
 	s.latestPose.Store(nil)
 	s.posePackets.Store(0)
 	s.poseLastPacketNs.Store(0)
 
-	s.addLog(fmt.Sprintf("Host started on %s | TCP %d | UDP discovery %d | UDP pose %d", config.ListenAddress, config.ControlPort, config.DiscoveryPort, config.PosePort))
+	s.addLog(fmt.Sprintf("Host started on %s | TCP %d | UDP discovery %d | UDP pose %d | USB AOA scanner enabled", config.ListenAddress, config.ControlPort, config.DiscoveryPort, config.PosePort))
 	for _, address := range networkAddresses {
 		s.addLog(fmt.Sprintf("Host interface [%s] %s: %s", address.Kind, address.Name, address.IP))
 	}
 
-	s.wg.Add(6)
+	s.wg.Add(7)
 	go s.acceptLoop(ctx, tcpListener)
+	go s.usbAccessoryLoop(ctx)
 	go s.discoveryLoop(ctx, udpDiscovery, serverName, config.ControlPort)
 	go s.poseLoop(ctx, udpPose)
 	go s.steamVRStatusLoop(ctx, udpSteamVRStatus)
@@ -470,6 +495,7 @@ func (s *HostService) Stop() {
 	s.cancel = nil
 	s.devices = make(map[string]activeDevice)
 	s.connections = make(map[net.Conn]struct{})
+	s.usbLinks = make(map[string]*usbmux.Mux)
 	s.mu.Unlock()
 	s.latestPose.Store(nil)
 	s.poseLastPacketNs.Store(0)
@@ -559,6 +585,100 @@ func (s *HostService) PoseFrame() PoseFrameSnapshot {
 		latest = &copyPose
 	}
 	return PoseFrameSnapshot{LatestPose: latest, PacketsReceived: s.posePackets.Load()}
+}
+
+func (s *HostService) usbAccessoryLoop(ctx context.Context) {
+	defer s.wg.Done()
+	for ctx.Err() == nil {
+		device, err := aoa.NextAccessory(ctx)
+		if err != nil {
+			if ctx.Err() != nil {
+				return
+			}
+			s.addLog("USB AOA scanner error: " + err.Error())
+			time.Sleep(time.Second)
+			continue
+		}
+		s.addLog("Android AOA accessory detected: " + device.ID())
+		s.serveUSBAccessory(ctx, device)
+	}
+}
+
+func (s *HostService) serveUSBAccessory(ctx context.Context, device *aoa.Device) {
+	mux := usbmux.New(device)
+	deviceKey := "USB-AOA:" + device.ID()
+	serverPipe, accessoryPipe := net.Pipe()
+	conn := &taggedNetConn{Conn: serverPipe, remote: taggedAddr(deviceKey)}
+	s.mu.Lock()
+	if s.listener == nil || ctx.Err() != nil {
+		s.mu.Unlock()
+		_ = conn.Close()
+		_ = accessoryPipe.Close()
+		_ = mux.Close()
+		return
+	}
+	s.connections[conn] = struct{}{}
+	s.usbLinks[deviceKey] = mux
+	s.mu.Unlock()
+
+	poseForward, poseErr := net.DialUDP("udp4", nil, &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: s.config.PosePort})
+	if poseErr != nil {
+		s.addLog("USB AOA pose bridge unavailable: " + poseErr.Error())
+	}
+	var bridgeWG sync.WaitGroup
+	bridgeWG.Add(2)
+	go func() {
+		defer bridgeWG.Done()
+		defer accessoryPipe.Close()
+		for {
+			frame, err := mux.ReadFrame()
+			if err != nil {
+				_ = accessoryPipe.Close()
+				return
+			}
+			switch frame.Channel {
+			case usbmux.ChannelControl:
+				if _, err := accessoryPipe.Write(frame.Payload); err != nil {
+					return
+				}
+			case usbmux.ChannelPose:
+				if poseForward != nil && len(frame.Payload) > 0 {
+					if _, err := poseForward.Write(frame.Payload); err != nil {
+						s.addLog("USB AOA pose forward failed: " + err.Error())
+					}
+				}
+			}
+		}
+	}()
+	go func() {
+		defer bridgeWG.Done()
+		buffer := make([]byte, 32*1024)
+		for {
+			n, err := accessoryPipe.Read(buffer)
+			if n > 0 {
+				payload := append([]byte(nil), buffer[:n]...)
+				if writeErr := mux.WriteFrame(usbmux.ChannelControl, payload); writeErr != nil {
+					return
+				}
+			}
+			if err != nil {
+				return
+			}
+		}
+	}()
+
+	s.handleControlConnection(ctx, conn)
+	_ = accessoryPipe.Close()
+	_ = conn.Close()
+	_ = mux.Close()
+	if poseForward != nil {
+		_ = poseForward.Close()
+	}
+	bridgeWG.Wait()
+	s.mu.Lock()
+	delete(s.usbLinks, deviceKey)
+	s.mu.Unlock()
+	s.addLog("Android AOA accessory disconnected")
 }
 
 func (s *HostService) acceptLoop(ctx context.Context, listener net.Listener) {
@@ -913,15 +1033,22 @@ func (s *HostService) handleControlConnection(ctx context.Context, conn net.Conn
 	if videoEnabled && !h264DecoderClassificationReliable(mediaCapabilities, selectedAndroidDecoder) {
 		s.addLog(fmt.Sprintf("Android decoder %s is on a pre-Android-10 platform; accepting the vendor-codec heuristic after profile capability checks", selectedAndroidDecoder))
 	}
+	s.mu.RLock()
+	usbLink := s.usbLinks[remote]
+	s.mu.RUnlock()
+	transportName := "Wi-Fi / LAN"
+	if usbLink != nil {
+		transportName = "USB AOA Bulk"
+	}
 	device := activeDevice{Snapshot: DeviceSnapshot{
-		Name: hello.DeviceName, DeviceID: hello.DeviceID, Client: hello.Client,
+		Name: hello.DeviceName, DeviceID: hello.DeviceID, Client: hello.Client, Transport: transportName,
 		Address: remote, ConnectedAt: time.Now().Format(time.RFC3339),
 		MediaCapabilities: append(json.RawMessage(nil), mediaCapabilities...),
-	}, Conn: conn, WriteMu: &sync.Mutex{}, VideoEnabled: videoEnabled}
+	}, Conn: conn, USBLink: usbLink, WriteMu: &sync.Mutex{}, VideoEnabled: videoEnabled}
 	s.mu.Lock()
 	s.devices[remote] = device
 	s.mu.Unlock()
-	s.addLog(fmt.Sprintf("Device paired: %s (%s)", hello.DeviceName, remote))
+	s.addLog(fmt.Sprintf("Device paired: %s via %s (%s)", hello.DeviceName, transportName, remote))
 	defer func() {
 		s.mu.Lock()
 		delete(s.devices, remote)
@@ -935,7 +1062,15 @@ func (s *HostService) handleControlConnection(ctx context.Context, conn net.Conn
 		Capabilities: []string{"head-pose-3dof-udp-v1", "control-heartbeat-v1", "display-settings-control-v1", "android-optical-presets-v1", "android-media-capabilities-v1"},
 		VideoEnabled: videoEnabled,
 	}
+	if usbLink != nil {
+		welcome.Capabilities = append(welcome.Capabilities, "usb-aoa-bulk-v1", "usb-multiplex-v1")
+	}
 	if videoEnabled {
+		if usbLink != nil {
+			welcome.VideoTransport = "usb"
+		} else {
+			welcome.VideoTransport = "udp"
+		}
 		welcome.VideoPort = androidVideoPort
 		welcome.VideoCodec = "h264"
 		welcome.VideoMimeType = "video/avc"
@@ -943,7 +1078,11 @@ func (s *HostService) handleControlConnection(ctx context.Context, conn net.Conn
 		welcome.VideoHeight = videoHeight
 		welcome.VideoFPS = videoFrameRate
 		welcome.VideoDecoderName = selectedAndroidDecoder
-		welcome.Capabilities = append(welcome.Capabilities, "sbs-h264-udp-v1")
+		if usbLink != nil {
+			welcome.Capabilities = append(welcome.Capabilities, "sbs-h264-usb-v1")
+		} else {
+			welcome.Capabilities = append(welcome.Capabilities, "sbs-h264-udp-v1")
+		}
 	} else if !hardwareEncoderReady {
 		if encoderError == "" {
 			encoderError = "hardware encoder preflight did not complete before the pairing deadline"
@@ -1190,25 +1329,42 @@ func maxDurationSeconds(value time.Duration) float64 {
 	return seconds
 }
 
-func (s *HostService) currentVideoTarget() (*net.UDPAddr, bool) {
+func (s *HostService) currentVideoTarget() (videoTarget, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	for _, device := range s.devices {
 		if !device.Ready || !device.VideoEnabled || device.Conn == nil {
 			continue
 		}
+		if device.USBLink != nil {
+			return videoTarget{USB: device.USBLink}, true
+		}
 		tcp, ok := device.Conn.RemoteAddr().(*net.TCPAddr)
 		if !ok || tcp.IP == nil {
 			continue
 		}
-		return &net.UDPAddr{IP: append(net.IP(nil), tcp.IP...), Port: androidVideoPort}, true
+		return videoTarget{UDP: &net.UDPAddr{IP: append(net.IP(nil), tcp.IP...), Port: androidVideoPort}}, true
 	}
-	return nil, false
+	return videoTarget{}, false
 }
 
 func (s *HostService) sendEncodedVideoFrame(frame []byte, frameID uint32, timestampNs uint64, keyFrame bool) error {
 	target, enabled := s.currentVideoTarget()
 	if !enabled {
+		return nil
+	}
+	fragments, err := videoprotocol.FragmentFrame(frame, frameID, timestampNs, keyFrame)
+	if err != nil {
+		return err
+	}
+	if target.USB != nil {
+		for _, packet := range fragments {
+			if err := target.USB.WriteFrame(usbmux.ChannelVideo, packet); err != nil {
+				s.videoDroppedFrames.Add(1)
+				return err
+			}
+			s.videoUDPFragments.Add(1)
+		}
 		return nil
 	}
 	s.mu.RLock()
@@ -1217,12 +1373,8 @@ func (s *HostService) sendEncodedVideoFrame(frame []byte, frameID uint32, timest
 	if udp == nil {
 		return errors.New("video UDP sender is unavailable")
 	}
-	fragments, err := videoprotocol.FragmentFrame(frame, frameID, timestampNs, keyFrame)
-	if err != nil {
-		return err
-	}
 	for _, packet := range fragments {
-		if _, err := udp.WriteToUDP(packet, target); err != nil {
+		if _, err := udp.WriteToUDP(packet, target.UDP); err != nil {
 			s.videoDroppedFrames.Add(1)
 			return err
 		}

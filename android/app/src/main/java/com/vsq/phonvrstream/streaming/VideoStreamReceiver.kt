@@ -18,7 +18,8 @@ import java.util.concurrent.atomic.AtomicLong
 
 /**
  * Receives PVRV H.264 SBS datagrams and decodes them onto the renderer's
- * SurfaceTexture. UDP reassembly and MediaCodec are isolated on worker threads.
+ * SurfaceTexture. Incoming LAN UDP packets or USB-loopback packets are reassembled
+ * on a worker thread before MediaCodec decoding.
  * The decoder never discards an access unit merely because an input buffer is
  * temporarily unavailable: it drains output and retries the same AU first.
  */
@@ -30,6 +31,7 @@ class VideoStreamReceiver(
     private val frameRate: Int,
     private val decoderName: String,
     private val outputSurface: Surface,
+    private val transportLabel: String = "UDP",
     private val onStatus: (String) -> Unit = {},
     private val onStats: (VideoStreamStats) -> Unit = {},
 ) {
@@ -54,6 +56,8 @@ class VideoStreamReceiver(
     private val pendingFrames = ArrayBlockingQueue<CompletedVideoFrame>(2)
     private val reassembler = VideoFragmentReassembler()
     @Volatile private var socket: DatagramSocket? = null
+    @Volatile private var boundLocalPort: Int = -1
+    val localPort: Int get() = boundLocalPort
     @Volatile private var receiveThread: Thread? = null
     @Volatile private var decodeThread: Thread? = null
 
@@ -73,8 +77,9 @@ class VideoStreamReceiver(
             throw error
         }
         socket = udp
+        boundLocalPort = udp.localPort
         Log.i(TAG, "H.264 SBS receiver started: $hostAddress:$port ${width}x$height@$frameRate; UDP rcvbuf=${udp.receiveBufferSize}")
-        onStatus("UDP 视频接收已启动，等待 PC 首帧")
+        onStatus("$transportLabel 视频接收已启动，等待 PC 首帧")
         onStats(VideoStreamStats(state = "等待视频"))
         decodeThread = Thread({ decodeLoop() }, "PhoneVR-Video-Decode").apply { start() }
         receiveThread = Thread({ receiveLoop(udp) }, "PhoneVR-Video-UDP").apply { start() }
@@ -90,6 +95,7 @@ class VideoStreamReceiver(
         receiveThread = null
         decodeThread = null
         socket = null
+        boundLocalPort = -1
         pendingFrames.clear()
         reassembler.clear()
         onStats(VideoStreamStats(state = "视频已停止"))
@@ -180,7 +186,7 @@ class VideoStreamReceiver(
         val state = when {
             decodedAge in 0..STREAM_STALE_MS -> "解码流畅"
             completeAge in 0..STREAM_STALE_MS -> "解码停滞"
-            packetAge in 0..STREAM_STALE_MS -> "UDP 组帧中"
+            packetAge in 0..STREAM_STALE_MS -> "$transportLabel 组帧中"
             framesReceived.get() == 0L -> "等待视频"
             else -> "视频无数据"
         }

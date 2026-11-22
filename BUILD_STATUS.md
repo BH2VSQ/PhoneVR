@@ -46,3 +46,16 @@ See `docs/2026-11-22-stream-freeze-pose-priority-and-android-ui.md` for implemen
 - Existing explicit `dark` preferences remain unchanged; invalid/missing mode values normalize to `light`.
 - Appearance & Theme controls are ordered Day on the left, Night on the right.
 - Added Windows-specific tests for the default, normalization, and explicit Night preference.
+
+## USB AOA Bulk transport
+
+
+- Added Windows AOA detection and host-side AOA mode switching through `GET_PROTOCOL`, `SEND_STRING` and `START_ACCESSORY`; AOA Bulk IN/OUT runs through WinUSB.
+- Added the cross-platform Go `usbmux` framing/multiplexer and Kotlin-compatible `PVRU` wire format with control, pose and video channels.
+- Added Android accessory attach intent handling, permission request, `UsbManager.openAccessory()` stream management, pose sender and video fragment forwarding.
+- Host routes USB control into the existing control handler, USB pose into its existing local UDP pose input, and H.264 fragments through Bulk channel 3. LAN transport remains unchanged.
+- Windows driver requirement: WinUSB must be bound to the original Android function for the AOA switch and to the re-enumerated AOA accessory interface. No ADB protocol/interface, USB tethering or RNDIS is used.
+- USB verification completed: `go test ./...`, `go test -race ./...`, and `go vet ./...` all pass.
+- Windows USB/Host cross-build completed: `GOOS=windows GOARCH=amd64 go build ./cmd/phonevr-host`, plus Windows amd64 test-binary compilation for `internal/aoa` and `cmd/phonevr-host`.
+- Android USB Kotlin session and framing classes compile against minimal Android API stubs; the shared PVRU header smoke test passes. This does not replace an Android SDK build.
+- Physical phone/PC AOA negotiation, WinUSB binding, sustained USB throughput and end-to-end video/pose latency have not been verified in this environment. Android Gradle/APK build is currently blocked by unavailable Gradle distribution DNS and missing Android SDK.

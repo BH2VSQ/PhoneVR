@@ -341,3 +341,11 @@
 - Changed the first-run/default Host appearance to Day mode (light).
 - Kept an explicitly saved Night mode preference unchanged. Unknown or missing theme modes normalize to the Day mode default.
 - Reordered the Appearance & Theme buttons so Day mode is on the left and Night mode is on the right, including keyboard focus order.
+
+## 0.4.19 USB AOA Bulk transport (2026-11-22)
+
+- Added a native Android Open Accessory (AOA) USB direct-connection mode. Windows initiates the AOA mode switch through the standard vendor requests and opens the Accessory interface's Bulk IN/OUT endpoints through WinUSB.
+- Added a shared 16-byte `PVRU` framing header with separate control, pose and video channels. Control JSON keeps the existing message format; pose keeps the `PVSP` packet format; video keeps the `PVRV` fragment format.
+- Integrated Android `UsbManager.openAccessory()` permission handling and USB accessory attach intents. The Android client forwards USB video fragments into the existing local video receiver to reuse reassembly and MediaCodec decoding.
+- Added a Windows WinUSB AOA scanner and routed USB pose packets into the existing Host pose receiver. The ADB interface is not opened or used; USB tethering/RNDIS is not used.
+- Documented the WinUSB driver binding prerequisite and physical-device validation limitations.

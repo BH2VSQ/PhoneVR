@@ -51,8 +51,8 @@ All helper processes launched by the GUI Host use `CREATE_NO_WINDOW`, including 
 - Landscape immersive display with OpenGL ES 3.0 stereo rendering.
 - Locally stored optical preset selector with Daydream View v2.0 (2017) and Generic Cardboard built-in presets.
 - Existing manual display settings are migrated into an Android-local optical preset during the first upgrade; parameter editing is performed in the Windows Host preset editor.
-- IMU sensor processing on a dedicated HandlerThread, quaternion-continuous pose transmission over UDP at up to 200 Hz, TCP pairing and heartbeat, battery reporting and bounded auto-reconnect.
-- Automatic LAN discovery across active IPv4 interfaces and connection to the remembered Host.
+- IMU sensor processing on a dedicated HandlerThread, quaternion-continuous pose transmission over UDP at up to 200 Hz on LAN or over the native AOA Bulk channel on USB, TCP-style pairing/control framing and heartbeat, battery reporting and bounded auto-reconnect.
+- Automatic LAN discovery across active IPv4 interfaces and connection to the remembered Host. A separate **USB AOA 直连** action uses Android Open Accessory mode and a full-duplex Bulk stream, with no USB tethering, RNDIS or ADB data channel.
 - Android-owned optical preset synchronization and preset-ID application, plus recenter operations over the TCP control channel.
 - Daydream Controller input provider interface is prepared; actual pairing and input forwarding remain future work.
 - `CodecCapabilityProbe` enumerates device MediaCodec decoders and advertises only a hardware H.264 decoder that explicitly supports the negotiated 1600×720@60 profile. `MediaCodec` decodes the H.264 SBS stream to a `SurfaceTexture`; the OpenGL stereo renderer applies the optical warp independently to the left and right halves.
@@ -85,7 +85,7 @@ restart SteamVR. PhoneVR does not force-edit the user's global SteamVR settings.
 
 ## Video pipeline foundation
 
-The real-time video path captures the final SteamVR SBS backbuffer at up to 60 FPS, GPU-scales it to 1600×720, reads back through a bounded triple-buffer, passes BGRA frames to a hardware-only H.264 FFmpeg session, fragments Annex-B access units into MTU-safe `PVRV` UDP packets and sends them to Android port 48104. Android reassembles only complete frames, drops stale/incomplete access units, recovers at the next IDR after loss, decodes with `MediaCodec`, and presents to a `SurfaceTexture` consumed by the stereo OpenGL renderer. The existing optical warp is then applied separately to each eye. Pose UDP and control TCP remain independent of the video path.
+The real-time video path captures the final SteamVR SBS backbuffer at up to 60 FPS, GPU-scales it to 1600×720, reads back through a bounded triple-buffer and passes BGRA frames to a hardware-only H.264 FFmpeg session. For LAN connections, Annex-B access units are fragmented into MTU-safe `PVRV` UDP packets and sent to Android port 48104. For USB connections, the same `PVRV` fragments are multiplexed over AOA Bulk channel 3. Android reassembles only complete frames, drops stale/incomplete access units, recovers at the next IDR after loss, decodes with `MediaCodec`, and presents to a `SurfaceTexture` consumed by the stereo OpenGL renderer. Control JSON and pose samples use separate channels on the same USB Bulk stream when USB is selected.
 
 ## Current limitations
 
@@ -132,11 +132,11 @@ The Windows Host version is injected from the root VERSION file at build time. T
 | 48101 | TCP | Pairing, heartbeat, remote settings/actions |
 | 48102 | UDP | HMD quaternion pose |
 | 48103 | UDP loopback only | Go Host -> SteamVR driver pose bridge |
-| 48104 | UDP | Host -> Android H.264 video fragments |
+| 48104 | UDP | Host -> Android H.264 video fragments on LAN; unused by USB AOA sessions |
 | 48105 | UDP loopback only | SteamVR driver -> Host runtime heartbeat |
 | 48106 | TCP loopback only | SteamVR driver -> Host raw BGRA capture bridge |
 
-The PC and phone should use the same LAN. Guest Wi-Fi or AP/client isolation may block discovery and direct connections.
+The PC and phone should use the same LAN for Wi-Fi streaming. Guest Wi-Fi or AP/client isolation may block discovery and direct connections. USB AOA is a separate direct cable transport and does not require a shared LAN. See [USB AOA Bulk transport](docs/usb-aoa-windows-driver.md) for the Windows WinUSB driver prerequisite and setup steps.
 
 ## Continuous integration and releases
 

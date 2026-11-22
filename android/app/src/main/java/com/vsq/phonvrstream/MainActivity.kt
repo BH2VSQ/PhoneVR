@@ -1,6 +1,7 @@
 package com.vsq.phonvrstream
 
 import android.app.Activity
+import android.content.Intent
 import android.content.pm.ActivityInfo
 import android.content.res.Configuration
 import android.graphics.Color
@@ -260,7 +261,21 @@ class MainActivity : Activity(), SensorEventListener {
         updateRendererSettings()
         updateTopHud()
         updatePoseText("IMU 初始化中")
-        root.post { startStartupDiscovery() }
+        root.post {
+            if (intent?.action == "android.hardware.usb.action.USB_ACCESSORY_ATTACHED") {
+                networkClient.connectUsb(Build.MODEL ?: "Android")
+            } else {
+                startStartupDiscovery()
+            }
+        }
+    }
+
+    override fun onNewIntent(intent: Intent?) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        if (intent?.action == "android.hardware.usb.action.USB_ACCESSORY_ATTACHED") {
+            if (::networkClient.isInitialized) networkClient.connectUsb(Build.MODEL ?: "Android")
+        }
     }
 
     private fun updateDismissLayer() {
@@ -443,7 +458,7 @@ class MainActivity : Activity(), SensorEventListener {
         menuVideoDetailText.text = buildString {
             append("视频：${stats.state}")
             append("\n接收 ${stats.receiveFps.toInt()} / 解码 ${stats.decodeFps.toInt()} / 显示 ${stats.displayFps.toInt()} FPS")
-            append("\nUDP ${stats.fragmentsPerSecond}/s · 组帧 ${stats.reassemblyInFlight} · 解码队列 ${stats.decoderQueueDepth}")
+            append("\n分片 ${stats.fragmentsPerSecond}/s · 组帧 ${stats.reassemblyInFlight} · 解码队列 ${stats.decoderQueueDepth}")
             append("\n丢帧 ${stats.queueDrops + stats.decoderDrops} · 超时组帧 ${stats.expiredAssemblies} · 恢复 ${stats.decoderRecoveries}")
         }
     }
@@ -456,7 +471,7 @@ class MainActivity : Activity(), SensorEventListener {
             stats.state == "解码流畅" && stats.displayFps >= 1.0 ->
                 "● 视频 ${stats.displayFps.toInt()} FPS · 解码 ${stats.decodeFps.toInt()}"
             stats.state == "显示停滞" -> "! 手机显示停滞"
-            stats.state == "UDP 组帧中" -> "◌ 视频组帧 ${stats.receiveFps.toInt()} FPS"
+            stats.state.endsWith("组帧中") -> "◌ 视频组帧 ${stats.receiveFps.toInt()} FPS"
             stats.state == "解码停滞" -> "! 视频解码停滞"
             stats.state == "视频无数据" -> "! 视频流中断"
             stats.state == "视频已停止" -> "○ 视频已停止"
@@ -586,6 +601,16 @@ class MainActivity : Activity(), SensorEventListener {
             imeOptions = android.view.inputmethod.EditorInfo.IME_ACTION_DONE
         }
         content.addView(hostPortInput, LinearLayout.LayoutParams(-1, dp(42)))
+
+        content.addView(makeButton("USB AOA 直连") {
+            connectionMessage = "正在等待 USB Accessory（AOA）连接"
+            connectionStatusLabel.text = connectionMessage
+            connectionStatusLabel.setTextColor(Color.rgb(130, 195, 255))
+            updateTopHud()
+            networkClient.connectUsb(Build.MODEL ?: "Android")
+        }.apply {
+            layoutParams = LinearLayout.LayoutParams(-1, dp(42)).apply { topMargin = dp(4) }
+        })
 
         content.addView(makeButton("自动搜索局域网 PC") {
             connectionMessage = "正在搜索局域网 PhoneVR Host"

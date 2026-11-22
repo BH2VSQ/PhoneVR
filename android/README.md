@@ -70,3 +70,9 @@ The `display_settings` report and `set_display_settings` command remain supporte
 ## LAN host discovery
 
 The connection panel automatically searches active IPv4 network interfaces for PhoneVR Host instances. If automatic discovery fails, enter the PC address and control port manually. The phone and PC should be connected to the same LAN, and the Windows firewall must allow PhoneVR Host traffic.
+
+## USB AOA direct connection
+
+The connection panel provides **USB AOA 直连**. The Windows Host initiates Android Open Accessory mode and then exchanges control, pose and video frames over the AOA Bulk IN/OUT endpoints. This mode does not use USB tethering, RNDIS, ADB or the ADB interface. Android uses `UsbManager.openAccessory()` and requests the standard accessory permission.
+
+Windows requires WinUSB access to the Android function used for the AOA mode switch and to the re-enumerated AOA accessory interface. See [`docs/usb-aoa-windows-driver.md`](../docs/usb-aoa-windows-driver.md) for the one-time driver binding and connection procedure. AOA support depends on the phone's USB controller and Android build.

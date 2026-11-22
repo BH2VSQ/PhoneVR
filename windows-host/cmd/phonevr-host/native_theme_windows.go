@@ -281,7 +281,7 @@ func (app *nativeUI) paintMain(hdc uintptr) {
 	if app.snapshot.VideoCaptureBridgeActive {
 		videoState = "驱动视频桥接已连接"
 	}
-	videoSummary := fmt.Sprintf("VIDEO  %s    RAW %d    H.264 %d    UDP FRAGMENTS %d    DROPPED %d",
+	videoSummary := fmt.Sprintf("VIDEO  %s    RAW %d    H.264 %d    FRAGMENTS %d    DROPPED %d",
 		videoState, app.snapshot.VideoRawFrames, app.snapshot.VideoEncodedFrames,
 		app.snapshot.VideoUDPFragments, app.snapshot.VideoDroppedFrames)
 	drawNativeText(hdc, videoSummary, nativeRect{28, 76, int32(w - 28), 102}, p.Muted, app.fontSmall, dtVCenter|dtSingleLine|dtEndEllipsis|dtNoPrefix)

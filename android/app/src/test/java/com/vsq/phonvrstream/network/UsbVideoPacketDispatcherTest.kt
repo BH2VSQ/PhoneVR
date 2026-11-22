@@ -8,6 +8,15 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
 class UsbVideoPacketDispatcherTest {
+    private fun awaitCondition(timeoutMs: Long, condition: () -> Boolean): Boolean {
+        val deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMs)
+        while (System.nanoTime() < deadline) {
+            if (condition()) return true
+            Thread.sleep(1)
+        }
+        return condition()
+    }
+
     @Test
     fun offerDoesNotWaitForSlowPacketConsumerAndQueueIsBounded() {
         val callbackEntered = CountDownLatch(1)
@@ -59,6 +68,10 @@ class UsbVideoPacketDispatcherTest {
             assertTrue(dispatcher.offer(byteArrayOf(2)))
             assertTrue(secondDelivered.await(1, TimeUnit.SECONDS))
             assertEquals(1L, dispatcher.snapshot().callbackFailures)
+            assertTrue(
+                "second packet callback completed, but deliveredPackets was not updated",
+                awaitCondition(1_000) { dispatcher.snapshot().deliveredPackets == 1L },
+            )
             assertEquals(1L, dispatcher.snapshot().deliveredPackets)
         } finally {
             dispatcher.close()

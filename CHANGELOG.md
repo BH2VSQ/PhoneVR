@@ -1,3 +1,10 @@
+## 0.5.11 - Stabilize asynchronous AOA video dispatcher regression test
+
+- Fixed a race in `UsbVideoPacketDispatcherTest.callbackFailureDoesNotStopFollowingPackets`: the packet callback signals its latch immediately before the dispatcher increments `deliveredPackets`, so the test now waits for the post-callback counter update instead of reading it too early.
+- Kept production delivery accounting unchanged. A packet is counted as delivered only after its callback returns successfully; callback exceptions remain isolated and do not stop following packets.
+- Synchronized repository, Android, Windows Host, SteamVR driver and AOA accessory metadata to 0.5.11. Android `versionCode` is now 46.
+- The supplied CI run compiled Android Debug and Release Kotlin sources successfully; its only reported failure was this timing-sensitive assertion. The corrected unit test still needs a fresh CI run before this revision can be marked green.
+
 ## 0.5.10 - Harden USB Welcome framing and expose AOA control diagnostics
 
 - Reworked `ControlLineReader` to consume UTF-8 bytes directly and decode only after a complete newline-terminated control message arrives. This avoids relying on an intermediate `InputStreamReader` decoder buffer while USB polling reads can time out between frames.

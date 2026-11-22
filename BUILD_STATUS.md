@@ -1,6 +1,20 @@
-# PhoneVR 0.5.10 build status
+# PhoneVR 0.5.11 build status
 
 ## This revision
+
+- The supplied CI run compiled both Debug and Release Kotlin sources, then reported one failing unit test: `UsbVideoPacketDispatcherTest.callbackFailureDoesNotStopFollowingPackets` at its `deliveredPackets` assertion.
+- The test callback signals `secondDelivered` before the dispatcher returns from the callback and executes `delivered.incrementAndGet()`. The test thread could therefore wake and inspect the counter during that small scheduling window.
+- Updated the test to wait up to one second for `deliveredPackets == 1` after the callback latch has fired. Production dispatcher behavior and delivery-counter semantics remain unchanged.
+- Android `versionName` is `0.5.11`; `versionCode` is `46`. Repository, Windows Host, SteamVR driver and AOA accessory version metadata are synchronized to 0.5.11.
+
+## Validation status
+
+- Standalone Kotlin/JVM execution of the updated dispatcher tests passed 500 repetitions of `callbackFailureDoesNotStopFollowingPackets` and 20 repetitions of the bounded non-blocking queue test.
+- Python release/integration regression suite: 50 tests passed.
+- Pending a fresh GitHub Actions run of `:app:testDebugUnitTest`, `:app:assembleDebug` and `:app:assembleRelease`.
+- The user-provided CI log confirms Debug and Release Kotlin compilation completed before the single unit-test assertion failed. It does not confirm APK packaging because the task graph stopped at `testDebugUnitTest`.
+
+## Previous revision: 0.5.10
 
 - The 0.5.9 source still allowed `ControlLineReader` to return an unterminated partial line when its source reached EOF. If the Android AOA Bulk receive thread stopped after only part of the Host Welcome had arrived, the partial bytes could still be passed to `JSONObject`, producing the reported malformed Welcome length.
 - The 0.5.10 reader consumes bytes directly from `InputStream`, retains them across `SocketTimeoutException`, and decodes UTF-8 only after LF/CR line completion. EOF with pending bytes now raises `EOFException`; it cannot be mistaken for a complete JSON line.

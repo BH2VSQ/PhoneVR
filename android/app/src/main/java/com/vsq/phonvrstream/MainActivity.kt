@@ -320,7 +320,7 @@ class MainActivity : Activity(), SensorEventListener {
             minWidth = dp(44)
             minHeight = dp(38)
         }
-        bar.addView(menuButton, FrameLayout.LayoutParams(dp(42), dp(38), Gravity.TOP or Gravity.START))
+        bar.addView(menuButton, FrameLayout.LayoutParams(dp(42), dp(38), Gravity.TOP or Gravity.CENTER_HORIZONTAL))
         return bar
     }
 
@@ -394,10 +394,6 @@ class MainActivity : Activity(), SensorEventListener {
             applyScreenOrientation()
         }
         panel.addView(screenFlipButton, LinearLayout.LayoutParams(-1, dp(40)).apply { bottomMargin = dp(2) })
-        panel.addView(label("旋转整个横屏画面 180°，用于切换头显内充电接口方向", secondary = true).apply {
-            textSize = 9f
-            setPadding(dp(2), 0, dp(2), dp(7))
-        })
         panel.addView(makeButton("光学预设") {
             settingsPanel.visibility = View.VISIBLE
             connectionPanel.visibility = View.GONE

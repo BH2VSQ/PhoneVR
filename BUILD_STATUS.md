@@ -32,3 +32,9 @@ Revision: Android stream resilience, pose scheduling and headset UI update, 2026
 - End-to-end measurement of frame latency, Wi-Fi packet loss and actual 72 Hz headset presentation on the user's PC/phone.
 
 See `docs/2026-11-22-stream-freeze-pose-priority-and-android-ui.md` for implementation details and device-side diagnostics.
+
+## Android menu layout refinement
+
+- MainActivity layout source updated: three-dot menu trigger is horizontally centered at the top of the landscape screen.
+- Removed explanatory orientation text below the screen-flip control.
+- Android Gradle/APK build has not been run in this environment; Windows/Android device rendering still requires target-device verification.

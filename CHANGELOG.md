@@ -328,3 +328,9 @@
 - Add a persisted 180-degree reverse-landscape switch to change which side of the headset receives the phone's charging connector. Sensor coordinate mapping follows the active display rotation.
 - Keep Host pose snapshots lock-free through atomic publication and rename the associated timing metric to `max pose publish duration`.
 - Log complete Android device-action exceptions to Logcat; control acknowledgements remain serialized on the background control-writer executor.
+
+## Android menu layout refinement
+
+- Removed the explanatory caption beneath the 180-degree screen flip control.
+- Repositioned the three-dot menu trigger to the horizontal center of the top edge.
+- Kept the compact stream status indicator at the top-right and retained the menu panel's centered alignment.

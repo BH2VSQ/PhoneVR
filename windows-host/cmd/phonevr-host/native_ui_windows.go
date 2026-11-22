@@ -160,6 +160,7 @@ const (
 	bsPushButton        = 0x00000000
 	bsOwnerDraw         = 0x0000000B
 	cbDropDownList      = 0x0003
+	cbNoIntegralHeight  = 0x0400
 	lbnSelChange        = 1
 	cbnSelChange        = 1
 	cbnSelEndOK         = 9
@@ -1163,7 +1164,10 @@ func (app *nativeUI) openDialog(kind string) {
 	case "network":
 		width, height, title = 760, 560, app.text("网络设置", "Network Settings")
 	case "transport":
-		width, height, title = 720, 500, app.text("视频传输模式", "Video Transport")
+		// A Win32 drop-down combo's height includes its expanded list. Keep
+		// enough vertical room for the option rows instead of sizing it like
+		// a collapsed text field.
+		width, height, title = 720, 560, app.text("视频传输模式", "Video Transport")
 	case "logs":
 		width, height, title = 980, 680, app.text("运行日志", "Runtime Logs")
 	case "appearance":
@@ -1317,7 +1321,7 @@ func (app *nativeUI) createDialogControls(d *nativeDialog) {
 	case "transport":
 		addLabel(d.hwnd, 0, app.text("传输模式", "TRANSPORT MODE"))
 		addLabel(d.hwnd, 1, app.text("自动模式的优先链路", "AUTO MODE PREFERENCE"))
-		modeStyle := uint32(wsChild | wsVisible | wsTabStop | wsVScroll | 0x0003) // CBS_DROPDOWNLIST
+		modeStyle := uint32(wsChild | wsVisible | wsTabStop | wsVScroll | cbDropDownList | cbNoIntegralHeight)
 		d.controls[idTransportMode] = app.createControl(d.hwnd, "COMBOBOX", "", modeStyle, 0, 0, 10, 10, idTransportMode)
 		for _, item := range []string{
 			app.text("自动切换（双链路备用）", "Automatic failover (dual-path standby)"),
@@ -1519,11 +1523,14 @@ func (app *nativeUI) layoutDialog(d *nativeDialog) {
 
 	case "transport":
 		margin := 28
-		move(d.labels[0], margin, 112, w-2*margin, 26)
-		move(d.controls[idTransportMode], margin, 142, w-2*margin, 40)
-		move(d.labels[1], margin, 206, w-2*margin, 26)
-		move(d.controls[idTransportPref], margin, 236, w-2*margin, 40)
-		move(d.status, margin, 302, w-2*margin, 104)
+		move(d.labels[0], margin, 100, w-2*margin, 26)
+		// For CBS_DROPDOWNLIST, the window height is the fully expanded
+		// control height. The collapsed selection field stays compact while
+		// the list now has room to display every option.
+		move(d.controls[idTransportMode], margin, 130, w-2*margin, 108)
+		move(d.labels[1], margin, 258, w-2*margin, 26)
+		move(d.controls[idTransportPref], margin, 288, w-2*margin, 88)
+		move(d.status, margin, 400, w-2*margin, 72)
 		move(d.controls[idTransportApply], margin, h-54, 170, 38)
 		move(d.controls[idClose], w-margin-116, h-54, 116, 38)
 

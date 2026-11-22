@@ -12,10 +12,11 @@ import android.os.Looper
 import android.os.Process
 import android.util.Log
 import org.json.JSONArray
+import org.json.JSONException
 import org.json.JSONObject
-import java.io.BufferedReader
 import java.io.BufferedWriter
 import java.io.InputStreamReader
+import java.io.IOException
 import java.io.OutputStreamWriter
 import java.net.DatagramPacket
 import java.net.DatagramSocket
@@ -500,7 +501,7 @@ class NetworkClient(
                 }
                 if (!isSessionActive(generation)) return
 
-                val reader = BufferedReader(InputStreamReader(openedSession.controlInput, StandardCharsets.UTF_8))
+                val reader = ControlLineReader(InputStreamReader(openedSession.controlInput, StandardCharsets.UTF_8))
                 val writer = BufferedWriter(OutputStreamWriter(openedSession.controlOutput, StandardCharsets.UTF_8))
                 val hello = JSONObject()
                     .put("type", "hello")
@@ -511,16 +512,17 @@ class NetworkClient(
                     .put("mediaCapabilities", mediaCapabilities)
                 writeControlMessage(writer, hello)
 
-                var welcomeLine: String? = null
-                while (isSessionActive(generation) && welcomeLine == null) {
-                    try {
-                        welcomeLine = reader.readLine()
-                    } catch (_: SocketTimeoutException) {
-                        // The accessory control stream polls in bounded intervals.
+                val handshakeStartedNs = System.nanoTime()
+                val welcomeLine = reader.readLine {
+                    if (System.nanoTime() - handshakeStartedNs > USB_HANDSHAKE_TIMEOUT_NS) {
+                        throw SocketTimeoutException("PC USB welcome handshake timed out")
                     }
                 }
                 if (!isSessionActive(generation)) return
-                val welcome = JSONObject(welcomeLine ?: error("PC 在 USB 配对前关闭了连接"))
+                val welcome = parseControlJSONObject(
+                    welcomeLine ?: error("PC 在 USB 配对前关闭了连接"),
+                    "USB welcome",
+                )
                 check(welcome.optString("type") == "welcome") {
                     welcome.optString("message", "PC 返回了无法识别的 USB 响应")
                 }
@@ -648,7 +650,7 @@ class NetworkClient(
                 openedTcp.keepAlive = true
                 openedTcp.connect(InetSocketAddress(address, port), CONNECT_TIMEOUT_MS)
                 openedTcp.soTimeout = HANDSHAKE_TIMEOUT_MS
-                val reader = BufferedReader(InputStreamReader(openedTcp.getInputStream(), StandardCharsets.UTF_8))
+                val reader = ControlLineReader(InputStreamReader(openedTcp.getInputStream(), StandardCharsets.UTF_8))
                 val writer = BufferedWriter(OutputStreamWriter(openedTcp.getOutputStream(), StandardCharsets.UTF_8))
 
                 val hello = JSONObject()
@@ -661,8 +663,10 @@ class NetworkClient(
                 writer.newLine()
                 writer.flush()
 
-                val welcomeLine = reader.readLine() ?: error("PC 在配对前关闭了连接")
-                val welcome = JSONObject(welcomeLine)
+                val welcomeLine = reader.readLine {
+                    throw SocketTimeoutException("PC welcome handshake timed out")
+                } ?: error("PC 在配对前关闭了连接")
+                val welcome = parseControlJSONObject(welcomeLine, "LAN welcome")
                 check(welcome.optString("type") == "welcome") {
                     welcome.optString("message", "PC 返回了无法识别的响应")
                 }
@@ -729,26 +733,33 @@ class NetworkClient(
     private fun runControlLoop(
         generation: Long,
         transportOpen: () -> Boolean,
-        reader: BufferedReader,
+        reader: ControlLineReader,
         writer: BufferedWriter,
     ) {
         var lastHeartbeatNs = System.nanoTime() - HEARTBEAT_INTERVAL_NS
         var lastPongNs = System.nanoTime()
 
-        while (isSessionActive(generation) && transportOpen()) {
+        fun serviceHeartbeat() {
             val nowNs = System.nanoTime()
             if (nowNs - lastHeartbeatNs >= HEARTBEAT_INTERVAL_NS) {
-                writeControlMessage(writer, JSONObject().put("type", "ping").put("sentAtNs", nowNs).put("batteryLevel", batteryLevel()).put("charging", isCharging()))
+                writeControlMessage(
+                    writer,
+                    JSONObject().put("type", "ping").put("sentAtNs", nowNs)
+                        .put("batteryLevel", batteryLevel()).put("charging", isCharging()),
+                )
                 lastHeartbeatNs = nowNs
             }
             if (nowNs - lastPongNs > HEARTBEAT_TIMEOUT_NS) {
                 throw SocketTimeoutException("PC 心跳响应超时")
             }
+        }
 
-            try {
-                val line = reader.readLine() ?: error("PC 已关闭控制连接")
-                val message = JSONObject(line)
-                when (message.optString("type")) {
+        while (isSessionActive(generation) && transportOpen()) {
+            serviceHeartbeat()
+            val line = reader.readLine { serviceHeartbeat() } ?: error("PC 已关闭控制连接")
+            if (line.isBlank()) continue
+            val message = parseControlJSONObject(line, "control")
+            when (message.optString("type")) {
                     "pong" -> lastPongNs = System.nanoTime()
                     "error" -> postStatus("PC：${message.optString("message", "未知错误")}", true)
                     "get_optical_presets" -> {
@@ -902,9 +913,19 @@ class NetworkClient(
                         }
                     }
                 }
-            } catch (_: SocketTimeoutException) {
-                // A read timeout is a polling interval, not a disconnection.
-            }
+        }
+    }
+
+    private fun parseControlJSONObject(line: String, source: String): JSONObject {
+        try {
+            return JSONObject(line)
+        } catch (error: JSONException) {
+            val preview = line.take(120)
+                .replace("\\", "\\\\")
+                .replace("\r", "\\r")
+                .replace("\n", "\\n")
+            Log.e(TAG, "Malformed $source JSON line: chars=${line.length}, preview=[$preview]", error)
+            throw IOException("PC 返回了格式错误的 $source JSON（${line.length} 字符）", error)
         }
     }
 
@@ -1022,13 +1043,14 @@ class NetworkClient(
         const val DEFAULT_VIDEO_FPS = 60
         const val DISCOVERY_PORT = 48100
         private const val PROTOCOL_VERSION = 1
-        private const val CLIENT_VERSION = "PhoneVRStream-0.5.8"
+        private const val CLIENT_VERSION = "PhoneVRStream-0.5.9"
         private const val DISCOVERY_REQUEST = "PHONEVR_DISCOVER_V1"
         private const val DISCOVERY_RESPONSE_PREFIX = "PHONEVR_HOST_V1 "
         private const val DISCOVERY_WINDOW_MS = 1800L
         private const val DISCOVERY_READ_TIMEOUT_MS = 300
         private const val CONNECT_TIMEOUT_MS = 4000
         private const val HANDSHAKE_TIMEOUT_MS = 10000
+        private const val USB_HANDSHAKE_TIMEOUT_NS = 30_000_000_000L
         private const val CONTROL_READ_TIMEOUT_MS = 1000
         private const val HEARTBEAT_INTERVAL_NS = 2_000_000_000L
         private const val HEARTBEAT_TIMEOUT_NS = 10_000_000_000L

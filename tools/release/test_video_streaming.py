@@ -7,6 +7,7 @@ CMAKE = (ROOT / "steamvr-driver/CMakeLists.txt").read_text(encoding="utf-8")
 HOST_SERVICE = (ROOT / "windows-host/cmd/phonevr-host/service.go").read_text(encoding="utf-8")
 ENCODER = (ROOT / "windows-host/internal/encoder/h264_stream.go").read_text(encoding="utf-8")
 ANDROID_NETWORK = (ROOT / "android/app/src/main/java/com/vsq/phonvrstream/network/NetworkClient.kt").read_text(encoding="utf-8")
+ANDROID_CONTROL_READER = (ROOT / "android/app/src/main/java/com/vsq/phonvrstream/network/ControlLineReader.kt").read_text(encoding="utf-8")
 ANDROID_RECEIVER = (ROOT / "android/app/src/main/java/com/vsq/phonvrstream/streaming/VideoStreamReceiver.kt").read_text(encoding="utf-8")
 ANDROID_RENDERER = (ROOT / "android/app/src/main/java/com/vsq/phonvrstream/display/StereoRenderer.kt").read_text(encoding="utf-8")
 ANDROID_CAPS = (ROOT / "android/app/src/main/java/com/vsq/phonvrstream/streaming/CodecCapabilityProbe.kt").read_text(encoding="utf-8")
@@ -78,12 +79,22 @@ class VideoStreamingIntegrationTests(unittest.TestCase):
 
     def test_device_action_ack_is_written_from_background_control_executor(self):
         action_start = ANDROID_NETWORK.index('"device_action" -> {')
-        action_end = ANDROID_NETWORK.index('\n                }\n            } catch', action_start)
+        action_end = ANDROID_NETWORK.index("private fun parseControlJSONObject", action_start)
         action_block = ANDROID_NETWORK[action_start:action_end]
         self.assertIn("mainHandler.post", action_block)
         self.assertIn("queueControlMessage", action_block)
         self.assertNotIn("writeControlMessage", action_block)
         self.assertIn("Phone device action failed", ANDROID_NETWORK)
+
+    def test_android_control_json_reader_preserves_partial_lines_across_timeouts(self):
+        self.assertIn("ControlLineReader", ANDROID_NETWORK)
+        self.assertIn("reader.readLine { serviceHeartbeat() }", ANDROID_NETWORK)
+        self.assertIn("private const val USB_HANDSHAKE_TIMEOUT_NS = 30_000_000_000L", ANDROID_NETWORK)
+        self.assertIn("SocketTimeoutException", ANDROID_CONTROL_READER)
+        self.assertIn("pending", ANDROID_CONTROL_READER)
+        test_source = (ROOT / "android/app/src/test/java/com/vsq/phonvrstream/network/ControlLineReaderTest.kt").read_text(encoding="utf-8")
+        self.assertIn("preservesPartialJsonLineAcrossUsbPollingTimeouts", test_source)
+        self.assertIn("maxLineChars", ANDROID_CONTROL_READER)
 
     def test_android_legacy_codec_probe_and_video_stage_status(self):
         self.assertIn("isLikelySoftwareCodec", ANDROID_CAPS)

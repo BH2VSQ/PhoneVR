@@ -1,3 +1,13 @@
+## 0.5.9 - Preserve fragmented control JSON across USB read timeouts
+
+- Replaced `BufferedReader.readLine()` on LAN and USB control connections with a persistent line reader that retains partially received JSON while the underlying stream reports a polling timeout.
+- Fixed the USB-specific 500 ms read polling interaction: a timeout between PVRU control frames could cause `BufferedReader.readLine()` to discard the partial line, leaving a truncated JSON value that then failed with `Value ... of type java.lang.String cannot be converted to JSONObject` and disconnected the AOA session.
+- Preserved periodic heartbeat transmission while waiting for control lines by servicing heartbeat deadlines from the line reader's timeout callback.
+- Added bounded 64 KiB control-line parsing and diagnostic logging of malformed-message length and escaped preview, including whether the message came from USB welcome, LAN welcome or the established control channel.
+- Added regression tests for JSON lines split across multiple USB chunks with injected polling timeouts, CRLF handling, final unterminated input and oversized lines.
+- Synchronized repository, Android, Windows Host, SteamVR driver and AOA accessory metadata to 0.5.9. Android `versionCode` is now 44.
+- Android Gradle/APK validation remains subject to an available Gradle distribution and Android SDK; physical AOA throughput and reconnect behavior require target-device confirmation.
+
 ## 0.5.8 - Asynchronous Android AOA video receive dispatch
 
 - Removed synchronous UDP loopback forwarding from the Android AOA Bulk input thread. Incoming video PVRV packets are handed to a dedicated worker through a bounded 256-packet queue so a slow local forwarding path cannot stop draining USB Bulk IN.

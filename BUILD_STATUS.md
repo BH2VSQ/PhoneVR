@@ -1,3 +1,31 @@
+# PhoneVR 0.5.9 build status
+
+## This revision
+
+- The 0.5.8 target-device log showed the AOA session pairing, followed by a phone-side `JSONObject` type error and USB session teardown. The Host then reported a Bulk OUT semaphore timeout because Android had stopped draining the accessory stream.
+- The Android USB control `InputStream` intentionally polls with a 500 ms timeout. `BufferedReader.readLine()` can lose the partial line it has accumulated when the underlying reader throws during an incomplete line. The caller previously swallowed that timeout and resumed with the remaining bytes, which could produce a truncated or misaligned JSON value.
+- Added `ControlLineReader`, which owns the partial-line buffer across read timeouts for both USB and LAN control channels. It retains partial JSON until newline or EOF and enforces a 64 KiB line limit.
+- Moved heartbeat servicing into the line reader's timeout callback so USB/LAN heartbeats and timeout detection continue while a fragmented control message is being received.
+- Added diagnostic logging for malformed welcome/control JSON, including source, length and an escaped 120-character preview, so any remaining protocol corruption can be identified without logging an entire settings payload.
+- Added JVM regression tests for a JSON control line split across multiple chunks with injected read timeouts, CRLF framing, EOF handling and maximum line length.
+- Updated version metadata to 0.5.9 and Android `versionCode=44`.
+
+## Validation status
+
+- Standalone Kotlin compilation and execution of the new ControlLineReader regression cases: 3 tests passed (timeout-fragmented JSON, CRLF/EOF and maximum line length).
+- Python release/integration regression suite: 50 tests passed.
+- Windows Host `go test ./...`, `go test -race ./...`, `go vet ./...` and Windows amd64 cross-build passed.
+- Version bump regression tests: 5 passed; synchronized metadata check confirms `VERSION=0.5.9` and Android `versionCode=44`.
+- Android Gradle unit tests and APK packaging were attempted, but the Gradle 9.6.1 distribution could not be downloaded because DNS resolution for `services.gradle.org` failed. Full Android SDK type-check and APK build remain unverified.
+- Physical AOA sustained transfer and reconnect behavior remain to be validated on the Redmi K40 and target Windows PC.
+
+## Target-device validation
+
+- Install matching Android and Windows Host 0.5.9 builds.
+- Confirm `PhoneVR-AOA-RX` remains active and Android no longer reports the `Value ... cannot be converted to JSONObject` exception.
+- If malformed JSON remains, inspect the new `Malformed control JSON` log entry and its escaped preview.
+- Confirm Host `transport fragments` continues increasing without repeated `USB AOA Bulk OUT` semaphore timeouts or accessory disconnects.
+
 # PhoneVR 0.5.8 build status
 
 ## This revision

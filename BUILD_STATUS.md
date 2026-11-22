@@ -8,7 +8,7 @@
 - Host health checks use per-path control heartbeats, Android media feedback and one-second `PVRP` probe acknowledgements over each standby video path. This verifies actual UDP or AOA Bulk delivery before selecting the alternate path. Explicit send errors trigger a temporary route penalty; lack of end-to-end media feedback on the selected path also marks it unhealthy.
 - A route change purges queued delta frames and waits for an IDR before sending on the new path. Video capture and the H.264 encoder remain alive across the switch.
 - Android's AOA auxiliary session carries head-pose samples only when the network TCP control session is unavailable. This avoids duplicate pose delivery when the LAN link is healthy.
-- Android is `versionName 0.5.13`, `versionCode 48`. Root `VERSION`, Windows Host executable version, and AOA accessory descriptor metadata are updated to `0.5.13`. The embedded SteamVR driver payload itself is unchanged.
+- Android is `versionName 0.5.13`, `versionCode 48`. Root `VERSION`, Windows Host executable version, AOA accessory descriptor metadata, SteamVR Driver CMake project version and runtime diagnostic marker are updated to `0.5.13`. The previously embedded SteamVR driver binary payload itself is unchanged.
 
 ## Validation status
 
@@ -17,7 +17,7 @@
 - `cd windows-host && go vet ./...`: passed.
 - `cd windows-host && GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build ./...`: passed, including the Windows native UI and Host executable packages.
 - `cd windows-host && GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go test -c ./cmd/phonevr-host`: passed. This compiles the Windows-only native UI and Host package for Windows amd64.
-- Android Gradle tasks could not start: `android/gradle/wrapper/gradle-wrapper.jar` is absent from the supplied source bundle, no system Gradle executable is installed, and no Android SDK environment is configured. The Kotlin compiler parse check reported no syntax errors, but it cannot perform Android type checking without the Android SDK and project dependencies.
+- The Gradle bootstrap JAR is now generated automatically from the checked-in Java launcher source by both `gradlew` and `gradlew.bat` when missing. The launcher verifies the pinned Gradle distribution SHA-256 before extraction. The wrapper entry point was verified locally; the Gradle distribution download could not complete in this runtime because outbound DNS is unavailable. Android Gradle compilation and APK packaging still require a network-enabled runner with Android SDK Platform 36 and Build-Tools 36.0.0.
 - APK packaging, Android unit tests, Windows runtime behavior and physical AOA/network switching have not been verified in this environment.
 
 ## Target-device validation

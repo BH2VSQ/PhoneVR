@@ -1,4 +1,6 @@
 # Gradle / Android Studio
+# Generated from android/tools/wrapper-bootstrap/ when the Gradle launcher is first run.
+android/gradle/wrapper/gradle-wrapper.jar
 .gradle/
 **/.gradle/
 .idea/

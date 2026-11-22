@@ -1,8 +1,18 @@
 #!/usr/bin/env sh
+set -eu
 APP_HOME=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-if [ -n "$JAVA_HOME" ] && [ -x "$JAVA_HOME/bin/java" ]; then
+WRAPPER_JAR="$APP_HOME/gradle/wrapper/gradle-wrapper.jar"
+
+# The repository stores the auditable bootstrapper source and creates its small
+# launcher JAR on demand. This keeps clean source archives buildable without
+# requiring a separately installed Gradle distribution.
+if [ ! -f "$WRAPPER_JAR" ]; then
+  sh "$APP_HOME/tools/wrapper-bootstrap/build-wrapper.sh"
+fi
+
+if [ -n "${JAVA_HOME:-}" ] && [ -x "$JAVA_HOME/bin/java" ]; then
   JAVA_CMD="$JAVA_HOME/bin/java"
 else
   JAVA_CMD=java
 fi
-exec "$JAVA_CMD" -Dorg.gradle.appname=gradlew -classpath "$APP_HOME/gradle/wrapper/gradle-wrapper.jar" org.gradle.wrapper.GradleWrapperMain "$@"
+exec "$JAVA_CMD" -Dorg.gradle.appname=gradlew -classpath "$WRAPPER_JAR" org.gradle.wrapper.GradleWrapperMain "$@"

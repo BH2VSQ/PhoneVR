@@ -127,6 +127,8 @@ Build only Android:
 .\scripts\build-android.ps1
 ```
 
+The Android Gradle launcher is generated automatically from `android/tools/wrapper-bootstrap/` when missing. A JDK with `javac` and `jar` is required for the first invocation; the pinned Gradle distribution is downloaded and SHA-256 verified automatically.
+
 The Windows Host version is injected from the root VERSION file at build time. The standard Windows Host build requires Go 1.22+, CMake 3.24+, Git and Visual Studio C++ x64 tools because it compiles the PhoneVR SteamVR driver before embedding it in the Host executables. The Windows Host uses Go standard-library Win32 bindings, system GDI+ for anti-aliased native UI drawing, and system OpenGL 1.1 (`opengl32.dll`). Per-monitor DPI awareness is enabled where supported. No third-party Go GUI dependency or browser runtime is required. The main GUI executable is built with `-H=windowsgui`; the console variant is retained for diagnostics.
 
 ## Windows Host ports

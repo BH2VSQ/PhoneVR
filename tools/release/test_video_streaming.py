@@ -91,10 +91,14 @@ class VideoStreamingIntegrationTests(unittest.TestCase):
         self.assertIn("reader.readLine { serviceHeartbeat() }", ANDROID_NETWORK)
         self.assertIn("private const val USB_HANDSHAKE_TIMEOUT_NS = 30_000_000_000L", ANDROID_NETWORK)
         self.assertIn("SocketTimeoutException", ANDROID_CONTROL_READER)
+        self.assertIn("InputStream", ANDROID_CONTROL_READER)
         self.assertIn("pending", ANDROID_CONTROL_READER)
+        self.assertIn("EOFException", ANDROID_CONTROL_READER)
         test_source = (ROOT / "android/app/src/test/java/com/vsq/phonvrstream/network/ControlLineReaderTest.kt").read_text(encoding="utf-8")
         self.assertIn("preservesPartialJsonLineAcrossUsbPollingTimeouts", test_source)
-        self.assertIn("maxLineChars", ANDROID_CONTROL_READER)
+        self.assertIn("preservesUtf8CodePointSplitAcrossTimeouts", test_source)
+        self.assertIn("rejectsUnterminatedPartialLineAtEof", test_source)
+        self.assertIn("maxLineBytes", ANDROID_CONTROL_READER)
 
     def test_android_legacy_codec_probe_and_video_stage_status(self):
         self.assertIn("isLikelySoftwareCodec", ANDROID_CAPS)

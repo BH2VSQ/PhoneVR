@@ -1,3 +1,32 @@
+# PhoneVR 0.5.10 build status
+
+## This revision
+
+- The 0.5.9 source still allowed `ControlLineReader` to return an unterminated partial line when its source reached EOF. If the Android AOA Bulk receive thread stopped after only part of the Host Welcome had arrived, the partial bytes could still be passed to `JSONObject`, producing the reported malformed Welcome length.
+- The 0.5.10 reader consumes bytes directly from `InputStream`, retains them across `SocketTimeoutException`, and decodes UTF-8 only after LF/CR line completion. EOF with pending bytes now raises `EOFException`; it cannot be mistaken for a complete JSON line.
+- The Android AOA control input now preserves the underlying Bulk IN/framing failure and reports it after queued control frames are consumed. This makes USB transport failure visible separately from JSON parsing failure.
+- Added bounded Android logs for the first six Control TX/RX frames, including PVRU sequence, byte count, escaped preview and hex. Added Windows Host logs for the Welcome JSON/wire length, initial control chunks, Control bridge failures and the root Bulk IN read error.
+- Android `versionName` is `0.5.10`; `versionCode` is `45`.
+
+## Validation completed
+
+- `cd windows-host && go test ./...` passed.
+- `cd windows-host && go test -race ./...` passed.
+- `cd windows-host && go vet ./...` passed.
+- `GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build ./...` passed.
+- All five `ControlLineReaderTest` cases compiled and passed in a standalone Kotlin/JVM harness: timeout-fragment retention, UTF-8 code point split across reads, CRLF/clean EOF, truncated EOF rejection and maximum line length.
+- `UsbAccessorySession.kt`, `UsbMuxProtocol.kt` and `UsbVideoPacketDispatcher.kt` compiled with `kotlinc` against minimal Android API stubs, including the new receive-failure propagation and frame diagnostics.
+- Python release/integration suite: 50 tests passed. Version-bump regression suite: 5 tests passed.
+
+## Not verified in this environment
+
+- Android Gradle unit tests and APK packaging were not completed because the Gradle 9.6.1 distribution is not cached in this runtime and network access to the Gradle distribution is unavailable.
+- Full Android SDK type-check and physical AOA validation remain outstanding.
+
+## Target-device validation
+
+Build and install matching PhoneVR 0.5.10 Windows Host and Android APK. On Android, capture `PhoneVRAOA` and `NetworkClient` logs. Compare these with Host entries beginning `USB AOA Welcome prepared`, `USB AOA control TX chunk`, `USB AOA control RX frame`, `USB AOA Bulk IN stopped` and `USB AOA control Bulk OUT failed`. The expected Host Welcome `wireBytes` should equal the sum of the corresponding Android AOA Control RX frame payload bytes for the Welcome line, including its newline.
+
 # PhoneVR 0.5.9 build status
 
 ## This revision

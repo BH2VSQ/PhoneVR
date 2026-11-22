@@ -41,6 +41,9 @@ class UsbAccessorySession private constructor(
     @Volatile private var currentControlOffset = 0
     @Volatile var videoPacketListener: ((ByteArray) -> Unit)? = null
     @Volatile private var readerThread: Thread? = null
+    @Volatile private var receiveFailure: String? = null
+    private val controlRxLogBudget = AtomicInteger(6)
+    private val controlTxLogBudget = AtomicInteger(6)
     private val videoDispatcher = UsbVideoPacketDispatcher(
         onPacket = { packet -> videoPacketListener?.invoke(packet) },
         onStats = { stats ->
@@ -68,7 +71,11 @@ class UsbAccessorySession private constructor(
             require(offset >= 0 && length >= 0 && offset + length <= buffer.size)
             if (length == 0) return 0
             while (true) {
-                if (!running.get() && currentControlChunk == null && controlChunks.isEmpty()) return -1
+                if (!running.get() && currentControlChunk == null && controlChunks.isEmpty()) {
+                    val failure = receiveFailure
+                    if (failure != null) throw java.io.IOException("AOA USB receive stopped: $failure")
+                    return -1
+                }
                 var chunk = currentControlChunk
                 if (chunk == null || currentControlOffset >= chunk.size) {
                     chunk = try {
@@ -78,7 +85,11 @@ class UsbAccessorySession private constructor(
                         throw java.io.InterruptedIOException("USB control read interrupted")
                     }
                     if (chunk == null) {
-                        if (!running.get()) return -1
+                        if (!running.get()) {
+                            val failure = receiveFailure
+                            if (failure != null) throw java.io.IOException("AOA USB receive stopped: $failure")
+                            return -1
+                        }
                         throw SocketTimeoutException("USB control read timeout")
                     }
                     currentControlChunk = chunk
@@ -127,7 +138,8 @@ class UsbAccessorySession private constructor(
 
     private fun writeFrame(channel: Int, payload: ByteArray) {
         check(running.get()) { "USB accessory session is closed" }
-        val header = UsbMuxProtocol.encodeHeader(channel, payload.size, sequence.incrementAndGet())
+        val frameSequence = sequence.incrementAndGet()
+        val header = UsbMuxProtocol.encodeHeader(channel, payload.size, frameSequence)
         val frame = ByteArray(header.size + payload.size)
         System.arraycopy(header, 0, frame, 0, header.size)
         if (payload.isNotEmpty()) System.arraycopy(payload, 0, frame, header.size, payload.size)
@@ -136,6 +148,7 @@ class UsbAccessorySession private constructor(
             output.write(frame)
             output.flush()
         }
+        if (channel == CHANNEL_CONTROL) logControlFrame("TX", frameSequence, payload, controlTxLogBudget)
     }
 
     private fun readLoop() {
@@ -147,7 +160,10 @@ class UsbAccessorySession private constructor(
                 val payload = ByteArray(decoded.payloadLength)
                 if (decoded.payloadLength > 0) readFully(input, payload)
                 when (decoded.channel) {
-                    CHANNEL_CONTROL -> controlChunks.put(payload)
+                    CHANNEL_CONTROL -> {
+                        logControlFrame("RX", decoded.sequence, payload, controlRxLogBudget)
+                        controlChunks.put(payload)
+                    }
                     CHANNEL_VIDEO -> {
                         // Never run loopback UDP forwarding on the USB read
                         // thread. A slow local receiver must not stop Bulk IN
@@ -157,12 +173,26 @@ class UsbAccessorySession private constructor(
                 }
             }
         } catch (error: Throwable) {
-            if (running.get()) Log.w(TAG, "AOA Bulk receive stopped: ${error.message}", error)
+            if (running.get()) {
+                receiveFailure = "${error.javaClass.simpleName}: ${error.message ?: "no details"}"
+                Log.w(TAG, "AOA Bulk receive stopped: $receiveFailure", error)
+            }
         } finally {
             running.set(false)
             videoDispatcher.close()
             runCatching { descriptor.close() }
         }
+    }
+
+    private fun logControlFrame(direction: String, frameSequence: Int, payload: ByteArray, budget: AtomicInteger) {
+        if (budget.getAndDecrement() <= 0) return
+        val previewBytes = payload.copyOfRange(0, minOf(payload.size, 96))
+        val preview = previewBytes.toString(Charsets.UTF_8)
+            .replace("\\", "\\\\")
+            .replace("\r", "\\r")
+            .replace("\n", "\\n")
+        val hex = previewBytes.joinToString("") { "%02X".format(it.toInt() and 0xFF) }
+        Log.i(TAG, "AOA control $direction frame: seq=$frameSequence bytes=${payload.size} preview=[$preview] hex=[$hex]")
     }
 
     private fun readFully(stream: InputStream, buffer: ByteArray) {

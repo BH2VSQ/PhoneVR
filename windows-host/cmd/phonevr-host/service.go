@@ -665,15 +665,28 @@ func (s *HostService) serveUSBAccessory(ctx context.Context, device *aoa.Device)
 	go func() {
 		defer bridgeWG.Done()
 		defer accessoryPipe.Close()
+		loggedControlFrames := 0
 		for {
 			frame, err := mux.ReadFrame()
 			if err != nil {
+				if ctx.Err() == nil {
+					s.addLog("USB AOA Bulk IN stopped: " + err.Error())
+				}
 				_ = accessoryPipe.Close()
 				return
 			}
 			switch frame.Channel {
 			case usbmux.ChannelControl:
+				if loggedControlFrames < 6 {
+					preview := frame.Payload
+					if len(preview) > 120 {
+						preview = preview[:120]
+					}
+					s.addLog(fmt.Sprintf("USB AOA control RX frame #%d: bytes=%d preview=%q", loggedControlFrames+1, len(frame.Payload), string(preview)))
+					loggedControlFrames++
+				}
 				if _, err := accessoryPipe.Write(frame.Payload); err != nil {
+					s.addLog("USB AOA control bridge to Host failed: " + err.Error())
 					return
 				}
 			case usbmux.ChannelPose:
@@ -688,11 +701,21 @@ func (s *HostService) serveUSBAccessory(ctx context.Context, device *aoa.Device)
 	go func() {
 		defer bridgeWG.Done()
 		buffer := make([]byte, 32*1024)
+		loggedControlChunks := 0
 		for {
 			n, err := accessoryPipe.Read(buffer)
 			if n > 0 {
 				payload := append([]byte(nil), buffer[:n]...)
+				if loggedControlChunks < 6 {
+					preview := payload
+					if len(preview) > 120 {
+						preview = preview[:120]
+					}
+					s.addLog(fmt.Sprintf("USB AOA control TX chunk #%d: bytes=%d preview=%q", loggedControlChunks+1, len(payload), string(preview)))
+					loggedControlChunks++
+				}
 				if writeErr := mux.WriteFrame(usbmux.ChannelControl, payload); writeErr != nil {
+					s.addLog("USB AOA control Bulk OUT failed: " + writeErr.Error())
 					return
 				}
 			}
@@ -1130,6 +1153,15 @@ func (s *HostService) handleControlConnection(ctx context.Context, conn net.Conn
 	} else {
 		welcome.VideoReason = fmt.Sprintf("Android needs a hardware H.264 decoder supporting %dx%d@%d", videoWidth, videoHeight, videoFrameRate)
 		s.addLog(fmt.Sprintf("Video streaming disabled for %s: Android did not advertise hardware H.264 %dx%d@%d support", hello.DeviceName, videoWidth, videoHeight, videoFrameRate))
+	}
+	if usbLink != nil {
+		if payload, marshalErr := json.Marshal(welcome); marshalErr == nil {
+			preview := payload
+			if len(preview) > 160 {
+				preview = preview[:160]
+			}
+			s.addLog(fmt.Sprintf("USB AOA Welcome prepared: jsonBytes=%d wireBytes=%d preview=%q", len(payload), len(payload)+1, string(preview)))
+		}
 	}
 	if err := writeJSONLineWithDeadline(conn, welcome); err != nil {
 		s.addLog("Pair response failed: " + err.Error())

@@ -1,3 +1,14 @@
+## 0.5.10 - Harden USB Welcome framing and expose AOA control diagnostics
+
+- Reworked `ControlLineReader` to consume UTF-8 bytes directly and decode only after a complete newline-terminated control message arrives. This avoids relying on an intermediate `InputStreamReader` decoder buffer while USB polling reads can time out between frames.
+- Treat EOF with an unfinished control line as a transport truncation (`EOFException`). A partial Welcome is no longer passed to `JSONObject` as though it were a complete line.
+- Preserve the original Android AOA receive-thread failure and surface it through the control input stream after queued control bytes have been drained. This distinguishes USB Bulk IN/frame errors from malformed JSON.
+- Added bounded Android AOA Control TX/RX diagnostics with frame sequence, payload length, escaped preview and hex bytes.
+- Added Windows Host diagnostics for the serialized Welcome length, first control frames in both directions, USB bridge failures and the underlying AOA Bulk IN stop reason.
+- Added regression coverage for timeouts between byte fragments, UTF-8 code points split across reads, CRLF, clean EOF, truncated EOF and the maximum line size.
+- Bumped Android `versionCode` to 45 and synchronized Android, Windows Host, SteamVR driver and AOA accessory metadata to 0.5.10.
+- Windows Host tests, race tests, vet and Windows amd64 cross-build pass. Android Gradle/APK packaging and physical AOA behavior still require target-device validation.
+
 ## 0.5.9 - Preserve fragmented control JSON across USB read timeouts
 
 - Replaced `BufferedReader.readLine()` on LAN and USB control connections with a persistent line reader that retains partially received JSON while the underlying stream reports a polling timeout.

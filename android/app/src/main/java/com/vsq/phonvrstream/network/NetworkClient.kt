@@ -15,7 +15,6 @@ import org.json.JSONArray
 import org.json.JSONException
 import org.json.JSONObject
 import java.io.BufferedWriter
-import java.io.InputStreamReader
 import java.io.IOException
 import java.io.OutputStreamWriter
 import java.net.DatagramPacket
@@ -501,7 +500,7 @@ class NetworkClient(
                 }
                 if (!isSessionActive(generation)) return
 
-                val reader = ControlLineReader(InputStreamReader(openedSession.controlInput, StandardCharsets.UTF_8))
+                val reader = ControlLineReader(openedSession.controlInput)
                 val writer = BufferedWriter(OutputStreamWriter(openedSession.controlOutput, StandardCharsets.UTF_8))
                 val hello = JSONObject()
                     .put("type", "hello")
@@ -650,7 +649,7 @@ class NetworkClient(
                 openedTcp.keepAlive = true
                 openedTcp.connect(InetSocketAddress(address, port), CONNECT_TIMEOUT_MS)
                 openedTcp.soTimeout = HANDSHAKE_TIMEOUT_MS
-                val reader = ControlLineReader(InputStreamReader(openedTcp.getInputStream(), StandardCharsets.UTF_8))
+                val reader = ControlLineReader(openedTcp.getInputStream())
                 val writer = BufferedWriter(OutputStreamWriter(openedTcp.getOutputStream(), StandardCharsets.UTF_8))
 
                 val hello = JSONObject()
@@ -1043,7 +1042,7 @@ class NetworkClient(
         const val DEFAULT_VIDEO_FPS = 60
         const val DISCOVERY_PORT = 48100
         private const val PROTOCOL_VERSION = 1
-        private const val CLIENT_VERSION = "PhoneVRStream-0.5.9"
+        private const val CLIENT_VERSION = "PhoneVRStream-0.5.10"
         private const val DISCOVERY_REQUEST = "PHONEVR_DISCOVER_V1"
         private const val DISCOVERY_RESPONSE_PREFIX = "PHONEVR_HOST_V1 "
         private const val DISCOVERY_WINDOW_MS = 1800L

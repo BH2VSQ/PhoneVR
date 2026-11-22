@@ -221,8 +221,17 @@ func scanOnce(report func(key, message string), lastProbe map[string]time.Time) 
 			}
 			if vid == usbVendorGoogle && isAccessoryProduct(pid) {
 				if err := device.findBulkEndpoints(); err == nil {
+					if report != nil {
+						report("bulk-ready:"+path, fmt.Sprintf(
+							"USB AOA Bulk endpoints ready for %04X:%04X: interface=0 IN=0x%02X OUT=0x%02X maxPacket=%d",
+							vid, pid, device.inPipe, device.outPipe, device.maxPacketSize))
+					}
 					procSetupDiDestroyDeviceInfoList.Call(classPtr)
 					return device, switched, nil
+				} else if report != nil {
+					report("bulk-endpoints:"+path, fmt.Sprintf(
+						"USB AOA accessory %04X:%04X was detected, but its Bulk interface could not be opened: %v",
+						vid, pid, err))
 				}
 				device.Close()
 				continue
@@ -531,7 +540,7 @@ func (d *Device) getAOAProtocol() (uint16, error) {
 }
 
 func (d *Device) startAccessoryMode() error {
-	stringsToSend := []string{"VSQ Studio", "PhoneVR", "PhoneVR USB streaming", "0.5.4", "https://github.com/BH2VSQ/PhoneVR", "PhoneVR-Android"}
+	stringsToSend := []string{"VSQ Studio", "PhoneVR", "PhoneVR USB streaming", "0.5.5", "https://github.com/BH2VSQ/PhoneVR", "PhoneVR-Android"}
 	for index, value := range stringsToSend {
 		payload := append([]byte(value), 0)
 		transferred, err := d.controlTransfer(0x40, usbRequestSendString, 0, uint16(index), payload)
@@ -565,19 +574,46 @@ func (d *Device) controlTransfer(requestType, request byte, value, index uint16,
 	return transferred, nil
 }
 
+
+func describeUSBInterface(descriptor usbInterfaceDescriptor) string {
+	return fmt.Sprintf(
+		"interface=%d alternate=%d endpoints=%d class=0x%02X subclass=0x%02X protocol=0x%02X",
+		descriptor.InterfaceNumber, descriptor.AlternateSetting, descriptor.NumEndpoints,
+		descriptor.InterfaceClass, descriptor.InterfaceSubClass, descriptor.InterfaceProtocol)
+}
+
+func validateAOAAccessoryInterface(descriptor usbInterfaceDescriptor) error {
+	interfaceInfo := describeUSBInterface(descriptor)
+	if descriptor.InterfaceNumber == 0 {
+		return nil
+	}
+	if descriptor.InterfaceNumber == 1 && descriptor.InterfaceClass == 0xFF &&
+		descriptor.InterfaceSubClass == 0x42 && descriptor.InterfaceProtocol == 0x01 {
+		return fmt.Errorf("WinUSB is bound to the ADB interface (%s); AOA data uses interface 0, while interface 1 is ADB on product 18D1:2D01. Bind WinUSB to the Android Accessory interface (MI_00), not the ADB interface (MI_01)", interfaceInfo)
+	}
+	return fmt.Errorf("WinUSB default interface is not the AOA accessory interface (%s); AOA data requires interface 0. Check that WinUSB is bound to the accessory function rather than another interface", interfaceInfo)
+}
+
 func (d *Device) findBulkEndpoints() error {
 	var descriptor usbInterfaceDescriptor
 	result, _, callErr := procWinUsbQueryInterfaceSettings.Call(d.iface, 0, uintptr(unsafe.Pointer(&descriptor)))
 	if result == 0 {
-		return fmt.Errorf("WinUsb_QueryInterfaceSettings: %w", callErr)
+		return formatWindowsCallError("WinUsb_QueryInterfaceSettings", callErr)
 	}
-	if descriptor.InterfaceNumber != 0 {
-		return fmt.Errorf("AOA accessory interface number is %d, expected interface 0", descriptor.InterfaceNumber)
+	if err := validateAOAAccessoryInterface(descriptor); err != nil {
+		return err
 	}
+	var pipeInfo []string
 	for index := byte(0); index < descriptor.NumEndpoints; index++ {
 		var pipe winUSBPipeInformation
-		result, _, _ := procWinUsbQueryPipe.Call(d.iface, 0, uintptr(index), uintptr(unsafe.Pointer(&pipe)))
-		if result == 0 || pipe.PipeType != usbPipeBulk {
+		result, _, pipeErr := procWinUsbQueryPipe.Call(d.iface, 0, uintptr(index), uintptr(unsafe.Pointer(&pipe)))
+		if result == 0 {
+			pipeInfo = append(pipeInfo, fmt.Sprintf("pipe[%d] query failed: %v", index, pipeErr))
+			continue
+		}
+		pipeInfo = append(pipeInfo, fmt.Sprintf("pipe[%d]={type=%d id=0x%02X maxPacket=%d}",
+			index, pipe.PipeType, pipe.PipeID, pipe.MaximumPacketSize))
+		if pipe.PipeType != usbPipeBulk {
 			continue
 		}
 		if pipe.MaximumPacketSize > d.maxPacketSize {
@@ -590,7 +626,8 @@ func (d *Device) findBulkEndpoints() error {
 		}
 	}
 	if d.inPipe == 0 || d.outPipe == 0 {
-		return errors.New("AOA interface does not expose both bulk IN and OUT endpoints")
+		return fmt.Errorf("AOA interface is missing Bulk IN or OUT endpoints (%s; discovered %s)",
+			describeUSBInterface(descriptor), strings.Join(pipeInfo, ", "))
 	}
 	return nil
 }

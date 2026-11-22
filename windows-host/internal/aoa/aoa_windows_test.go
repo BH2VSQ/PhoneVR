@@ -32,3 +32,30 @@ func TestFormatWindowsCallErrorIncludesStageAndCode(t *testing.T) {
 		t.Fatalf("formatted error = %q; want stage and Win32 error code", message)
 	}
 }
+
+
+func TestValidateAOAAccessoryInterfaceAcceptsInterfaceZero(t *testing.T) {
+	err := validateAOAAccessoryInterface(usbInterfaceDescriptor{
+		InterfaceNumber: 0, InterfaceClass: 0xFF, InterfaceSubClass: 0xFF,
+		InterfaceProtocol: 0x00, NumEndpoints: 2,
+	})
+	if err != nil {
+		t.Fatalf("interface 0 should be accepted as AOA accessory interface: %v", err)
+	}
+}
+
+func TestValidateAOAAccessoryInterfaceIdentifiesADBInterface(t *testing.T) {
+	err := validateAOAAccessoryInterface(usbInterfaceDescriptor{
+		InterfaceNumber: 1, InterfaceClass: 0xFF, InterfaceSubClass: 0x42,
+		InterfaceProtocol: 0x01, NumEndpoints: 2,
+	})
+	if err == nil {
+		t.Fatal("ADB interface 1 must not be accepted as the AOA accessory data interface")
+	}
+	message := err.Error()
+	for _, expected := range []string{"ADB interface", "MI_00", "MI_01", "interface=1", "class=0xFF", "subclass=0x42", "protocol=0x01"} {
+		if !strings.Contains(message, expected) {
+			t.Fatalf("interface diagnostic %q does not contain %q", message, expected)
+		}
+	}
+}

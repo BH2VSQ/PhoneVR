@@ -1,3 +1,27 @@
+# PhoneVR 0.5.5 build status
+
+## This revision
+
+- The 0.5.4 target-PC log proves AOA v2 negotiation and mode switching succeed: `GET_PROTOCOL` returned v2, `START_ACCESSORY` was accepted, and the phone re-enumerated as `18D1:2D01`.
+- Added explicit diagnostics for the post-switch AOA interface descriptor and each endpoint discovered through WinUSB. The prior scanner silently discarded `findBulkEndpoints` errors, hiding the reason it never promoted the accessory into a Bulk session.
+- Detects the known `18D1:2D01` ADB-interface signature (`interface 1`, class `FF`, subclass `42`, protocol `01`) and tells the user to bind WinUSB to the AOA accessory interface `MI_00`, leaving ADB interface `MI_01` untouched.
+- Logs successful AOA Bulk IN/OUT endpoint selection, endpoint addresses, packet sizes and interface metadata.
+- Updated the Windows driver guide with the 2D01 composite-interface mapping and the exact driver-binding distinction.
+- Synchronized application, Host, SteamVR driver and AOA accessory metadata to 0.5.5. Android `versionCode` is now 40.
+
+## Validation
+
+- Go unit tests, race tests and vet.
+- Windows amd64 Host cross-build and AOA Windows test cross-compilation.
+- Python release/integration regression tests.
+- Patch application and source ZIP integrity checks.
+
+## Still requires target-device validation
+
+- The log proves AOA mode switching only. It does not yet prove that the Host opened the accessory interface or discovered both Bulk endpoints.
+- Android accessory permission prompt, `UsbManager.openAccessory`, bidirectional PVRU frames, sustained video throughput and pose latency remain to be confirmed on the Redmi K40.
+- Android APK build remains unavailable in this environment because Android SDK/Gradle distribution access is unavailable.
+
 # PhoneVR 0.5.4 build status
 
 ## This revision

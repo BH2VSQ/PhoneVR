@@ -3,12 +3,14 @@ package com.vsq.phonvrstream.network
 import android.content.Context
 import android.view.Surface
 import com.vsq.phonvrstream.streaming.VideoStreamReceiver
+import com.vsq.phonvrstream.streaming.VideoStreamStats
 import android.content.Intent
 import android.net.wifi.WifiManager
 import android.os.BatteryManager
 import android.os.Handler
 import android.os.Looper
 import android.os.Process
+import android.util.Log
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.BufferedReader
@@ -41,11 +43,15 @@ class NetworkClient(
     private val applyRemoteOpticalPreset: (String) -> JSONObject? = { null },
     private val applyRemoteDeviceAction: (String) -> Unit = {},
     private val currentMediaCapabilities: () -> JSONArray = { JSONArray() },
+    private val videoStatsListener: (VideoStreamStats) -> Unit = {},
 ) {
     private val appContext = context.applicationContext
     private val mainHandler = Handler(Looper.getMainLooper())
     private val discoveryExecutor = Executors.newSingleThreadExecutor()
     private val sessionExecutor = Executors.newSingleThreadExecutor()
+    // UI callbacks only enqueue control replies. All socket writes happen on this
+    // dedicated worker, never on Android's main thread.
+    private val controlWriteExecutor = Executors.newSingleThreadExecutor()
     // Head tracking is latency-sensitive but lightweight. Give the dedicated
     // sender display-thread scheduling priority so UI/GC work is less likely to
     // leave hundreds of milliseconds of stale UDP samples queued.
@@ -78,6 +84,9 @@ class NetworkClient(
     @Volatile private var videoReceiver: VideoStreamReceiver? = null
     @Volatile private var videoStatusText: String = "视频尚未协商"
     private val firstRenderedVideoGeneration = AtomicLong(-1L)
+    private val renderedFramesSinceStats = AtomicLong(0L)
+    private val lastVideoStatsNs = AtomicLong(0L)
+    @Volatile private var latestVideoStats = VideoStreamStats()
 
     /** Called by the GL renderer whenever its SurfaceTexture-backed Surface is created or recreated. */
     fun attachVideoSurface(surface: Surface) {
@@ -93,8 +102,8 @@ class NetworkClient(
             firstRenderedVideoGeneration.set(-1L)
             val reason = welcome.optString("videoReason", "当前未协商到兼容的 H.264 解码器")
             videoStatusText = "视频未启用：$reason"
+            publishVideoStats(VideoStreamStats(state = "视频未启用"))
             stopVideoReceiverAsync(generation)
-            postStatus("PC 已连接，姿态链路可用 · $videoStatusText", true)
             return
         }
         val config = VideoSessionConfig(
@@ -109,14 +118,15 @@ class NetworkClient(
         if (config.width <= 0 || config.height <= 0 || config.fps !in 1..120 || config.port !in 1..65535 || config.decoderName.isBlank()) {
             videoConfig = null
             videoStatusText = "PC 返回的视频流参数无效"
+            publishVideoStats(VideoStreamStats(state = "视频参数无效"))
             stopVideoReceiverAsync(generation)
-            postStatus("PC 已连接，姿态链路可用 · $videoStatusText", true)
             return
         }
         videoConfig = config
         firstRenderedVideoGeneration.set(-1L)
+        renderedFramesSinceStats.set(0L)
         videoStatusText = "H.264 已协商，等待视频接收器启动"
-        postStatus("PC 已连接，姿态链路可用 · $videoStatusText", true)
+        publishVideoStats(VideoStreamStats(state = "等待视频"))
         restartVideoReceiver()
     }
 
@@ -132,6 +142,7 @@ class NetworkClient(
                     val receiver = VideoStreamReceiver(
                         config.host, config.port, config.width, config.height, config.fps, config.decoderName, surface,
                         onStatus = { status -> updateVideoStatus(config.generation, status) },
+                        onStats = { stats -> updateVideoStats(config.generation, stats) },
                     )
                     receiver.start()
                     videoReceiver = receiver
@@ -145,15 +156,37 @@ class NetworkClient(
     private fun updateVideoStatus(generation: Long, status: String) {
         if (!isSessionActive(generation)) return
         videoStatusText = status
-        postStatus("PC 已连接，姿态正常 · $status", true)
     }
 
-    /** Called by the GL renderer after SurfaceTexture has accepted a decoded frame. */
+    private fun updateVideoStats(generation: Long, stats: VideoStreamStats) {
+        if (!isSessionActive(generation)) return
+        val now = System.nanoTime()
+        val previous = lastVideoStatsNs.getAndSet(now)
+        val elapsedSeconds = if (previous > 0L) ((now - previous).coerceAtLeast(1L) / 1_000_000_000.0) else 1.0
+        val displayFps = renderedFramesSinceStats.getAndSet(0L) / elapsedSeconds
+        val combined = if (stats.decodeFps >= 1.0 && displayFps < 1.0 && stats.lastDecodedAgeMs in 0..1_500L) {
+            stats.copy(state = "显示停滞", displayFps = displayFps)
+        } else {
+            stats.copy(displayFps = displayFps)
+        }
+        latestVideoStats = combined
+        mainHandler.post { videoStatsListener(combined) }
+    }
+
+    private fun publishVideoStats(stats: VideoStreamStats) {
+        lastVideoStatsNs.set(System.nanoTime())
+        renderedFramesSinceStats.set(0L)
+        latestVideoStats = stats
+        mainHandler.post { videoStatsListener(stats) }
+    }
+
+    /** Called by the GL renderer after SurfaceTexture accepts a newly decoded frame. */
     fun reportVideoFrameRendered() {
         val config = videoConfig ?: return
         if (!isSessionActive(config.generation)) return
+        renderedFramesSinceStats.incrementAndGet()
         if (firstRenderedVideoGeneration.compareAndSet(-1L, config.generation)) {
-            updateVideoStatus(config.generation, "SteamVR 双目画面已到达显示纹理")
+            videoStatusText = "SteamVR 双目画面已到达显示纹理"
         }
     }
 
@@ -167,6 +200,7 @@ class NetworkClient(
                 if (generation == null || videoConfig?.generation == null || videoConfig?.generation == generation) {
                     videoConfig = null
                     firstRenderedVideoGeneration.set(-1L)
+                    videoStatusText = "视频已停止"
                 }
             }
         }
@@ -176,10 +210,30 @@ class NetworkClient(
         val writer = activeControlWriter ?: return
         val generation = activeControlGeneration
         if (!isSessionActive(generation)) return
-        try {
-            writeControlMessage(writer, JSONObject().put("type", "display_settings").put("settings", settings))
-        } catch (error: Exception) {
-            postStatus("显示参数同步失败：${error.message ?: error.javaClass.simpleName}", true)
+        queueControlMessage(writer, generation,
+            JSONObject().put("type", "display_settings").put("settings", settings),
+            "显示参数同步失败")
+    }
+
+    private fun queueControlMessage(
+        writer: BufferedWriter,
+        generation: Long,
+        message: JSONObject,
+        failurePrefix: String = "控制消息发送失败",
+    ) {
+        runCatching {
+            controlWriteExecutor.execute {
+                if (!isSessionActive(generation)) return@execute
+                try {
+                    writeControlMessage(writer, message)
+                } catch (error: Exception) {
+                    if (isSessionActive(generation)) {
+                        postStatus("$failurePrefix：${error.message ?: error.javaClass.simpleName}", true)
+                    }
+                }
+            }
+        }.onFailure { error ->
+            if (isSessionActive(generation)) postStatus("$failurePrefix：${error.message ?: error.javaClass.simpleName}", true)
         }
     }
 
@@ -393,6 +447,7 @@ class NetworkClient(
             closeCurrentSockets()
         }
         stopVideoReceiverAsync()
+        publishVideoStats(VideoStreamStats(state = "等待 PC"))
         postStatus("已断开 PC", false)
     }
 
@@ -406,6 +461,7 @@ class NetworkClient(
         discoveryExecutor.shutdownNow()
         sessionExecutor.shutdownNow()
         poseExecutor.shutdownNow()
+        controlWriteExecutor.shutdownNow()
         videoLifecycleExecutor.shutdown()
     }
 
@@ -572,24 +628,24 @@ class NetworkClient(
                             try {
                                 val applied = applyRemoteOpticalPresets(presets)
                                 if (isSessionActive(generation)) {
-                                    writeControlMessage(
-                                        writer,
+                                    queueControlMessage(
+                                        writer, generation,
                                         JSONObject().put("type", "optical_presets_ack")
                                             .put("requestId", requestId).put("status", "applied")
                                             .put("presets", applied),
+                                        "光学预设确认发送失败",
                                     )
                                     postStatus("PC 已同步光学预设", true)
                                 }
                             } catch (error: Throwable) {
                                 if (isSessionActive(generation)) {
-                                    try {
-                                        writeControlMessage(
-                                            writer,
-                                            JSONObject().put("type", "optical_presets_ack")
-                                                .put("requestId", requestId).put("status", "rejected")
-                                                .put("message", error.message ?: error.javaClass.simpleName),
-                                        )
-                                    } catch (_: Exception) { }
+                                    queueControlMessage(
+                                        writer, generation,
+                                        JSONObject().put("type", "optical_presets_ack")
+                                            .put("requestId", requestId).put("status", "rejected")
+                                            .put("message", error.message ?: error.javaClass.simpleName),
+                                        "光学预设拒绝响应发送失败",
+                                    )
                                 }
                             }
                         }
@@ -602,24 +658,24 @@ class NetworkClient(
                                 val applied = applyRemoteOpticalPreset(presetId)
                                     ?: error("手机中不存在该光学预设：$presetId")
                                 if (isSessionActive(generation)) {
-                                    writeControlMessage(
-                                        writer,
+                                    queueControlMessage(
+                                        writer, generation,
                                         JSONObject().put("type", "display_settings_ack")
                                             .put("requestId", requestId).put("status", "applied")
                                             .put("settings", applied),
+                                        "显示参数确认发送失败",
                                     )
                                     postStatus("已应用光学预设", true)
                                 }
                             } catch (error: Throwable) {
                                 if (isSessionActive(generation)) {
-                                    try {
-                                        writeControlMessage(
-                                            writer,
-                                            JSONObject().put("type", "display_settings_ack")
-                                                .put("requestId", requestId).put("status", "rejected")
-                                                .put("message", error.message ?: error.javaClass.simpleName),
-                                        )
-                                    } catch (_: Exception) { }
+                                    queueControlMessage(
+                                        writer, generation,
+                                        JSONObject().put("type", "display_settings_ack")
+                                            .put("requestId", requestId).put("status", "rejected")
+                                            .put("message", error.message ?: error.javaClass.simpleName),
+                                        "显示参数拒绝响应发送失败",
+                                    )
                                 }
                             }
                         }
@@ -634,28 +690,28 @@ class NetworkClient(
                             try {
                                 val applied = applyRemoteDisplaySettings(settingsJson)
                                 if (isSessionActive(generation)) {
-                                    writeControlMessage(
-                                        writer,
+                                    queueControlMessage(
+                                        writer, generation,
                                         JSONObject()
                                             .put("type", "display_settings_ack")
                                             .put("requestId", requestId)
                                             .put("status", "applied")
                                             .put("settings", applied),
+                                        "显示参数确认发送失败",
                                     )
                                     postStatus("PC 已更新手机显示参数", true)
                                 }
                             } catch (error: Throwable) {
                                 if (isSessionActive(generation)) {
-                                    try {
-                                        writeControlMessage(
-                                            writer,
-                                            JSONObject()
-                                                .put("type", "display_settings_ack")
-                                                .put("requestId", requestId)
-                                                .put("status", "rejected")
-                                                .put("message", error.message ?: error.javaClass.simpleName),
-                                        )
-                                    } catch (_: Exception) { }
+                                    queueControlMessage(
+                                        writer, generation,
+                                        JSONObject()
+                                            .put("type", "display_settings_ack")
+                                            .put("requestId", requestId)
+                                            .put("status", "rejected")
+                                            .put("message", error.message ?: error.javaClass.simpleName),
+                                        "显示参数拒绝响应发送失败",
+                                    )
                                 }
                             }
                         }
@@ -670,22 +726,23 @@ class NetworkClient(
                                 }
                                 applyRemoteDeviceAction(action)
                                 if (isSessionActive(generation)) {
-                                    writeControlMessage(
-                                        writer,
+                                    queueControlMessage(
+                                        writer, generation,
                                         JSONObject().put("type", "device_action_ack")
                                             .put("requestId", requestId).put("status", "applied"),
+                                        "设备操作确认发送失败",
                                     )
                                 }
                             } catch (error: Throwable) {
+                                Log.e(TAG, "Phone device action failed: $action", error)
                                 if (isSessionActive(generation)) {
-                                    try {
-                                        writeControlMessage(
-                                            writer,
-                                            JSONObject().put("type", "device_action_ack")
-                                                .put("requestId", requestId).put("status", "rejected")
-                                                .put("message", error.message ?: error.javaClass.simpleName),
-                                        )
-                                    } catch (_: Exception) { }
+                                    queueControlMessage(
+                                        writer, generation,
+                                        JSONObject().put("type", "device_action_ack")
+                                            .put("requestId", requestId).put("status", "rejected")
+                                            .put("message", error.message ?: error.javaClass.simpleName),
+                                        "设备操作拒绝响应发送失败",
+                                    )
                                 }
                             }
                         }
@@ -800,6 +857,7 @@ class NetworkClient(
     private class ProtocolMismatchException(message: String) : Exception(message)
 
     companion object {
+        private const val TAG = "PhoneVRNetwork"
         const val DEFAULT_CONTROL_PORT = 48101
         const val DEFAULT_POSE_PORT = 48102
         const val DEFAULT_VIDEO_PORT = 48104

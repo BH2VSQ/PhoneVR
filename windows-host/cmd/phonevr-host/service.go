@@ -176,11 +176,8 @@ type rawVideoFrame struct {
 }
 
 type HostService struct {
-	lifecycleMu sync.Mutex
-	mu          sync.RWMutex
-	// poseStateMu isolates the 180 Hz pose path from UI snapshots, device
-	// metadata and log updates guarded by mu.
-	poseStateMu           sync.RWMutex
+	lifecycleMu           sync.Mutex
+	mu                    sync.RWMutex
 	config                HostConfig
 	serverName            string
 	localIPv4             []string
@@ -211,12 +208,14 @@ type HostService struct {
 	wg                    sync.WaitGroup
 	devices               map[string]activeDevice
 	connections           map[net.Conn]struct{}
-	latestPose            *PoseSnapshot // guarded by poseStateMu
-	posePackets           uint64        // guarded by poseStateMu
-	poseLastPacket        time.Time     // guarded by poseStateMu
-	lastError             string
-	logs                  []string
-	consoleLogs           bool
+	// The pose snapshot is immutable after publication. Atomic publication avoids
+	// reader/writer lock stalls when the desktop UI is busy rendering the model.
+	latestPose       atomic.Pointer[PoseSnapshot]
+	posePackets      atomic.Uint64
+	poseLastPacketNs atomic.Int64
+	lastError        string
+	logs             []string
+	consoleLogs      bool
 }
 
 func NewHostService(consoleLogs bool) *HostService {
@@ -349,11 +348,9 @@ func (s *HostService) Start(config HostConfig) error {
 	s.connections = make(map[net.Conn]struct{})
 	s.lastError = ""
 	s.mu.Unlock()
-	s.poseStateMu.Lock()
-	s.latestPose = nil
-	s.posePackets = 0
-	s.poseLastPacket = time.Time{}
-	s.poseStateMu.Unlock()
+	s.latestPose.Store(nil)
+	s.posePackets.Store(0)
+	s.poseLastPacketNs.Store(0)
 
 	s.addLog(fmt.Sprintf("Host started on %s | TCP %d | UDP discovery %d | UDP pose %d", config.ListenAddress, config.ControlPort, config.DiscoveryPort, config.PosePort))
 	for _, address := range networkAddresses {
@@ -474,10 +471,8 @@ func (s *HostService) Stop() {
 	s.devices = make(map[string]activeDevice)
 	s.connections = make(map[net.Conn]struct{})
 	s.mu.Unlock()
-	s.poseStateMu.Lock()
-	s.latestPose = nil
-	s.poseLastPacket = time.Time{}
-	s.poseStateMu.Unlock()
+	s.latestPose.Store(nil)
+	s.poseLastPacketNs.Store(0)
 
 	if cancel != nil {
 		cancel()
@@ -537,18 +532,16 @@ func (s *HostService) Snapshot() HostSnapshot {
 	snapshot.Logs = append([]string(nil), s.logs...)
 	s.mu.RUnlock()
 
-	// Do not nest poseStateMu under mu. The real-time pose writer never needs
-	// the general service mutex, and status/log rendering cannot stall it.
-	s.poseStateMu.RLock()
-	if s.latestPose != nil {
-		copyPose := *s.latestPose
+	// Read the immutable pose snapshot atomically. UI snapshots must never hold
+	// a lock that can delay the 180 Hz pose receiver.
+	if latest := s.latestPose.Load(); latest != nil {
+		copyPose := *latest
 		snapshot.LatestPose = &copyPose
 	}
-	snapshot.PacketsReceived = s.posePackets
-	if !s.poseLastPacket.IsZero() {
-		snapshot.LastPacketAt = s.poseLastPacket.Format(time.RFC3339)
+	snapshot.PacketsReceived = s.posePackets.Load()
+	if receivedNs := s.poseLastPacketNs.Load(); receivedNs > 0 {
+		snapshot.LastPacketAt = time.Unix(0, receivedNs).Format(time.RFC3339)
 	}
-	s.poseStateMu.RUnlock()
 
 	sort.Slice(snapshot.ConnectedDevices, func(i, j int) bool {
 		return snapshot.ConnectedDevices[i].ConnectedAt < snapshot.ConnectedDevices[j].ConnectedAt
@@ -560,14 +553,12 @@ func (s *HostService) Snapshot() HostSnapshot {
 // OpenGL viewer can refresh the HMD model without polling device and log
 // metadata on every animation update.
 func (s *HostService) PoseFrame() PoseFrameSnapshot {
-	s.poseStateMu.RLock()
-	defer s.poseStateMu.RUnlock()
 	var latest *PoseSnapshot
-	if s.latestPose != nil {
-		copyPose := *s.latestPose
+	if current := s.latestPose.Load(); current != nil {
+		copyPose := *current
 		latest = &copyPose
 	}
-	return PoseFrameSnapshot{LatestPose: latest, PacketsReceived: s.posePackets}
+	return PoseFrameSnapshot{LatestPose: latest, PacketsReceived: s.posePackets.Load()}
 }
 
 func (s *HostService) acceptLoop(ctx context.Context, listener net.Listener) {
@@ -763,7 +754,7 @@ func (s *HostService) poseLoop(ctx context.Context, conn *net.UDPConn) {
 	var maxHostReadGap time.Duration
 	var maxSensorInterval time.Duration
 	var maxBatchSize int
-	var maxPoseStateLockWait time.Duration
+	var maxPosePublishDuration time.Duration
 	var previousArrival time.Time
 	var previousSensorTimestamp int64
 	var previousSequence uint32
@@ -832,30 +823,29 @@ func (s *HostService) poseLoop(ctx context.Context, conn *net.UDPConn) {
 		}
 
 		yaw, pitch, roll := quaternionEuler(latest.pose.X, latest.pose.Y, latest.pose.Z, latest.pose.W)
-		lockWaitStarted := time.Now()
-		s.poseStateMu.Lock()
-		if wait := time.Since(lockWaitStarted); wait > maxPoseStateLockWait {
-			maxPoseStateLockWait = wait
-		}
-		s.posePackets += uint64(len(batch))
-		s.poseLastPacket = latest.receivedAt
-		s.latestPose = &PoseSnapshot{
+		publishStarted := time.Now()
+		snapshot := &PoseSnapshot{
 			Sequence: latest.pose.Sequence, TimestampNs: latest.pose.TimestampNs,
 			X: latest.pose.X, Y: latest.pose.Y, Z: latest.pose.Z, W: latest.pose.W,
 			Yaw: yaw, Pitch: pitch, Roll: roll,
 			Source: latest.remote.IP.String(), ReceivedAt: latest.receivedAt.Format(time.RFC3339Nano),
 		}
-		s.poseStateMu.Unlock()
+		s.posePackets.Add(uint64(len(batch)))
+		s.poseLastPacketNs.Store(latest.receivedAt.UnixNano())
+		s.latestPose.Store(snapshot)
+		if elapsed := time.Since(publishStarted); elapsed > maxPosePublishDuration {
+			maxPosePublishDuration = elapsed
+		}
 
 		if time.Since(statsStarted) >= 5*time.Second {
 			seconds := time.Since(statsStarted).Seconds()
 			rxRate := float64(statsReceived) / seconds
 			forwardRate := float64(statsForwarded) / seconds
-			s.addLog(fmt.Sprintf("Pose pipeline: Host RX %.1f Hz, forwarded %.1f Hz, coalesced %d, sequence gaps %d, invalid %d, max Host read gap %.1f ms, max Android sensor interval %.1f ms, max batch %d, max pose-state lock wait %.2f ms, loopback write errors %d",
+			s.addLog(fmt.Sprintf("Pose pipeline: Host RX %.1f Hz, forwarded %.1f Hz, coalesced %d, sequence gaps %d, invalid %d, max Host read gap %.1f ms, max Android sensor interval %.1f ms, max batch %d, max pose publish duration %.3f ms, loopback write errors %d",
 				rxRate, forwardRate, statsCoalesced, statsSequenceGaps, statsInvalid,
 				float64(maxHostReadGap)/float64(time.Millisecond),
 				float64(maxSensorInterval)/float64(time.Millisecond), maxBatchSize,
-				float64(maxPoseStateLockWait)/float64(time.Millisecond), statsBridgeErrors))
+				float64(maxPosePublishDuration)/float64(time.Millisecond), statsBridgeErrors))
 			statsStarted = time.Now()
 			statsReceived = 0
 			statsForwarded = 0
@@ -866,7 +856,7 @@ func (s *HostService) poseLoop(ctx context.Context, conn *net.UDPConn) {
 			maxHostReadGap = 0
 			maxSensorInterval = 0
 			maxBatchSize = 0
-			maxPoseStateLockWait = 0
+			maxPosePublishDuration = 0
 		}
 	}
 }

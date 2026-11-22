@@ -70,6 +70,16 @@ class VideoStreamingIntegrationTests(unittest.TestCase):
         self.assertIn("m_videoReadbackPending", worker)
         self.assertIn("gpu-map-pending", DRIVER)
 
+
+    def test_device_action_ack_is_written_from_background_control_executor(self):
+        action_start = ANDROID_NETWORK.index('"device_action" -> {')
+        action_end = ANDROID_NETWORK.index('\n                }\n            } catch', action_start)
+        action_block = ANDROID_NETWORK[action_start:action_end]
+        self.assertIn("mainHandler.post", action_block)
+        self.assertIn("queueControlMessage", action_block)
+        self.assertNotIn("writeControlMessage", action_block)
+        self.assertIn("Phone device action failed", ANDROID_NETWORK)
+
     def test_android_legacy_codec_probe_and_video_stage_status(self):
         self.assertIn("isLikelySoftwareCodec", ANDROID_CAPS)
         self.assertIn("hardwareClassificationReliable", ANDROID_CAPS)
@@ -105,6 +115,47 @@ class VideoStreamingIntegrationTests(unittest.TestCase):
         self.assertEqual(driver_manager.count("exec.Command("), 3)
         self.assertEqual(driver_manager.count("childprocess.HideConsoleWindow(cmd)"), 3)
         self.assertIn("childprocess.HideConsoleWindow(cmd)", encoder_helper)
+
+
+    def test_android_decoder_backpressure_cannot_busy_spin_at_display_priority(self):
+        decode_loop = ANDROID_RECEIVER.split("private fun decodeLoop()", 1)[1].split("private fun createDecoder()", 1)[0]
+        decode_session = ANDROID_RECEIVER.split("private fun decodeSession(codec: MediaCodec)", 1)[1].split("private fun setThreadPriority", 1)[0]
+        self.assertIn("Process.THREAD_PRIORITY_DEFAULT", decode_loop)
+        self.assertIn("sleepQuietly(1)", decode_session)
+        self.assertIn("decoderFlushRequested.getAndSet(false)", decode_session)
+        self.assertIn("UDP_RESUME_GAP_NS", ANDROID_RECEIVER)
+        self.assertIn("Video UDP resumed after", ANDROID_RECEIVER)
+
+    def test_android_video_health_exposes_reassembly_decoder_and_display_stages(self):
+        stats = (ROOT / "android/app/src/main/java/com/vsq/phonvrstream/streaming/VideoStreamStats.kt").read_text(encoding="utf-8")
+        for field in ("reassemblyInFlight", "expiredAssemblies", "decoderRecoveries", "lastPacketAgeMs", "lastCompleteFrameAgeMs"):
+            self.assertIn(field, stats)
+            self.assertIn(field, ANDROID_RECEIVER)
+        self.assertIn("takeExpiredAssemblyCount", ANDROID_RECEIVER)
+        self.assertIn("inFlightCount", ANDROID_RECEIVER)
+        self.assertIn("Video UDP resumed", ANDROID_RECEIVER)
+
+    def test_android_main_menu_hides_pc_and_pose_details_and_adds_compact_stream_hud(self):
+        activity = (ROOT / "android/app/src/main/java/com/vsq/phonvrstream/MainActivity.kt").read_text(encoding="utf-8")
+        top_bar = activity.split("private fun buildTopBar()", 1)[1].split("private fun buildMenuPanel()", 1)[0]
+        menu = activity.split("private fun buildMenuPanel()", 1)[1].split("private fun screenFlipButtonText()", 1)[0]
+        self.assertIn("streamStatusText", top_bar)
+        self.assertIn("Gravity.END", top_bar)
+        self.assertNotIn("PC 已连接", top_bar)
+        self.assertNotIn("poseText", top_bar)
+        self.assertIn("menuConnectionText", menu)
+        self.assertIn("poseText", menu)
+        self.assertIn("menuVideoDetailText", menu)
+
+    def test_android_screen_flip_persists_reverse_landscape_orientation(self):
+        activity = (ROOT / "android/app/src/main/java/com/vsq/phonvrstream/MainActivity.kt").read_text(encoding="utf-8")
+        store = (ROOT / "android/app/src/main/java/com/vsq/phonvrstream/settings/SettingsStore.kt").read_text(encoding="utf-8")
+        self.assertIn("SCREEN_ORIENTATION_REVERSE_LANDSCAPE", activity)
+        self.assertIn("saveScreenFlipped(screenFlipped)", activity)
+        self.assertIn("loadScreenFlipped()", activity)
+        self.assertIn('"screen_flipped"', store)
+        manifest = (ROOT / "android/app/src/main/AndroidManifest.xml").read_text(encoding="utf-8")
+        self.assertIn('android:configChanges="density|keyboardHidden|navigation|orientation|screenSize|uiMode"', manifest)
 
     def test_display_redirect_overrides_hmd_virtual_output_properties(self):
         self.assertIn("vr::k_ulDisplayRedirectContainer", DRIVER)

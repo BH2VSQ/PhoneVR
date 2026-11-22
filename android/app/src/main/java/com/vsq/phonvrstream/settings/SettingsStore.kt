@@ -66,6 +66,13 @@ class SettingsStore(context: Context) {
         prefs.edit().putString(KEY_ACTIVE_PRESET, id).apply()
     }
 
+    /** Persistent 180-degree landscape orientation used to place the charging connector on either side. */
+    fun loadScreenFlipped(): Boolean = prefs.getBoolean(KEY_SCREEN_FLIPPED, false)
+
+    fun saveScreenFlipped(flipped: Boolean) {
+        prefs.edit().putBoolean(KEY_SCREEN_FLIPPED, flipped).apply()
+    }
+
     fun save(settings: DisplaySettings) {
         val value = settings.normalized()
         prefs.edit()
@@ -88,6 +95,7 @@ class SettingsStore(context: Context) {
     companion object {
         private const val KEY_OPTICAL_PRESETS = "optical_presets_json"
         private const val KEY_ACTIVE_PRESET = "active_optical_preset_id"
+        private const val KEY_SCREEN_FLIPPED = "screen_flipped"
         private const val KEY_PROFILE = "viewer_profile_id"
         private const val KEY_IPD = "ipd_mm"
         private const val KEY_LENS_SEPARATION = "lens_separation_mm"

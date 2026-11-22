@@ -2,6 +2,7 @@ package com.vsq.phonvrstream
 
 import android.app.Activity
 import android.content.pm.ActivityInfo
+import android.content.res.Configuration
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
@@ -37,6 +38,7 @@ import com.vsq.phonvrstream.settings.DisplaySettings
 import com.vsq.phonvrstream.settings.OpticalPreset
 import com.vsq.phonvrstream.settings.SettingsStore
 import com.vsq.phonvrstream.streaming.CodecCapabilityProbe
+import com.vsq.phonvrstream.streaming.VideoStreamStats
 import com.vsq.phonvrstream.tracking.Quaternion
 
 class MainActivity : Activity(), SensorEventListener {
@@ -56,7 +58,10 @@ class MainActivity : Activity(), SensorEventListener {
     private var rotationSensor: Sensor? = null
     private lateinit var settingsStore: SettingsStore
     private lateinit var poseText: TextView
-    private lateinit var connectionHudText: TextView
+    private lateinit var menuConnectionText: TextView
+    private lateinit var menuVideoDetailText: TextView
+    private lateinit var streamStatusText: TextView
+    private lateinit var screenFlipButton: Button
     private lateinit var menuPanel: LinearLayout
     private lateinit var dismissLayer: View
     private lateinit var settingsPanel: LinearLayout
@@ -76,6 +81,8 @@ class MainActivity : Activity(), SensorEventListener {
     private var pcConnected = false
     private var connectionMessage = "正在搜索局域网 PC"
     private var startupDiscoveryStarted = false
+    private var screenFlipped = false
+    @Volatile private var videoStreamStats = VideoStreamStats()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -84,6 +91,8 @@ class MainActivity : Activity(), SensorEventListener {
         hideSystemUi()
 
         settingsStore = SettingsStore(this)
+        screenFlipped = settingsStore.loadScreenFlipped()
+        applyScreenOrientation()
         settings = settingsStore.load()
         opticalPresets = settingsStore.loadOpticalPresets(settings)
         val storedActivePresetId = settingsStore.loadActiveOpticalPresetId()
@@ -112,6 +121,15 @@ class MainActivity : Activity(), SensorEventListener {
             currentDisplaySettings = { settings.toJson() },
             currentOpticalPresets = { OpticalPreset.listToJson(opticalPresets) },
             currentMediaCapabilities = { CodecCapabilityProbe.discoverJson() },
+            videoStatsListener = { stats ->
+                videoStreamStats = stats
+                if (::renderer.isInitialized) {
+                    // Once a real stream has appeared, never leave the previous
+                    // frame displayed as if it were live when any pipeline stage stalls.
+                    renderer.setVideoStreamStale(stats.state != "解码流畅")
+                }
+                updateTopStreamStatus()
+            },
             applyRemoteOpticalPresets = { json ->
                 val parsed = OpticalPreset.listFromJson(json).ifEmpty { OpticalPreset.defaults() }
                 opticalPresets = parsed
@@ -207,7 +225,7 @@ class MainActivity : Activity(), SensorEventListener {
             setOnClickListener { closeOverlayPanels() }
         }
         root.addView(dismissLayer, FrameLayout.LayoutParams(-1, -1))
-        root.addView(buildTopBar(), FrameLayout.LayoutParams(-1, dp(58), Gravity.TOP))
+        root.addView(buildTopBar(), FrameLayout.LayoutParams(-1, dp(44), Gravity.TOP))
 
         buildSettingsPanel().also { panel ->
             settingsPanel = panel
@@ -263,40 +281,32 @@ class MainActivity : Activity(), SensorEventListener {
 
     private fun buildTopBar(): View {
         val bar = FrameLayout(this).apply {
-            setPadding(dp(10), dp(5), dp(10), dp(5))
+            setPadding(dp(8), dp(4), dp(8), dp(4))
             background = GradientDrawable(
                 GradientDrawable.Orientation.TOP_BOTTOM,
-                intArrayOf(Color.argb(105, 4, 10, 18), Color.argb(0, 4, 10, 18)),
+                intArrayOf(Color.argb(82, 4, 10, 18), Color.argb(0, 4, 10, 18)),
             )
         }
 
-        val hud = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(9), dp(4), dp(9), dp(4))
-            background = GradientDrawable().apply {
-                setColor(Color.argb(160, 5, 13, 23))
-                cornerRadius = dp(10).toFloat()
-                setStroke(dp(1), Color.argb(65, 135, 175, 215))
-            }
-        }
-        connectionHudText = TextView(this).apply {
-            text = "● PC 未连接"
-            setTextColor(Color.rgb(242, 183, 112))
-            textSize = 11f
+        streamStatusText = TextView(this).apply {
+            text = "● 等待 PC 视频流"
+            setTextColor(Color.rgb(170, 190, 212))
+            textSize = 9.5f
             typeface = Typeface.DEFAULT_BOLD
             maxLines = 1
+            ellipsize = android.text.TextUtils.TruncateAt.END
+            gravity = Gravity.CENTER
+            setPadding(dp(8), dp(3), dp(8), dp(3))
+            background = GradientDrawable().apply {
+                setColor(Color.argb(112, 5, 13, 23))
+                cornerRadius = dp(8).toFloat()
+                setStroke(dp(1), Color.argb(42, 135, 175, 215))
+            }
         }
-        poseText = TextView(this).apply {
-            text = "Y 0°  P 0°  R 0°"
-            setTextColor(Color.rgb(195, 216, 235))
-            textSize = 10f
-            typeface = Typeface.MONOSPACE
-            maxLines = 1
-        }
-        hud.addView(connectionHudText)
-        hud.addView(poseText)
-        bar.addView(hud, FrameLayout.LayoutParams(-2, dp(44), Gravity.START or Gravity.CENTER_VERTICAL))
+        bar.addView(
+            streamStatusText,
+            FrameLayout.LayoutParams(dp(142), dp(25), Gravity.END or Gravity.CENTER_VERTICAL),
+        )
 
         val menuButton = makeButton("⋮") {
             val shouldShow = menuPanel.visibility != View.VISIBLE
@@ -308,16 +318,16 @@ class MainActivity : Activity(), SensorEventListener {
             textSize = 24f
             setPadding(0, 0, 0, dp(4))
             minWidth = dp(44)
-            minHeight = dp(40)
+            minHeight = dp(38)
         }
-        bar.addView(menuButton, FrameLayout.LayoutParams(dp(46), dp(40), Gravity.TOP or Gravity.CENTER_HORIZONTAL))
+        bar.addView(menuButton, FrameLayout.LayoutParams(dp(42), dp(38), Gravity.TOP or Gravity.START))
         return bar
     }
 
     private fun buildMenuPanel(): LinearLayout {
         val panel = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(8), dp(8), dp(8), dp(8))
+            setPadding(dp(9), dp(9), dp(9), dp(9))
             background = GradientDrawable().apply {
                 setColor(Color.argb(246, 8, 16, 28))
                 cornerRadius = dp(14).toFloat()
@@ -325,46 +335,151 @@ class MainActivity : Activity(), SensorEventListener {
             }
             elevation = dp(16).toFloat()
         }
+        val statusPanel = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(9), dp(7), dp(9), dp(7))
+            background = GradientDrawable().apply {
+                setColor(Color.argb(155, 17, 31, 48))
+                cornerRadius = dp(9).toFloat()
+                setStroke(dp(1), Color.argb(55, 125, 165, 205))
+            }
+        }
+        statusPanel.addView(label("连接状态", secondary = true).apply { textSize = 9f })
+        menuConnectionText = TextView(this).apply {
+            text = "○ PC 未连接"
+            textSize = 11f
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(Color.rgb(242, 183, 112))
+            maxLines = 2
+        }
+        statusPanel.addView(menuConnectionText)
+        poseText = TextView(this).apply {
+            text = "姿态  Y 0°  P 0°  R 0°"
+            textSize = 10f
+            typeface = Typeface.MONOSPACE
+            setTextColor(Color.rgb(195, 216, 235))
+            maxLines = 2
+            setPadding(0, dp(4), 0, 0)
+        }
+        statusPanel.addView(poseText)
+        menuVideoDetailText = TextView(this).apply {
+            text = "视频：等待 PC · 接收 0 / 解码 0 / 显示 0 FPS"
+            textSize = 9f
+            typeface = Typeface.MONOSPACE
+            setTextColor(Color.rgb(166, 190, 216))
+            maxLines = 4
+            ellipsize = android.text.TextUtils.TruncateAt.END
+            setPadding(0, dp(5), 0, 0)
+        }
+        statusPanel.addView(menuVideoDetailText)
+        panel.addView(statusPanel, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(8) })
+
         panel.addView(makeButton("视角居中") {
             referencePose = lastRawPose
             renderer.updateOrientation(0f, 0f, 0f, 1f)
             menuPanel.visibility = View.GONE
             updateDismissLayer()
             updatePoseText("视角已居中")
-        }.apply { layoutParams = LinearLayout.LayoutParams(-1, dp(42)).apply { bottomMargin = dp(6) } })
+        }.apply { layoutParams = LinearLayout.LayoutParams(-1, dp(40)).apply { bottomMargin = dp(6) } })
         panel.addView(makeButton("连接 PC") {
             connectionPanel.visibility = View.VISIBLE
             settingsPanel.visibility = View.GONE
             menuPanel.visibility = View.GONE
             updateDismissLayer()
-        }.apply { layoutParams = LinearLayout.LayoutParams(-1, dp(42)).apply { bottomMargin = dp(6) } })
+        }.apply { layoutParams = LinearLayout.LayoutParams(-1, dp(40)).apply { bottomMargin = dp(6) } })
+        screenFlipButton = makeButton(screenFlipButtonText()) {
+            screenFlipped = !screenFlipped
+            settingsStore.saveScreenFlipped(screenFlipped)
+            screenFlipButton.text = screenFlipButtonText()
+            applyScreenOrientation()
+        }
+        panel.addView(screenFlipButton, LinearLayout.LayoutParams(-1, dp(40)).apply { bottomMargin = dp(2) })
+        panel.addView(label("旋转整个横屏画面 180°，用于切换头显内充电接口方向", secondary = true).apply {
+            textSize = 9f
+            setPadding(dp(2), 0, dp(2), dp(7))
+        })
         panel.addView(makeButton("光学预设") {
             settingsPanel.visibility = View.VISIBLE
             connectionPanel.visibility = View.GONE
             menuPanel.visibility = View.GONE
             updateDismissLayer()
-        }.apply { layoutParams = LinearLayout.LayoutParams(-1, dp(42)) })
+        }.apply { layoutParams = LinearLayout.LayoutParams(-1, dp(40)) })
         return panel
     }
 
-    private fun updateTopHud() {
-        if (!::connectionHudText.isInitialized) return
-        val searching = connectionMessage.contains("搜索")
-        val connecting = connectionMessage.contains("正在连接") || connectionMessage.contains("发现 ")
-        connectionHudText.text = when {
-            pcConnected -> "● PC 已连接"
-            searching -> "◌ 正在搜索 PC"
-            connecting -> "◌ 正在连接 PC"
-            else -> "○ PC 未连接"
+    private fun screenFlipButtonText(): String =
+        "屏幕旋转 180°：${if (screenFlipped) "开" else "关"}"
+
+    private fun applyScreenOrientation() {
+        requestedOrientation = if (screenFlipped) {
+            ActivityInfo.SCREEN_ORIENTATION_REVERSE_LANDSCAPE
+        } else {
+            ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
         }
-        connectionHudText.setTextColor(
-            when {
-                pcConnected -> Color.rgb(118, 225, 164)
-                searching || connecting -> Color.rgb(130, 195, 255)
-                else -> Color.rgb(242, 183, 112)
+    }
+
+    private fun updateTopHud() {
+        if (::menuConnectionText.isInitialized) {
+            val searching = connectionMessage.contains("搜索")
+            val connecting = connectionMessage.contains("正在连接") || connectionMessage.contains("发现 ")
+            menuConnectionText.text = when {
+                pcConnected -> "● PC 已连接"
+                searching -> "◌ 正在搜索 PC"
+                connecting -> "◌ 正在连接 PC"
+                else -> "○ PC 未连接"
             }
+            menuConnectionText.setTextColor(
+                when {
+                    pcConnected -> Color.rgb(118, 225, 164)
+                    searching || connecting -> Color.rgb(130, 195, 255)
+                    else -> Color.rgb(242, 183, 112)
+                },
+            )
+            menuConnectionText.contentDescription = connectionMessage
+        }
+        updateTopStreamStatus()
+        updateMenuVideoDetails()
+    }
+
+    private fun updateMenuVideoDetails() {
+        if (!::menuVideoDetailText.isInitialized) return
+        val stats = videoStreamStats
+        menuVideoDetailText.text = buildString {
+            append("视频：${stats.state}")
+            append("\n接收 ${stats.receiveFps.toInt()} / 解码 ${stats.decodeFps.toInt()} / 显示 ${stats.displayFps.toInt()} FPS")
+            append("\nUDP ${stats.fragmentsPerSecond}/s · 组帧 ${stats.reassemblyInFlight} · 解码队列 ${stats.decoderQueueDepth}")
+            append("\n丢帧 ${stats.queueDrops + stats.decoderDrops} · 超时组帧 ${stats.expiredAssemblies} · 恢复 ${stats.decoderRecoveries}")
+        }
+    }
+
+    private fun updateTopStreamStatus() {
+        if (!::streamStatusText.isInitialized) return
+        val stats = videoStreamStats
+        val text = when {
+            !pcConnected -> "○ 等待 PC 视频流"
+            stats.state == "解码流畅" && stats.displayFps >= 1.0 ->
+                "● 视频 ${stats.displayFps.toInt()} FPS · 解码 ${stats.decodeFps.toInt()}"
+            stats.state == "显示停滞" -> "! 手机显示停滞"
+            stats.state == "UDP 组帧中" -> "◌ 视频组帧 ${stats.receiveFps.toInt()} FPS"
+            stats.state == "解码停滞" -> "! 视频解码停滞"
+            stats.state == "视频无数据" -> "! 视频流中断"
+            stats.state == "视频已停止" -> "○ 视频已停止"
+            stats.state == "视频未启用" -> "○ 视频未协商"
+            stats.state == "视频参数无效" -> "! 视频参数错误"
+            else -> "◌ 等待视频帧"
+        }
+        streamStatusText.text = text
+        streamStatusText.setTextColor(
+            when {
+                !pcConnected -> Color.rgb(170, 190, 212)
+                stats.state == "解码流畅" && stats.displayFps >= 1.0 -> Color.rgb(118, 225, 164)
+                stats.state == "显示停滞" || stats.state == "解码停滞" || stats.state == "视频无数据" || stats.state == "视频参数无效" -> Color.rgb(255, 145, 130)
+                else -> Color.rgb(242, 198, 112)
+            },
         )
-        connectionHudText.contentDescription = connectionMessage
+        streamStatusText.contentDescription =
+            "${stats.state}，接收 ${stats.receiveFps.toInt()} 帧每秒，解码 ${stats.decodeFps.toInt()} 帧每秒，显示 ${stats.displayFps.toInt()} 帧每秒"
+        updateMenuVideoDetails()
     }
 
     private fun startStartupDiscovery() {
@@ -804,6 +919,13 @@ class MainActivity : Activity(), SensorEventListener {
         if (overlayVisible) closeOverlayPanels() else super.onBackPressed()
     }
 
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        hideSystemUi()
+        updateRendererSettings()
+        updateTopStreamStatus()
+    }
+
     override fun onResume() {
         super.onResume()
         glView.onResume()
@@ -868,10 +990,11 @@ class MainActivity : Activity(), SensorEventListener {
 
     private fun updatePoseText(value: String) {
         if (!::poseText.isInitialized) return
+        val displayValue = if (value.startsWith("姿态")) value else "姿态  $value"
         if (Looper.myLooper() == Looper.getMainLooper()) {
-            poseText.text = value
+            poseText.text = displayValue
         } else {
-            mainHandler.post { if (::poseText.isInitialized && !isFinishing && !isDestroyed) poseText.text = value }
+            mainHandler.post { if (::poseText.isInitialized && !isFinishing && !isDestroyed) poseText.text = displayValue }
         }
     }
 

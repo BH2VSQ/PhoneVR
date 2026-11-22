@@ -40,6 +40,17 @@ class VideoFragmentReassembler(
 
     private val pending = LinkedHashMap<Long, Assembly>()
     private var latestCompletedFrameId: Long? = null
+    private var expiredAssemblyCount = 0L
+
+    @Synchronized
+    fun inFlightCount(): Int = pending.size
+
+    @Synchronized
+    fun takeExpiredAssemblyCount(): Long {
+        val count = expiredAssemblyCount
+        expiredAssemblyCount = 0L
+        return count
+    }
 
     @Synchronized
     fun accept(datagram: ByteArray, length: Int = datagram.size, nowNs: Long = System.nanoTime()): CompletedVideoFrame? {
@@ -120,7 +131,10 @@ class VideoFragmentReassembler(
     fun expire(nowNs: Long = System.nanoTime()) {
         val iterator = pending.entries.iterator()
         while (iterator.hasNext()) {
-            if (nowNs - iterator.next().value.lastUpdateNs > frameTimeoutNs) iterator.remove()
+            if (nowNs - iterator.next().value.lastUpdateNs > frameTimeoutNs) {
+                iterator.remove()
+                expiredAssemblyCount++
+            }
         }
     }
 
@@ -128,6 +142,7 @@ class VideoFragmentReassembler(
     fun clear() {
         pending.clear()
         latestCompletedFrameId = null
+        expiredAssemblyCount = 0L
     }
 
     private fun isNewer(candidate: Long, reference: Long): Boolean {

@@ -4,7 +4,8 @@ import android.opengl.GLES30
 import android.opengl.GLES11Ext
 import android.graphics.SurfaceTexture
 import android.os.Handler
-import android.os.Looper
+import android.os.HandlerThread
+import android.os.Process
 import android.view.Surface
 import android.opengl.GLSurfaceView
 import com.vsq.phonvrstream.settings.DisplaySettings
@@ -35,11 +36,14 @@ class StereoRenderer : GLSurfaceView.Renderer {
     private var videoTextureId = 0
     private var videoSurfaceTexture: SurfaceTexture? = null
     private var videoSurface: Surface? = null
+    private var frameCallbackThread: HandlerThread? = null
     private val videoFramePending = AtomicBoolean(false)
     @Volatile private var videoSurfaceListener: ((Surface) -> Unit)? = null
     @Volatile private var videoFrameListener: (() -> Unit)? = null
     private var videoDisplayReported = false
     private var hasVideoFrame = false
+    @Volatile private var videoStreamStale = false
+    private var hasEverDisplayedVideo = false
     private val videoTextureMatrix = FloatArray(16)
     private data class VideoLocations(val position: Int, val texture: Int, val transform: Int)
     private lateinit var video: VideoLocations
@@ -69,9 +73,16 @@ class StereoRenderer : GLSurfaceView.Renderer {
         videoFrameListener = listener
     }
 
+    /** Hide a frozen frame after the receiver watchdog declares the stream stale. */
+    fun setVideoStreamStale(stale: Boolean) {
+        videoStreamStale = stale
+    }
+
     private fun createVideoInputSurface() {
         videoSurface?.release()
         videoSurfaceTexture?.release()
+        frameCallbackThread?.quitSafely()
+        frameCallbackThread = null
         videoSurface = null
         videoSurfaceTexture = null
         val ids = IntArray(1)
@@ -83,15 +94,22 @@ class StereoRenderer : GLSurfaceView.Renderer {
         GLES30.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES30.GL_TEXTURE_WRAP_S, GLES30.GL_CLAMP_TO_EDGE)
         GLES30.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES30.GL_TEXTURE_WRAP_T, GLES30.GL_CLAMP_TO_EDGE)
         GLES30.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, 0)
+        val callbackThread = HandlerThread("PhoneVR-Video-FrameCallback", Process.THREAD_PRIORITY_DEFAULT).apply { start() }
+        frameCallbackThread = callbackThread
+        val callbackHandler = Handler(callbackThread.looper)
         val texture = SurfaceTexture(videoTextureId).apply {
             setDefaultBufferSize(VIDEO_WIDTH, VIDEO_HEIGHT)
-            setOnFrameAvailableListener({ videoFramePending.set(true) }, Handler(Looper.getMainLooper()))
+            // Frame notifications are a high-rate signal. Keep them off the UI
+            // thread so menu/connection work cannot delay the GL video pump.
+            setOnFrameAvailableListener({ videoFramePending.set(true) }, callbackHandler)
         }
         val surface = Surface(texture)
         videoSurfaceTexture = texture
         videoSurface = surface
         videoFramePending.set(false)
         hasVideoFrame = false
+        hasEverDisplayedVideo = false
+        videoStreamStale = false
         videoDisplayReported = false
         videoSurfaceListener?.invoke(surface)
     }
@@ -185,10 +203,12 @@ class StereoRenderer : GLSurfaceView.Renderer {
                 inputTexture.updateTexImage()
                 inputTexture.getTransformMatrix(videoTextureMatrix)
                 hasVideoFrame = true
-                if (!videoDisplayReported) {
-                    videoDisplayReported = true
-                    videoFrameListener?.invoke()
-                }
+                hasEverDisplayedVideo = true
+                videoStreamStale = false
+                if (!videoDisplayReported) videoDisplayReported = true
+                // Count every newly latched SurfaceTexture frame, not only the
+                // first one, so the top status indicator reflects displayed FPS.
+                videoFrameListener?.invoke()
             } catch (_: RuntimeException) {
                 hasVideoFrame = false
             }
@@ -199,7 +219,7 @@ class StereoRenderer : GLSurfaceView.Renderer {
         GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, framebuffer)
         GLES30.glViewport(0, 0, width, height)
         GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT)
-        if (hasVideoFrame && videoProgram != 0 && videoTextureId != 0) {
+        if (hasVideoFrame && !videoStreamStale && videoProgram != 0 && videoTextureId != 0) {
             GLES30.glUseProgram(videoProgram)
             bindPosition(video.position)
             GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
@@ -209,6 +229,12 @@ class StereoRenderer : GLSurfaceView.Renderer {
             GLES30.glDrawArrays(GLES30.GL_TRIANGLE_STRIP, 0, 4)
             GLES30.glDisableVertexAttribArray(video.position)
             GLES30.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, 0)
+        } else if (videoStreamStale && hasEverDisplayedVideo) {
+            // Do not leave an old head pose/video image frozen in the viewer.
+            // The top status strip reports the transport fault separately.
+            GLES30.glClearColor(0f, 0f, 0f, 1f)
+            GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT)
+            GLES30.glClearColor(0f, 0f, 0f, 1f)
         } else {
             GLES30.glUseProgram(sceneProgram)
             bindPosition(scene.position)

@@ -33,7 +33,7 @@ class PoseLatencyRegressionTests(unittest.TestCase):
         self.assertIn("max Host read gap %.1f ms", HOST_SERVICE)
         self.assertIn("max Android sensor interval %.1f ms", HOST_SERVICE)
         self.assertIn("max batch %d", HOST_SERVICE)
-        self.assertIn("max pose-state lock wait %.2f ms", HOST_SERVICE)
+        self.assertIn("max pose publish duration %.3f ms", HOST_SERVICE)
         self.assertIn("poseBatchToForward(batch)", HOST_SERVICE)
         self.assertIn("maxPoseBatchForward = 32", HOST_SERVICE)
         self.assertIn("SetReadBuffer(16 * 1024)", HOST_SERVICE)
@@ -105,15 +105,16 @@ class PoseLatencyRegressionTests(unittest.TestCase):
         self.assertIn("SteamVR Settings > Developer > Enable Direct Mode", DRIVER)
         self.assertIn("IVRVirtualDisplay", DRIVER_README)
 
-    def test_host_pose_state_has_a_dedicated_lock_separate_from_general_service_state(self):
-        self.assertIn("poseStateMu           sync.RWMutex", HOST_SERVICE)
-        self.assertIn("latestPose            *PoseSnapshot // guarded by poseStateMu", HOST_SERVICE)
+    def test_host_pose_state_uses_lock_free_atomic_snapshot_publication(self):
+        self.assertIn("latestPose       atomic.Pointer[PoseSnapshot]", HOST_SERVICE)
+        self.assertIn("posePackets      atomic.Uint64", HOST_SERVICE)
+        self.assertIn("poseLastPacketNs atomic.Int64", HOST_SERVICE)
         snapshot_body = HOST_SERVICE.split("func (s *HostService) Snapshot() HostSnapshot {", 1)[1].split("// PoseFrame", 1)[0]
-        self.assertIn("s.mu.RUnlock()", snapshot_body)
-        self.assertIn("s.poseStateMu.RLock()", snapshot_body)
+        self.assertIn("s.latestPose.Load()", snapshot_body)
+        self.assertNotIn("poseStateMu", snapshot_body)
         pose_loop = HOST_SERVICE.split("func (s *HostService) poseLoop", 1)[1]
-        self.assertIn("s.poseStateMu.Lock()", pose_loop)
-        self.assertIn("s.mu.Lock()", pose_loop) is False
+        self.assertIn("s.latestPose.Store(snapshot)", pose_loop)
+        self.assertNotIn("poseStateMu.Lock()", pose_loop)
 
     def test_display_refresh_setting_is_removed_and_driver_uses_fixed_72hz(self):
         self.assertNotIn("Display Refresh Rate", HOST_UI)

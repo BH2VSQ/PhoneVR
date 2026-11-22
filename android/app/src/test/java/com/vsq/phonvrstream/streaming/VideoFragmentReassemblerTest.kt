@@ -28,6 +28,9 @@ class VideoFragmentReassemblerTest {
         assertNull(receiver.accept(packets[0], nowNs = 1))
         assertNull(receiver.accept(packets[0], nowNs = 2))
         receiver.expire(nowNs = 20)
+        assertEquals(0, receiver.inFlightCount())
+        assertEquals(1L, receiver.takeExpiredAssemblyCount())
+        assertEquals(0L, receiver.takeExpiredAssemblyCount())
         assertNull(receiver.accept(packets[1], nowNs = 21))
     }
 

@@ -317,3 +317,14 @@
 - Applied silent launch configuration to Steam registry discovery (`reg.exe`), SteamVR driver lookup/registration (`vrpathreg.exe`), FFmpeg encoder inventory, hardware preflight and the persistent H.264 encoder. Captured stdout/stderr and error reporting remain available to the Host log.
 - Fixed the Windows pose-batch unit-test flake by allowing the UDP/IOCP receive path a one-millisecond drain interval. The production change remains below the 5.5ms period of a 180Hz sensor and avoids falsely treating a short burst as a single datagram.
 - All Go tests, repeated pose-batch test runs, `go vet`, Windows/amd64 cross-compilation and Python release tests pass in the current environment. Native Windows build and runtime confirmation that no helper console windows flash remain to be confirmed on the target PC.
+
+## 0.4.19 - Android stream resilience, pose scheduling and headset UI (2026-11-22)
+
+- Fixed a MediaCodec input-buffer retry loop that could busy-spin at display thread priority for up to 200 ms. The decoder now runs at normal priority and backs off by 1 ms while preserving the pending access unit, preventing avoidable CPU starvation of the 180 Hz IMU, pose sender and GL renderer.
+- Detect UDP stream resume after a one-second-or-longer gap. Clear stale partial assemblies and queued access units, flush MediaCodec on its owning decoder thread, and resume decoding at the next IDR.
+- Expose fragment reassembly expirations, in-flight frames, decoder queue depth, input waits, decode recoveries and packet/frame/decode age. Add structured per-second Android video pipeline logs.
+- After live video has been shown, stop presenting a frozen old frame when the stream is stale; render black until fresh decoded content resumes. Keep the initial diagnostic scene before the first decoded frame.
+- Move PC connection and pose details into the Android menu. Add a compact top-edge stream-state/FPS indicator and detailed receive/decode/display counters in the menu.
+- Add a persisted 180-degree reverse-landscape switch to change which side of the headset receives the phone's charging connector. Sensor coordinate mapping follows the active display rotation.
+- Keep Host pose snapshots lock-free through atomic publication and rename the associated timing metric to `max pose publish duration`.
+- Log complete Android device-action exceptions to Logcat; control acknowledgements remain serialized on the background control-writer executor.

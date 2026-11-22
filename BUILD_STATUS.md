@@ -1,42 +1,17 @@
-# Build status
+# PhoneVR 0.4.19 build status
 
-Revision: PhoneVR 0.4.19 silent Host child processes and Windows UDP receive-test stabilization, 2026-11-22
-
-## Changes in this revision
-
-- Added a shared Windows child-process helper that applies `HideWindow` and `CREATE_NO_WINDOW` while preserving any existing process creation flags.
-- Applied the helper to all Windows Host subprocess call sites: `reg.exe` registry discovery, SteamVR `vrpathreg.exe` lookup/registration and all FFmpeg inventory/preflight/streaming invocations.
-- Kept stdout/stderr capture intact, so command output and failures continue to appear in the PhoneVR Host runtime log without opening child console windows.
-- Increased the short UDP pose-batch drain window to 1ms to accommodate Windows UDP/IOCP delivery scheduling; the window remains below the 5.5ms period of a 180Hz sensor.
-- Added a Windows-specific child-process configuration unit test and expanded Python integration checks to ensure every Host `exec.Command` call in the driver manager applies the silent-launch helper.
-
-## Passed in this environment
-
-- `go test ./...`
-- `go test ./cmd/phonevr-host -run TestReadLatestPoseBatchCoalescesQueuedDatagrams -count=100`
-- `go test -race ./...`
-- `go vet ./...`
-- Windows/amd64 test-binary cross-compilation for Host, encoder and childprocess packages
-- Python release/integration tests: 44 tests
-
-## Not verified in this environment
-
-- Native Windows PowerShell build pipeline rerun: the user's submitted run built the SteamVR DLL successfully, but stopped on the now-adjusted UDP batch test before building Host executable.
-- Runtime confirmation on the target PC that registry and SteamVR helper processes no longer flash console windows.
-- SteamVR/QSV/Redmi K40 end-to-end performance validation.
-
----
-
-Revision: PhoneVR 0.4.19 virtual VSync stability and low-latency follow-up, 2026-11-22
+Revision: Android stream resilience, pose scheduling and headset UI update, 2026-11-22
 
 ## Changes in this revision
 
-- Fixed virtual VSync publication timing. The last completed VSync timestamp and virtual frame counter are committed only after `WaitForPresent` reaches the scheduled event.
-- Bounded the virtual refresh scheduler to a 72 Hz timeline, accounted for missed intervals without decreasing the frame counter, and serialized concurrent wait callbacks.
-- Added `early-wait` and VSync-mode counts to the SteamVR driver timing log for the next runtime check.
-- Added a high-resolution Windows waitable timer with a short yield-spin tail to avoid coarse `Sleep(1)` wake-up quantization.
-- Reduced the H.264 unmatched-timestamp queue from 12 to 4 frames, keeping QSV async depth at 2.
-- Kept the existing 1600x720 SBS render target, which is already equal to the video capture/encoding profile.
+- Removed a high-priority MediaCodec busy-wait path. The decoder thread now uses normal priority and a 1 ms retry backoff whenever MediaCodec has no immediately available input buffer.
+- Added stale-UDP recovery: after at least one second without packets, clear stale fragment assemblies and queued access units, request an IDR boundary and flush MediaCodec on the decoder thread.
+- Added receiver observability for packet age, complete-frame age, decoded-frame age, expired assemblies, queue depth, dropped frames, decoder input waits and recovery count.
+- When video becomes stale after playback starts, the renderer blanks the old frame instead of leaving a frozen image visible. The initial diagnostic scene remains available before first video playback.
+- Moved PC connection and pose details into the Android menu. Added a compact top-edge stream status pill and menu diagnostics for receive/decode/display FPS, UDP fragments, reassembly state, decoder queue and drops.
+- Added a persisted 180-degree reverse-landscape toggle. This changes the charging connector side without changing the SBS left/right stream layout; sensor coordinate remapping follows the display rotation.
+- Kept Host pose snapshots lock-free through atomic pointer publication; the metric now reports pose publish duration rather than a removed mutex wait.
+- Added full exception stack logging for failed device actions. Control-channel writes remain on a dedicated background writer executor.
 
 ## Passed in this environment
 
@@ -44,50 +19,16 @@ Revision: PhoneVR 0.4.19 virtual VSync stability and low-latency follow-up, 2026
 - `go test -race ./...`
 - `go vet ./...`
 - `GOOS=windows GOARCH=amd64 go build ./cmd/phonevr-host`
-- Python release/integration tests: 44 tests
-- Local FFmpeg H.264 parser/session integration test (software encoder path)
-- ZIP integrity validation
+- Python release/integration tests: 49 tests
+- Standalone Kotlin compile of `VideoFragmentReassembler.kt` and `VideoStreamStats.kt`
+- Kotlin reassembler expiration smoke test
+- Kotlin syntax scan of changed Android files: no parser errors reported
 
 ## Not verified in this environment
 
-- Native SteamVR driver build: requires Windows, MSVC and Windows SDK.
-- Runtime precision of the virtual VSync waitable timer on the target Windows installation.
-- Actual Intel QSV throughput and end-to-end latency on the NVIDIA MX450 / Intel Iris Xe PC.
-- Android decode/display latency on Redmi K40 / LineageOS 24.
+- Android APK build. The wrapper could not download Gradle 9.6.1 from `services.gradle.org` because network/DNS access is unavailable, and no Android SDK is installed.
+- Full Android/Kotlin type-check against Android SDK and runtime test on Redmi K40 / LineageOS 24.
+- Native SteamVR driver build and in-runtime validation. This revision did not modify the SteamVR C++ source, but the complete Windows package still needs target-machine integration verification.
+- End-to-end measurement of frame latency, Wi-Fi packet loss and actual 72 Hz headset presentation on the user's PC/phone.
 
-See `docs/2026-11-22-virtual-vsync-and-end-to-end-latency.md` for the measured evidence and expected next-run diagnostics.
-
----
-
-# Build status
-
-Revision: PhoneVR 0.4.19 QSV output-stall and nonblocking D3D11 readback follow-up, 2026-11-22
-
-## Changes in this revision
-
-- Kept one persistent FFmpeg hardware H.264 session across driver TCP reconnects. The capture TCP reader is independent from FFmpeg stdin and uses a pooled, bounded latest-frame-wins queue.
-- Explicitly request NV12 for hardware H.264, use QSV-native AUD insertion and restore QSV asynchronous depth to 4. Keep the application-side unencoded timestamp queue bounded to 24 frames.
-- Replace the tiny encoder initialization preflight with a full configured resolution/frame-rate BGRA encode test. The test verifies an H.264 Annex-B stream with AUD/IDR data and rejects a full-profile run exceeding three seconds.
-- Treat timestamp queue saturation as recoverable frame drop. Detect a genuine no-access-unit stall only after the queue has backed up and no complete access unit has appeared for two seconds; recycle a stalled process with exponential backoff.
-- Add first stdout/first H.264 access-unit messages and detailed raw RX, submitted, output, UDP and queue-drop statistics. Sample the first three BGRA frames to reveal black/constant raw captures.
-- Start FFmpeg inventory, preflight and stream processes with `CREATE_NO_WINDOW` on Windows so the Host does not spawn visible console windows.
-- Use `D3D11_MAP_FLAG_DO_NOT_WAIT` in the background staging readback worker and requeue `DXGI_ERROR_WAS_STILL_DRAWING`; this avoids waiting on GPU completion while holding the protected D3D11 immediate-context lock.
-
-## Passed in this environment
-
-- `go test ./...`
-- `go test -race ./...`
-- `go vet ./...`
-- `GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build ./cmd/phonevr-host`
-- Python release/integration tests: 42 tests
-- Local FFmpeg H.264 parser/session integration test (software encoder path): passed when available
-- ZIP integrity validation
-
-## Not verified in this environment
-
-- Native SteamVR driver build: requires Windows, MSVC and Windows SDK.
-- Actual Intel QSV runtime throughput: this environment does not have the target PC's Intel graphics driver and QSV device session.
-- Android Gradle/Kotlin APK build: requires Android SDK and an available Gradle distribution.
-- End-to-end runtime validation on the user's NVIDIA MX450 / Intel Iris Xe PC and Redmi K40 / LineageOS 24.
-
-See `docs/2026-11-22-video-encoder-lifecycle-backpressure.md` and `docs/2026-11-22-video-qsv-stall-and-nonblocking-readback.md` for rationale and next-run diagnostics.
+See `docs/2026-11-22-stream-freeze-pose-priority-and-android-ui.md` for implementation details and device-side diagnostics.

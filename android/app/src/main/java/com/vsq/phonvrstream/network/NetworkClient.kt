@@ -172,14 +172,16 @@ class NetworkClient(
     }
 
     private fun forwardUsbVideoPacket(payload: ByteArray) {
-        val socket = usbVideoForwardSocket ?: return
+        val socket = usbVideoForwardSocket
+            ?: throw IllegalStateException("USB video loopback receiver is not ready")
         val port = usbVideoForwardPort
-        if (socket.isClosed || port !in 1..65535 || payload.isEmpty()) return
-        try {
-            socket.send(DatagramPacket(payload, payload.size, InetAddress.getByName("127.0.0.1"), port))
-        } catch (error: Exception) {
-            Log.w(TAG, "USB video packet forwarding failed: ${error.message}")
+        check(!socket.isClosed && port in 1..65535 && payload.isNotEmpty()) {
+            "USB video loopback receiver is unavailable"
         }
+        // This callback now runs on PhoneVR-AOA-VideoDispatch, never on the
+        // accessory Bulk IN reader. Let failures reach the dispatcher so its
+        // callback-failure counter reflects packets that were not forwarded.
+        socket.send(DatagramPacket(payload, payload.size, InetAddress.getByName("127.0.0.1"), port))
     }
 
     private fun updateVideoStatus(generation: Long, status: String) {
@@ -1020,7 +1022,7 @@ class NetworkClient(
         const val DEFAULT_VIDEO_FPS = 60
         const val DISCOVERY_PORT = 48100
         private const val PROTOCOL_VERSION = 1
-        private const val CLIENT_VERSION = "PhoneVRStream-0.5.7"
+        private const val CLIENT_VERSION = "PhoneVRStream-0.5.8"
         private const val DISCOVERY_REQUEST = "PHONEVR_DISCOVER_V1"
         private const val DISCOVERY_RESPONSE_PREFIX = "PHONEVR_HOST_V1 "
         private const val DISCOVERY_WINDOW_MS = 1800L

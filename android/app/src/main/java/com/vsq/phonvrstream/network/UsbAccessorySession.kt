@@ -41,6 +41,16 @@ class UsbAccessorySession private constructor(
     @Volatile private var currentControlOffset = 0
     @Volatile var videoPacketListener: ((ByteArray) -> Unit)? = null
     @Volatile private var readerThread: Thread? = null
+    private val videoDispatcher = UsbVideoPacketDispatcher(
+        onPacket = { packet -> videoPacketListener?.invoke(packet) },
+        onStats = { stats ->
+            Log.i(TAG, "AOA video RX dispatcher: accepted=${stats.acceptedPackets} " +
+                "forwarded=${stats.deliveredPackets} dropped=${stats.droppedPackets} " +
+                "callbackFailures=${stats.callbackFailures} queued=${stats.queueDepth} " +
+                "callbackMax=${"%.1f".format(stats.maxCallbackMs)}ms")
+        },
+        onError = { error -> Log.w(TAG, "AOA video packet forwarding failed: ${error.message}", error) },
+    )
 
     val accessoryName: String
         get() = listOf(accessory.manufacturer, accessory.model).filter { !it.isNullOrBlank() }.joinToString(" ").ifBlank { "Android USB accessory" }
@@ -104,6 +114,7 @@ class UsbAccessorySession private constructor(
 
     fun start() {
         check(running.get()) { "USB accessory session is closed" }
+        videoDispatcher.start()
         readerThread = Thread({ readLoop() }, "PhoneVR-AOA-RX").apply {
             isDaemon = true
             start()
@@ -137,13 +148,19 @@ class UsbAccessorySession private constructor(
                 if (decoded.payloadLength > 0) readFully(input, payload)
                 when (decoded.channel) {
                     CHANNEL_CONTROL -> controlChunks.put(payload)
-                    CHANNEL_VIDEO -> videoPacketListener?.invoke(payload)
+                    CHANNEL_VIDEO -> {
+                        // Never run loopback UDP forwarding on the USB read
+                        // thread. A slow local receiver must not stop Bulk IN
+                        // from being drained, otherwise the PC Bulk OUT stalls.
+                        if (videoPacketListener != null) videoDispatcher.offer(payload)
+                    }
                 }
             }
         } catch (error: Throwable) {
             if (running.get()) Log.w(TAG, "AOA Bulk receive stopped: ${error.message}", error)
         } finally {
             running.set(false)
+            videoDispatcher.close()
             runCatching { descriptor.close() }
         }
     }
@@ -161,6 +178,7 @@ class UsbAccessorySession private constructor(
 
     override fun close() {
         if (!running.getAndSet(false)) return
+        videoDispatcher.close()
         runCatching { descriptor.close() }
         runCatching { input.close() }
         runCatching { output.close() }

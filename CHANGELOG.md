@@ -1,3 +1,12 @@
+## 0.5.8 - Asynchronous Android AOA video receive dispatch
+
+- Removed synchronous UDP loopback forwarding from the Android AOA Bulk input thread. Incoming video PVRV packets are handed to a dedicated worker through a bounded 256-packet queue so a slow local forwarding path cannot stop draining USB Bulk IN.
+- Added periodic Android diagnostics for accepted, forwarded, dropped and queued AOA video packets, callback failures and maximum forwarding callback duration.
+- Added JVM regression tests proving the AOA receive-side handoff is non-blocking under a stalled consumer, remains bounded, and survives callback failures.
+- Synchronized repository, Android, Windows Host, SteamVR driver and AOA accessory metadata to 0.5.8. Android `versionCode` is now 43.
+- Go unit tests and standalone Kotlin dispatcher compilation pass. Android Gradle unit tests and APK packaging remain unverified because the Gradle 9.6.1 distribution could not be resolved from `services.gradle.org` in this environment.
+
+
 ## 0.5.7 - USB video backpressure isolation and bounded Bulk writes
 
 - Decoupled H.264 stdout parsing from USB/UDP transport writes with a bounded eight-access-unit sender queue. A slow USB Bulk OUT transfer can no longer block FFmpeg stdout consumption and be misclassified as an encoder stall.

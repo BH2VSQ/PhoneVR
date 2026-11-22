@@ -1,15 +1,15 @@
-# PhoneVR 0.5.3 build status
-
+# PhoneVR 0.5.4 build status
 
 ## This revision
 
-- Corrected the WinUSB `CreateFileW` flags by setting `FILE_FLAG_OVERLAPPED`, required by `WinUsb_Initialize`.
-- Split device-open diagnostics into `CreateFileW` and `WinUsb_Initialize` stages and included Win32 error codes.
-- `ERROR_ACCESS_DENIED` now points to process elevation and the USB device-interface ACL as diagnostic checks. This software change does not claim to modify Windows driver security settings.
-- Android `versionName` is 0.5.3 and `versionCode` is 38.
+- Replaced the direct `CreateFileW` `LazyProc.Call` path with Go's standard Windows `syscall.CreateFile` wrapper. The requested access, share flags, creation disposition and overlapped flags remain identical to the independent PowerShell test.
+- If the combined read/write open fails, the Host now performs read-only and write-only open/close probes from the same process and records both results.
+- Added Host PID and actual process token elevation diagnostics to distinguish the Host security context from the PowerShell session.
+- No device ACL, registry permission or OEM driver INF is modified by PhoneVR.
+- Android `versionName` is 0.5.4 and `versionCode` is 39.
 
 
-Revision: WinUSB open diagnostics and overlapped-handle compatibility fix, 2026-11-22
+Revision: WinUSB CreateFile wrapper and in-process access diagnostics, 2026-11-22
 
 ## Changes in this revision
 
@@ -21,7 +21,7 @@ Revision: WinUSB open diagnostics and overlapped-handle compatibility fix, 2026-
 - Reworked WinUSB discovery to read `DeviceInterfaceGUID` / `DeviceInterfaceGUIDs` only from USB device instances whose Windows function service is `WinUSB`, then enumerate each currently present interface. No particular per-PC interface GUID is compiled into PhoneVR.
 - Removed the Android OEM VID allow-list from the AOA handshake path. The scanner tries the standard device-level AOA `GET_PROTOCOL` request on present WinUSB functions and sends `SEND_STRING` / `START_ACCESSORY` only for recognized AOA protocol v1 or v2 responses. Failed candidates are rate-limited to one probe every five seconds.
 - Clarified that some Windows installations expose the initial endpoint-zero AOA control handle as an `Android ADB Interface` node. PhoneVR does not send ADB protocol messages or use ADB bulk endpoints.
-- Updated Android, Windows Host, SteamVR driver, AOA accessory descriptors and repository metadata to version 0.5.3. Android `versionCode` is now 38.
+- Updated Android, Windows Host, SteamVR driver, AOA accessory descriptors and repository metadata to version 0.5.4. Android `versionCode` is now 39.
 - Retained Android stale-video recovery, lock-free Host pose snapshots, reverse-landscape support and the Host Day theme default from the preceding revisions.
 
 ## Passed in this environment
@@ -43,4 +43,4 @@ Revision: WinUSB open diagnostics and overlapped-handle compatibility fix, 2026-
 - WinUSB binding behavior on the target PC, sustained Bulk throughput, USB disconnect/reconnect recovery and end-to-end pose/video latency.
 - Native MSVC SteamVR driver build and runtime validation on the target Windows machine.
 
-The Host now logs every registered WinUSB interface GUID, the corresponding interface paths and the exact AOA control-transfer error. For the Redmi K40 test, confirm that the path ends with `{F72FE0D4-CBCB-407D-8814-9ED673D0DD6B}` and that the scanner reports a successful WinUSB open before interpreting any AOA protocol result.
+The Host now logs every registered WinUSB interface GUID, device path, in-process read/write access probes and token elevation state when opening fails. For the Redmi K40 test, the path should still end with `{F72FE0D4-CBCB-407D-8814-9ED673D0DD6B}`; compare the Host-side read-only/write-only probe results with the PowerShell results before changing any driver permissions.

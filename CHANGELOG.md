@@ -1,3 +1,11 @@
+## 0.5.4 - WinUSB open-path diagnostics
+
+- Replaced the Host's direct `CreateFileW` procedure call with Go's standard Windows `syscall.CreateFile` wrapper while preserving `GENERIC_READ | GENERIC_WRITE`, shared read/write access, `OPEN_EXISTING`, `FILE_ATTRIBUTE_NORMAL` and `FILE_FLAG_OVERLAPPED`.
+- When the Host receives `ERROR_ACCESS_DENIED`, it now probes read-only and write-only opens from the same process, reports the actual Host PID and token elevation state, and prints the exact Win32 access/flag values. These probes only open and close handles; they do not issue USB transfers.
+- The supplied Windows tests showed that the same device path opens successfully with read/write, read-only and write-only access from PowerShell, and the installed `oem145.inf` contains no explicit `Security` directive. This revision uses that evidence to distinguish a Host-process/API discrepancy from a device ACL problem.
+- Synchronized application, Host, SteamVR driver and AOA accessory metadata to 0.5.4. Android `versionCode` is now 39.
+- Go tests, race tests, vet, Windows amd64 Host cross-build and 49 Python regression tests pass. Device-side AOA handshake remains pending.
+
 ## 0.5.3 - WinUSB open diagnostics and overlapped-handle fix
 
 - Create WinUSB device handles with `FILE_FLAG_OVERLAPPED`, as required by `WinUsb_Initialize`.

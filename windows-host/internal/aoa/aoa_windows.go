@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"syscall"
@@ -15,31 +16,33 @@ import (
 )
 
 const (
-	genericReadWrite            = 0xC0000000
-	openExisting                = 3
-	shareReadWrite              = 0x00000003
-	fileAttributeNormal         = 0x00000080
-	fileFlagOverlapped          = 0x40000000
-	invalidHandle               = ^uintptr(0)
-	setupPresent                = 0x00000002
-	setupDeviceInterface        = 0x00000010
-	registryKeyRead             = 0x00020019
-	hkeyLocalMachine            = 0x80000002
-	registryNoMoreItems         = 259
-	registryString              = 1
-	registryMultiString         = 7
-	usbDescriptorDevice         = 1
-	usbPipeBulk                 = 2
-	usbDirectionIn              = 0x80
-	usbVendorGoogle             = 0x18D1
-	usbProductAccessory         = 0x2D00
-	usbProductAccessoryADB      = 0x2D01
-	usbProductAccessoryAudio    = 0x2D04
-	usbProductAccessoryAudioADB = 0x2D05
-	usbRequestGetProtocol       = 51
-	usbRequestSendString        = 52
-	usbRequestStartAccessory    = 53
-	aoaProbeRetryInterval       = 5 * time.Second
+	genericReadWrite               = 0xC0000000
+	openExisting                   = 3
+	shareReadWrite                 = 0x00000003
+	fileAttributeNormal            = 0x00000080
+	fileFlagOverlapped             = 0x40000000
+	invalidHandle                  = ^uintptr(0)
+	setupPresent                   = 0x00000002
+	setupDeviceInterface           = 0x00000010
+	registryKeyRead                = 0x00020019
+	hkeyLocalMachine               = 0x80000002
+	registryNoMoreItems            = 259
+	registryString                 = 1
+	registryMultiString            = 7
+	tokenQuery                     = 0x0008
+	tokenInformationClassElevation = 20
+	usbDescriptorDevice            = 1
+	usbPipeBulk                    = 2
+	usbDirectionIn                 = 0x80
+	usbVendorGoogle                = 0x18D1
+	usbProductAccessory            = 0x2D00
+	usbProductAccessoryADB         = 0x2D01
+	usbProductAccessoryAudio       = 0x2D04
+	usbProductAccessoryAudioADB    = 0x2D05
+	usbRequestGetProtocol          = 51
+	usbRequestSendString           = 52
+	usbRequestStartAccessory       = 53
+	aoaProbeRetryInterval          = 5 * time.Second
 )
 
 var (
@@ -52,7 +55,9 @@ var (
 	procSetupDiEnumDeviceInterfaces     = setupapi.NewProc("SetupDiEnumDeviceInterfaces")
 	procSetupDiGetDeviceInterfaceDetail = setupapi.NewProc("SetupDiGetDeviceInterfaceDetailW")
 	procSetupDiDestroyDeviceInfoList    = setupapi.NewProc("SetupDiDestroyDeviceInfoList")
-	procCreateFile                      = kernel32.NewProc("CreateFileW")
+	procGetCurrentProcess               = kernel32.NewProc("GetCurrentProcess")
+	procOpenProcessToken                = advapi32.NewProc("OpenProcessToken")
+	procGetTokenInformation             = advapi32.NewProc("GetTokenInformation")
 	procCloseHandle                     = kernel32.NewProc("CloseHandle")
 	procRegOpenKeyEx                    = advapi32.NewProc("RegOpenKeyExW")
 	procRegEnumKeyEx                    = advapi32.NewProc("RegEnumKeyExW")
@@ -432,30 +437,74 @@ func formatWindowsCallError(stage string, err error) error {
 	return fmt.Errorf("%s failed: %w", stage, err)
 }
 
-func openWinUSB(path string) (*Device, error) {
+type tokenElevationInfo struct {
+	TokenIsElevated uint32
+}
+
+func hostProcessElevation() string {
+	process, _, _ := procGetCurrentProcess.Call()
+	var token uintptr
+	opened, _, openErr := procOpenProcessToken.Call(process, tokenQuery, uintptr(unsafe.Pointer(&token)))
+	if opened == 0 {
+		return "unknown (OpenProcessToken: " + formatWindowsCallError("OpenProcessToken", openErr).Error() + ")"
+	}
+	defer procCloseHandle.Call(token)
+	var elevation tokenElevationInfo
+	var returned uint32
+	queried, _, queryErr := procGetTokenInformation.Call(token, tokenInformationClassElevation,
+		uintptr(unsafe.Pointer(&elevation)), uintptr(unsafe.Sizeof(elevation)), uintptr(unsafe.Pointer(&returned)))
+	if queried == 0 {
+		return "unknown (GetTokenInformation: " + formatWindowsCallError("GetTokenInformation", queryErr).Error() + ")"
+	}
+	if elevation.TokenIsElevated != 0 {
+		return "true"
+	}
+	return "false"
+}
+
+func createWinUSBFile(path string, access uint32) (syscall.Handle, error) {
 	wide, err := syscall.UTF16PtrFromString(path)
 	if err != nil {
-		return nil, err
+		return syscall.InvalidHandle, err
 	}
-	// WinUsb_Initialize requires the file handle to be created for overlapped
-	// I/O. Pipe operations may still request synchronous behavior by passing a
-	// nil OVERLAPPED pointer, while the underlying device handle retains the
-	// characteristics required by the WinUSB API.
-	handle, _, callErr := procCreateFile.Call(uintptr(unsafe.Pointer(wide)), genericReadWrite,
-		shareReadWrite, 0, openExisting, fileAttributeNormal|fileFlagOverlapped, 0)
-	if handle == invalidHandle {
-		if code, ok := windowsCallErrorCode(callErr); ok && code == 5 {
-			return nil, fmt.Errorf("CreateFileW denied access (Win32 error 5, ERROR_ACCESS_DENIED); check the Host process elevation and the USB interface device ACL: %w", callErr)
+	// WinUsb_Initialize requires FILE_FLAG_OVERLAPPED. Use Go's standard
+	// Windows syscall wrapper for CreateFileW so its HANDLE and last-error
+	// handling follow the same implementation used elsewhere in Go's stdlib.
+	return syscall.CreateFile(wide, access, shareReadWrite, nil, openExisting,
+		fileAttributeNormal|fileFlagOverlapped, 0)
+}
+
+func probeWinUSBAccess(path string, access uint32) string {
+	handle, err := createWinUSBFile(path, access)
+	if err != nil {
+		if code, ok := windowsCallErrorCode(err); ok {
+			return fmt.Sprintf("failed (Win32 error %d: %v)", code, err)
 		}
-		return nil, formatWindowsCallError("CreateFileW", callErr)
+		return "failed (" + err.Error() + ")"
+	}
+	_ = syscall.CloseHandle(handle)
+	return "success"
+}
+
+func openWinUSB(path string) (*Device, error) {
+	handle, err := createWinUSBFile(path, genericReadWrite)
+	if err != nil {
+		if code, ok := windowsCallErrorCode(err); ok && code == 5 {
+			readOnly := probeWinUSBAccess(path, 0x80000000)
+			writeOnly := probeWinUSBAccess(path, 0x40000000)
+			return nil, fmt.Errorf("CreateFileW denied access (Win32 error 5, ERROR_ACCESS_DENIED; access=0x%08X share=0x%08X flags=0x%08X; Host PID=%d elevated=%s; read-only probe=%s; write-only probe=%s): %w",
+				genericReadWrite, shareReadWrite, fileAttributeNormal|fileFlagOverlapped,
+				os.Getpid(), hostProcessElevation(), readOnly, writeOnly, err)
+		}
+		return nil, formatWindowsCallError("CreateFileW", err)
 	}
 	var iface uintptr
-	result, _, initErr := procWinUsbInitialize.Call(handle, uintptr(unsafe.Pointer(&iface)))
+	result, _, initErr := procWinUsbInitialize.Call(uintptr(handle), uintptr(unsafe.Pointer(&iface)))
 	if result == 0 {
-		procCloseHandle.Call(handle)
+		_ = syscall.CloseHandle(handle)
 		return nil, formatWindowsCallError("WinUsb_Initialize", initErr)
 	}
-	return &Device{handle: handle, iface: iface, id: path}, nil
+	return &Device{handle: uintptr(handle), iface: iface, id: path}, nil
 }
 
 func (d *Device) deviceDescriptor() (uint16, uint16, byte, error) {
@@ -482,7 +531,7 @@ func (d *Device) getAOAProtocol() (uint16, error) {
 }
 
 func (d *Device) startAccessoryMode() error {
-	stringsToSend := []string{"VSQ Studio", "PhoneVR", "PhoneVR USB streaming", "0.5.3", "https://github.com/BH2VSQ/PhoneVR", "PhoneVR-Android"}
+	stringsToSend := []string{"VSQ Studio", "PhoneVR", "PhoneVR USB streaming", "0.5.4", "https://github.com/BH2VSQ/PhoneVR", "PhoneVR-Android"}
 	for index, value := range stringsToSend {
 		payload := append([]byte(value), 0)
 		transferred, err := d.controlTransfer(0x40, usbRequestSendString, 0, uint16(index), payload)

@@ -1,3 +1,13 @@
+## 0.5.12 - Fix Android AOA USB packet truncation and add wire diagnostics
+
+- Fixed the Android AOA receive path to request 16 KiB raw reads before parsing PVRU frames. The previous code requested only 16 bytes for a frame header, which was smaller than a USB bulk packet and could cause the remainder of that packet to be discarded by the AOA file-descriptor read path.
+- Added `UsbMuxStreamDecoder` to reassemble frames split across reads and multiple frames returned in a single read. Incomplete headers and payloads remain buffered until complete.
+- Added Android diagnostics for raw Bulk IN read sizes, PVRU channel/sequence, payload CRC32, and invalid raw header bytes.
+- Added Windows Host diagnostics for PVRU TX/RX frame lengths and CRC32, plus actual `WinUsb_WritePipe` requested/transferred byte counts, endpoint, sample bytes and errors.
+- Serialized Android TX sequence assignment with its write lock so the sequence always reflects physical frame order.
+- Android `versionName` is `0.5.12`; `versionCode` is `47`. Windows Host, SteamVR driver and AOA descriptor metadata are synchronized.
+- Kotlin stream parser tests (9), Windows Go tests, race tests, vet and Windows amd64 cross-build passed. Full Gradle APK packaging and physical USB retest remain pending.
+
 ## 0.5.11 - Stabilize asynchronous AOA video dispatcher regression test
 
 - Fixed a race in `UsbVideoPacketDispatcherTest.callbackFailureDoesNotStopFollowingPackets`: the packet callback signals its latch immediately before the dispatcher increments `deliveredPackets`, so the test now waits for the post-callback counter update instead of reading it too early.

@@ -5,8 +5,10 @@ package aoa
 import (
 	"context"
 	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"hash/crc32"
 	"os"
 	"strings"
 	"sync"
@@ -109,6 +111,11 @@ type Device struct {
 	maxPacketSize uint16
 	readMu        sync.Mutex
 	readPending   []byte
+	writeMu       sync.Mutex
+	loggerMu      sync.RWMutex
+	logger        func(string)
+	readLogCount  uint64
+	writeLogCount uint64
 	id            string
 	closeOnce     sync.Once
 }
@@ -543,7 +550,7 @@ func (d *Device) getAOAProtocol() (uint16, error) {
 }
 
 func (d *Device) startAccessoryMode() error {
-	stringsToSend := []string{"VSQ Studio", "PhoneVR", "PhoneVR USB streaming", "0.5.11", "https://github.com/BH2VSQ/PhoneVR", "PhoneVR-Android"}
+	stringsToSend := []string{"VSQ Studio", "PhoneVR", "PhoneVR USB streaming", "0.5.12", "https://github.com/BH2VSQ/PhoneVR", "PhoneVR-Android"}
 	for index, value := range stringsToSend {
 		payload := append([]byte(value), 0)
 		transferred, err := d.controlTransfer(0x40, usbRequestSendString, 0, uint16(index), payload)
@@ -653,6 +660,29 @@ func (d *Device) setPipeTransferTimeout(pipeID byte, timeoutMs uint32) error {
 	return nil
 }
 
+func (d *Device) SetLogger(logger func(string)) {
+	d.loggerMu.Lock()
+	d.logger = logger
+	d.loggerMu.Unlock()
+}
+
+func (d *Device) logf(format string, args ...any) {
+	d.loggerMu.RLock()
+	logger := d.logger
+	d.loggerMu.RUnlock()
+	if logger != nil {
+		logger(fmt.Sprintf(format, args...))
+	}
+}
+
+func diagnosticHex(buffer []byte, limit int) string {
+	if len(buffer) <= limit {
+		return hex.EncodeToString(buffer)
+	}
+	half := limit / 2
+	return hex.EncodeToString(buffer[:half]) + "..." + hex.EncodeToString(buffer[len(buffer)-half:])
+}
+
 func (d *Device) Read(buffer []byte) (int, error) {
 	if len(buffer) == 0 {
 		return 0, nil
@@ -672,10 +702,17 @@ func (d *Device) Read(buffer []byte) (int, error) {
 		var transferred uint32
 		result, _, callErr := procWinUsbReadPipe.Call(d.iface, uintptr(d.inPipe), uintptr(unsafe.Pointer(&transfer[0])), uintptr(uint32(len(transfer))), uintptr(unsafe.Pointer(&transferred)), 0)
 		if result == 0 {
-			return 0, callErr
+			err := formatWindowsCallError("WinUsb_ReadPipe", callErr)
+			d.logf("Bulk IN ReadPipe failed requested=%d transferred=%d error=%v", len(transfer), transferred, err)
+			return 0, err
 		}
 		if transferred == 0 {
 			return 0, nil
+		}
+		d.readLogCount++
+		if d.readLogCount <= 12 {
+			d.logf("Bulk IN ReadPipe #%d requested=%d transferred=%d crc32=%08X sampleHex=%s",
+				d.readLogCount, len(transfer), transferred, crc32.ChecksumIEEE(transfer[:transferred]), diagnosticHex(transfer[:transferred], 32))
 		}
 		d.readPending = transfer[:transferred]
 	}
@@ -688,12 +725,20 @@ func (d *Device) Write(buffer []byte) (int, error) {
 	if len(buffer) == 0 {
 		return 0, nil
 	}
+	d.writeMu.Lock()
+	defer d.writeMu.Unlock()
 	var transferred uint32
 	result, _, callErr := procWinUsbWritePipe.Call(d.iface, uintptr(d.outPipe), uintptr(unsafe.Pointer(&buffer[0])), uintptr(uint32(len(buffer))), uintptr(unsafe.Pointer(&transferred)), 0)
+	var err error
 	if result == 0 {
-		return int(transferred), callErr
+		err = formatWindowsCallError("WinUsb_WritePipe", callErr)
 	}
-	return int(transferred), nil
+	d.writeLogCount++
+	if d.writeLogCount <= 40 || err != nil || int(transferred) != len(buffer) {
+		d.logf("Bulk OUT WritePipe #%d requested=%d transferred=%d pipe=0x%02X crc32=%08X sampleHex=%s error=%v",
+			d.writeLogCount, len(buffer), transferred, d.outPipe, crc32.ChecksumIEEE(buffer), diagnosticHex(buffer, 32), err)
+	}
+	return int(transferred), err
 }
 
 func (d *Device) ID() string { return strings.TrimSpace(d.id) }

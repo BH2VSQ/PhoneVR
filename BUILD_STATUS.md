@@ -1,3 +1,37 @@
+# PhoneVR 0.5.12 build status
+
+## This revision
+
+- The supplied 2026-11-22 Android Logcat shows the first Host Welcome control frame is decoded as a 521-byte payload, but its beginning is missing. Its remaining 25 bytes are the tail of the Welcome JSON; the following bytes begin with the next `PVRU` frame header. The next parser iteration then reports `Invalid USB multiplex frame signature`.
+- The 25-byte tail is consistent with a 537-byte PVRU wire frame (16-byte header plus 521-byte payload) split at a 512-byte USB packet boundary. Android's previous `readLoop()` requested a 16-byte buffer for the PVRU header directly from the AOA `FileInputStream`, which is smaller than the USB packet. Android's AOA documentation explicitly says the read buffer must be large enough for a USB packet and describes packet buffers up to 16,384 bytes.
+- Reworked Android AOA input to call `FileInputStream.read()` only with a 16 KiB buffer, then pass returned bytes to `UsbMuxStreamDecoder`. The decoder handles arbitrary read boundaries, coalesced frames, and frames spanning multiple bulk reads. Incomplete bytes remain buffered until the full frame arrives.
+- Added a regression test reproducing the exact 512-byte split of a PVRU frame with a 521-byte payload. Added tests for coalesced frames, partial headers/payloads and invalid-header HEX diagnostics.
+- Added Android raw Bulk IN read-size and prefix logs, PVRU channel/sequence/payload CRC32, and control-frame CRC32. Invalid headers include the raw 16-byte header HEX.
+- Added Windows Host PVRU frame CRC32/length/sequence logging and WinUSB Bulk IN/OUT actual requested/transferred byte counts. Bulk OUT logs include endpoint, sample bytes, CRC32 and native error.
+- Android TX sequence numbers are now assigned inside the write lock, ensuring sequence values match the serialized wire order.
+- Android `versionName` is `0.5.12`; `versionCode` is `47`. Windows Host, SteamVR driver and AOA accessory descriptors are synchronized to `0.5.12`.
+
+## Validation status
+
+- Kotlin PVRU stream parser and protocol tests: 9 passed in a standalone Kotlin/JVM harness.
+- `UsbAccessorySession.kt`, `UsbMuxProtocol.kt`, `UsbMuxStreamDecoder.kt` and `UsbVideoPacketDispatcher.kt` compiled with `kotlinc` against minimal Android API stubs.
+- `cd windows-host && go test ./...`: passed.
+- `cd windows-host && go test -race ./...`: passed.
+- `cd windows-host && go vet ./...`: passed.
+- `GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build ./...`: passed.
+- `bash ./scripts/build-android.sh both` could not start because this runtime has no configured `ANDROID_HOME` or `ANDROID_SDK_ROOT`. The Android Gradle unit tests and APK packaging therefore remain unverified here. Physical AOA validation is also pending.
+
+## Target-device validation
+
+Build matching PhoneVR 0.5.12 Host and Android APK. The Android Logcat should show `AOA raw Bulk IN read` entries with `requestBytes=16384`, followed by `AOA mux RX` entries. The first Host Welcome frame should be received with the full payload length and a CRC32 identical to the Windows Host `USB AOA mux TX frame` payload CRC32. Windows `Bulk OUT WritePipe` entries must show `transferred=requested` for each write. Any mismatch now has enough length, sequence, CRC and raw-byte context to identify the failing layer.
+
+## Root-cause reference
+
+Android USB accessory overview: https://developer.android.com/develop/connectivity/usb/accessory
+Android accessory gadget `acc_read()` implementation: https://android.googlesource.com/kernel/common/+/android-trusty-3.18/drivers/usb/gadget/function/f_accessory.c
+
+---
+
 # PhoneVR 0.5.11 build status
 
 ## This revision

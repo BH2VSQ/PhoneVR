@@ -21,6 +21,7 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.zip.CRC32
 
 /**
  * Android Open Accessory bulk transport. Android is the USB peripheral in AOA
@@ -44,6 +45,9 @@ class UsbAccessorySession private constructor(
     @Volatile private var receiveFailure: String? = null
     private val controlRxLogBudget = AtomicInteger(6)
     private val controlTxLogBudget = AtomicInteger(6)
+    private val rawReadLogBudget = AtomicInteger(16)
+    private val muxRxLogBudget = AtomicInteger(24)
+    private val muxTxLogBudget = AtomicInteger(12)
     private val videoDispatcher = UsbVideoPacketDispatcher(
         onPacket = { packet -> videoPacketListener?.invoke(packet) },
         onStats = { stats ->
@@ -137,38 +141,70 @@ class UsbAccessorySession private constructor(
 
 
     private fun writeFrame(channel: Int, payload: ByteArray) {
-        check(running.get()) { "USB accessory session is closed" }
-        val frameSequence = sequence.incrementAndGet()
-        val header = UsbMuxProtocol.encodeHeader(channel, payload.size, frameSequence)
-        val frame = ByteArray(header.size + payload.size)
-        System.arraycopy(header, 0, frame, 0, header.size)
-        if (payload.isNotEmpty()) System.arraycopy(payload, 0, frame, header.size, payload.size)
+        val frameSequence: Int
         synchronized(writeLock) {
             check(running.get()) { "USB accessory session is closed" }
+            // Assign the sequence while holding the same lock that writes the
+            // frame, so sequence order always matches physical wire order.
+            frameSequence = sequence.incrementAndGet()
+            val header = UsbMuxProtocol.encodeHeader(channel, payload.size, frameSequence)
+            val frame = ByteArray(header.size + payload.size)
+            System.arraycopy(header, 0, frame, 0, header.size)
+            if (payload.isNotEmpty()) System.arraycopy(payload, 0, frame, header.size, payload.size)
             output.write(frame)
             output.flush()
+            if (muxTxLogBudget.getAndDecrement() > 0) {
+                Log.i(TAG, "AOA mux TX: channel=$channel seq=$frameSequence payloadBytes=${payload.size} " +
+                    "wireBytes=${frame.size} payloadCrc32=${crc32(payload)} wireCrc32=${crc32(frame)} " +
+                    "headerHex=${hex(header)}")
+            }
         }
         if (channel == CHANNEL_CONTROL) logControlFrame("TX", frameSequence, payload, controlTxLogBudget)
     }
 
     private fun readLoop() {
+        val decoder = UsbMuxStreamDecoder()
+        // Android's AOA file descriptor is packet-oriented at the kernel USB
+        // boundary. Every read request must be large enough for a complete USB
+        // packet. Parsing a 16-byte PVRU header directly from the FD can cause
+        // the remainder of that same 512-byte packet to be discarded.
+        val readBuffer = ByteArray(AOA_READ_BUFFER_SIZE)
+        var rawReadIndex = 0
         try {
-            val header = ByteArray(HEADER_SIZE)
             while (running.get()) {
-                readFully(input, header)
-                val decoded = UsbMuxProtocol.decodeHeader(header)
-                val payload = ByteArray(decoded.payloadLength)
-                if (decoded.payloadLength > 0) readFully(input, payload)
-                when (decoded.channel) {
-                    CHANNEL_CONTROL -> {
-                        logControlFrame("RX", decoded.sequence, payload, controlRxLogBudget)
-                        controlChunks.put(payload)
+                val count = input.read(readBuffer, 0, readBuffer.size)
+                if (count < 0) {
+                    if (decoder.pendingBytes > 0) {
+                        throw java.io.EOFException("USB accessory disconnected with ${decoder.pendingBytes} pending multiplex bytes")
                     }
-                    CHANNEL_VIDEO -> {
-                        // Never run loopback UDP forwarding on the USB read
-                        // thread. A slow local receiver must not stop Bulk IN
-                        // from being drained, otherwise the PC Bulk OUT stalls.
-                        if (videoPacketListener != null) videoDispatcher.offer(payload)
+                    throw java.io.EOFException("USB accessory disconnected")
+                }
+                if (count == 0) continue
+                rawReadIndex++
+                if (rawReadLogBudget.getAndDecrement() > 0) {
+                    val prefix = readBuffer.copyOfRange(0, minOf(count, 32))
+                    Log.i(TAG, "AOA raw Bulk IN read #$rawReadIndex: bytes=$count requestBytes=${readBuffer.size} " +
+                        "prefixHex=${hex(prefix)}")
+                }
+
+                val frames = decoder.append(readBuffer, 0, count)
+                for (frame in frames) {
+                    val payload = frame.payload
+                    if (muxRxLogBudget.getAndDecrement() > 0) {
+                        Log.i(TAG, "AOA mux RX: channel=${frame.channel} seq=${frame.sequence} " +
+                            "payloadBytes=${payload.size} payloadCrc32=${crc32(payload)}")
+                    }
+                    when (frame.channel) {
+                        CHANNEL_CONTROL -> {
+                            logControlFrame("RX", frame.sequence, payload, controlRxLogBudget)
+                            controlChunks.put(payload)
+                        }
+                        CHANNEL_VIDEO -> {
+                            // Never run loopback UDP forwarding on the USB read
+                            // thread. A slow local receiver must not stop Bulk IN
+                            // from being drained, otherwise the PC Bulk OUT stalls.
+                            if (videoPacketListener != null) videoDispatcher.offer(payload)
+                        }
                     }
                 }
             }
@@ -191,20 +227,16 @@ class UsbAccessorySession private constructor(
             .replace("\\", "\\\\")
             .replace("\r", "\\r")
             .replace("\n", "\\n")
-        val hex = previewBytes.joinToString("") { "%02X".format(it.toInt() and 0xFF) }
-        Log.i(TAG, "AOA control $direction frame: seq=$frameSequence bytes=${payload.size} preview=[$preview] hex=[$hex]")
+        val previewHex = hex(previewBytes)
+        Log.i(TAG, "AOA control $direction frame: seq=$frameSequence bytes=${payload.size} " +
+            "crc32=${crc32(payload)} preview=[$preview] hex=[$previewHex]")
     }
 
-    private fun readFully(stream: InputStream, buffer: ByteArray) {
-        var offset = 0
-        while (offset < buffer.size && running.get()) {
-            val count = stream.read(buffer, offset, buffer.size - offset)
-            if (count < 0) throw java.io.EOFException("USB accessory disconnected")
-            if (count == 0) continue
-            offset += count
-        }
-        if (offset != buffer.size) throw java.io.EOFException("USB accessory session closed")
-    }
+    private fun crc32(bytes: ByteArray): String =
+        "%08X".format(CRC32().apply { update(bytes) }.value)
+
+    private fun hex(bytes: ByteArray): String =
+        bytes.joinToString("") { "%02X".format(it.toInt() and 0xFF) }
 
     override fun close() {
         if (!running.getAndSet(false)) return
@@ -222,7 +254,6 @@ class UsbAccessorySession private constructor(
         private const val ACTION_USB_PERMISSION = "com.vsq.phonvrstream.USB_ACCESSORY_PERMISSION"
         private const val PERMISSION_TIMEOUT_MS = 15_000L
         private const val CONTROL_READ_POLL_MS = 500L
-        private const val HEADER_SIZE = UsbMuxProtocol.HEADER_SIZE
         private const val CHANNEL_CONTROL = UsbMuxProtocol.CHANNEL_CONTROL
         private const val CHANNEL_POSE = UsbMuxProtocol.CHANNEL_POSE
         private const val CHANNEL_VIDEO = UsbMuxProtocol.CHANNEL_VIDEO
@@ -244,8 +275,9 @@ class UsbAccessorySession private constructor(
             val granted = AtomicBoolean(false)
             val receiver = object : BroadcastReceiver() {
                 override fun onReceive(context: Context?, intent: Intent?) {
-                    if (intent?.action != ACTION_USB_PERMISSION) return
-                    granted.set(intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false))
+                    val permissionIntent = intent ?: return
+                    if (permissionIntent.action != ACTION_USB_PERMISSION) return
+                    granted.set(permissionIntent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false))
                     latch.countDown()
                 }
             }

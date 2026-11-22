@@ -640,7 +640,9 @@ func (s *HostService) usbAccessoryLoop(ctx context.Context) {
 }
 
 func (s *HostService) serveUSBAccessory(ctx context.Context, device *aoa.Device) {
+	device.SetLogger(func(message string) { s.addLog("USB AOA " + message) })
 	mux := usbmux.New(device)
+	mux.SetLogger(func(message string) { s.addLog("USB AOA mux " + message) })
 	deviceKey := "USB-AOA:" + device.ID()
 	serverPipe, accessoryPipe := net.Pipe()
 	conn := &taggedNetConn{Conn: serverPipe, remote: taggedAddr(deviceKey)}

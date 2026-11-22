@@ -28,11 +28,19 @@ type Frame struct {
 }
 
 func WriteFrame(w io.Writer, frame Frame) error {
+	wire, err := encodeFrame(frame)
+	if err != nil {
+		return err
+	}
+	return writeAll(w, wire)
+}
+
+func encodeFrame(frame Frame) ([]byte, error) {
 	if frame.Channel < ChannelControl || frame.Channel > ChannelVideo {
-		return fmt.Errorf("invalid USB multiplex channel %d", frame.Channel)
+		return nil, fmt.Errorf("invalid USB multiplex channel %d", frame.Channel)
 	}
 	if len(frame.Payload) > MaxPayloadSize {
-		return fmt.Errorf("USB multiplex payload too large: %d", len(frame.Payload))
+		return nil, fmt.Errorf("USB multiplex payload too large: %d", len(frame.Payload))
 	}
 	var header [HeaderSize]byte
 	copy(header[:4], frameMagic[:])
@@ -43,7 +51,7 @@ func WriteFrame(w io.Writer, frame Frame) error {
 	wire := make([]byte, HeaderSize+len(frame.Payload))
 	copy(wire[:HeaderSize], header[:])
 	copy(wire[HeaderSize:], frame.Payload)
-	return writeAll(w, wire)
+	return wire, nil
 }
 
 func ReadFrame(r io.Reader) (Frame, error) {
@@ -78,15 +86,24 @@ func ReadFrame(r io.Reader) (Frame, error) {
 }
 
 func writeAll(w io.Writer, data []byte) error {
+	_, err := writeAllCount(w, data)
+	return err
+}
+
+func writeAllCount(w io.Writer, data []byte) (int, error) {
+	written := 0
 	for len(data) > 0 {
 		n, err := w.Write(data)
+		if n > 0 {
+			written += n
+			data = data[n:]
+		}
 		if err != nil {
-			return err
+			return written, err
 		}
 		if n <= 0 {
-			return io.ErrShortWrite
+			return written, io.ErrShortWrite
 		}
-		data = data[n:]
 	}
-	return nil
+	return written, nil
 }

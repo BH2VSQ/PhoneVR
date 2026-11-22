@@ -23,6 +23,7 @@ func NextAccessoryWithStatus(ctx context.Context, report func(string)) (*Device,
 
 type Device struct{}
 
+func (*Device) SetLogger(func(string))    {}
 func (*Device) Read([]byte) (int, error)  { return 0, ErrUnsupported }
 func (*Device) Write([]byte) (int, error) { return 0, ErrUnsupported }
 func (*Device) Close() error              { return nil }

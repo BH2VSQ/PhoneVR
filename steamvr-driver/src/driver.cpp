@@ -1698,7 +1698,7 @@ public:
         if (!host->TrackedDeviceAdded("PHONEVR-HMD-001", vr::TrackedDeviceClass_HMD, m_hmd)) {
             Cleanup(); return vr::VRInitError_Driver_Unknown;
         }
-        if (vr::VRDriverLog()) vr::VRDriverLog()->Log("PhoneVR 0.5.11 DisplayRedirect order-fix diagnostics SteamVR driver initialized");
+        if (vr::VRDriverLog()) vr::VRDriverLog()->Log("PhoneVR 0.5.12 DisplayRedirect order-fix diagnostics SteamVR driver initialized");
         return vr::VRInitError_None;
     }
     void Cleanup() override {

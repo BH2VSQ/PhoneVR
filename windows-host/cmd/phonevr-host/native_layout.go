@@ -136,8 +136,8 @@ func ComputeNativeAppearanceDialogLayout(width, height int) NativeAppearanceDial
 		Panel:       NativeLayoutRect{16, 84, width - 16, height - 104},
 		FooterPanel: NativeLayoutRect{12, height - 92, width - 12, height - 10},
 		ModeLabel:   NativeLayoutRect{margin, 114, margin + 156, 150},
-		ModeDark:    NativeLayoutRect{controlX, 108, controlX + modeButtonWidth, 152},
-		ModeLight:   NativeLayoutRect{controlX + modeButtonWidth + buttonGap, 108, controlRight, 152},
+		ModeLight:   NativeLayoutRect{controlX, 108, controlX + modeButtonWidth, 152},
+		ModeDark:    NativeLayoutRect{controlX + modeButtonWidth + buttonGap, 108, controlRight, 152},
 		Close:       NativeLayoutRect{width - margin - 116, height - 54, width - margin, height - 14},
 	}
 	for i := range layout.PaletteButtons {

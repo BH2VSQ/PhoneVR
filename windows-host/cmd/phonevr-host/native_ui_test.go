@@ -168,8 +168,8 @@ func TestNativeAppearanceDialogLayoutKeepsModeAndColorSwatchesInsidePanel(t *tes
 				t.Fatalf("palette swatches overlap for %dx%d: %+v", size[0], size[1], layout.PaletteButtons)
 			}
 		}
-		if layout.ModeDark.Right > layout.ModeLight.Left || layout.ModeLight.Right != layout.Panel.Right-12 {
-			t.Fatalf("mode buttons are not aligned: %+v", layout)
+		if layout.ModeLight.Right > layout.ModeDark.Left || layout.ModeDark.Right != layout.Panel.Right-12 {
+			t.Fatalf("mode buttons are not ordered day-first then night: %+v", layout)
 		}
 		if layout.Close.Bottom > layout.FooterPanel.Bottom || layout.Close.Top < layout.FooterPanel.Top {
 			t.Fatalf("appearance close button escapes footer for %dx%d: %+v", size[0], size[1], layout)

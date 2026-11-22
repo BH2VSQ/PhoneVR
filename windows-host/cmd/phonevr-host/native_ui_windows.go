@@ -1293,8 +1293,9 @@ func (app *nativeUI) createDialogControls(d *nativeDialog) {
 		addButton(idClose, app.text("关闭", "Close"))
 
 	case "appearance":
-		addButton(idThemeModeDark, app.text("夜间模式", "Dark"))
+		// Day mode is the default and appears first; night mode follows on the right.
 		addButton(idThemeModeLight, app.text("日间模式", "Light"))
+		addButton(idThemeModeDark, app.text("夜间模式", "Dark"))
 		// Palette swatches are painted directly on the dialog. This avoids
 		// native button chrome and lets the parent receive right-click gestures.
 		addButton(idClose, app.text("关闭", "Close"))

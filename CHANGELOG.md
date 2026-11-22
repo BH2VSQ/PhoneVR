@@ -334,3 +334,10 @@
 - Removed the explanatory caption beneath the 180-degree screen flip control.
 - Repositioned the three-dot menu trigger to the horizontal center of the top edge.
 - Kept the compact stream status indicator at the top-right and retained the menu panel's centered alignment.
+
+
+## Windows Host theme defaults and switch order
+
+- Changed the first-run/default Host appearance to Day mode (light).
+- Kept an explicitly saved Night mode preference unchanged. Unknown or missing theme modes normalize to the Day mode default.
+- Reordered the Appearance & Theme buttons so Day mode is on the left and Night mode is on the right, including keyboard focus order.

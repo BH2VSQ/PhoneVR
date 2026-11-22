@@ -38,3 +38,11 @@ See `docs/2026-11-22-stream-freeze-pose-priority-and-android-ui.md` for implemen
 - MainActivity layout source updated: three-dot menu trigger is horizontally centered at the top of the landscape screen.
 - Removed explanatory orientation text below the screen-flip control.
 - Android Gradle/APK build has not been run in this environment; Windows/Android device rendering still requires target-device verification.
+
+
+## Windows Host theme default and control order
+
+- Default theme mode is now `light` (Day mode) when no saved preference exists.
+- Existing explicit `dark` preferences remain unchanged; invalid/missing mode values normalize to `light`.
+- Appearance & Theme controls are ordered Day on the left, Night on the right.
+- Added Windows-specific tests for the default, normalization, and explicit Night preference.

@@ -48,14 +48,14 @@ var defaultNativePaletteHex = [5]string{
 }
 
 func defaultNativeThemeConfig() NativeThemeConfig {
-	return NativeThemeConfig{Mode: "dark", AccentHex: "#5BCEFA", PaletteHex: defaultNativePaletteHex}
+	return NativeThemeConfig{Mode: "light", AccentHex: "#5BCEFA", PaletteHex: defaultNativePaletteHex}
 }
 
 func normalizeNativeThemeConfig(config NativeThemeConfig) NativeThemeConfig {
-	if config.Mode != "light" {
-		config.Mode = "dark"
-	}
 	defaults := defaultNativeThemeConfig()
+	if config.Mode != "light" && config.Mode != "dark" {
+		config.Mode = defaults.Mode
+	}
 	for i := range config.PaletteHex {
 		if _, err := parseNativeHexColor(config.PaletteHex[i]); err != nil {
 			config.PaletteHex[i] = defaults.PaletteHex[i]

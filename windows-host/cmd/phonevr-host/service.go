@@ -667,6 +667,8 @@ type receivedPoseDatagram struct {
 // queued by the OS. Small batches preserve every sample so the driver can
 // estimate angular velocity from the phone's native sensor cadence. Only a
 // very large backlog is collapsed to its newest sample.
+const poseBatchDrainWindow = time.Millisecond
+
 func readLatestPoseBatch(conn *net.UDPConn, buffer []byte, timeout time.Duration) ([]receivedPoseDatagram, uint64, error) {
 	if err := conn.SetReadDeadline(time.Now().Add(timeout)); err != nil {
 		return nil, 0, err
@@ -700,10 +702,11 @@ func readLatestPoseBatch(conn *net.UDPConn, buffer []byte, timeout time.Duration
 		invalidPackets++
 	}
 
-	// A very short drain window reads datagrams that were already queued while
-	// allowing packets arriving a fraction later to join this latest-state
-	// batch. It avoids replaying a long backlog without adding a frame of delay.
-	if err := conn.SetReadDeadline(time.Now().Add(250 * time.Microsecond)); err != nil {
+	// Drain a short window so datagrams that the Windows UDP/IOCP receive path
+	// has not surfaced yet can join this batch. One millisecond remains well
+	// below the 5.5ms interval of a 180Hz sensor and avoids flaky single-packet
+	// batches caused by sub-millisecond Windows receive scheduling.
+	if err := conn.SetReadDeadline(time.Now().Add(poseBatchDrainWindow)); err != nil {
 		return batch, invalidPackets, err
 	}
 	for {

@@ -10,6 +10,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/vsq-studio/phonevr-host/internal/childprocess"
 )
 
 const phoneVRDriverName = "phonevr"
@@ -29,7 +31,9 @@ func steamVRInstallRoot() (string, error) {
 		`HKLM\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\Steam App 250820`,
 	}
 	for _, key := range keys {
-		out, err := exec.Command("reg.exe", "query", key, "/v", "InstallLocation").CombinedOutput()
+		cmd := exec.Command("reg.exe", "query", key, "/v", "InstallLocation")
+		childprocess.HideConsoleWindow(cmd)
+		out, err := cmd.CombinedOutput()
 		if err != nil {
 			continue
 		}
@@ -55,7 +59,9 @@ func vrPathRegistry(runtime string) string {
 
 func queryPhoneVRDriver(runtime string) (string, error) {
 	reg := vrPathRegistry(runtime)
-	out, err := exec.Command(reg, "finddriver", phoneVRDriverName).CombinedOutput()
+	cmd := exec.Command(reg, "finddriver", phoneVRDriverName)
+	childprocess.HideConsoleWindow(cmd)
+	out, err := cmd.CombinedOutput()
 	path := strings.TrimSpace(string(out))
 	if err == nil {
 		if path == "" {
@@ -75,6 +81,7 @@ func queryPhoneVRDriver(runtime string) (string, error) {
 
 func runVRPathRegistry(runtime string, args ...string) error {
 	cmd := exec.Command(vrPathRegistry(runtime), args...)
+	childprocess.HideConsoleWindow(cmd)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("SteamVR 驱动注册工具执行失败：%s (%w)", strings.TrimSpace(string(out)), err)

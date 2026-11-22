@@ -362,6 +362,10 @@ func TestReadLatestPoseBatchCoalescesQueuedDatagrams(t *testing.T) {
 		}
 	}
 
+	// Windows delivers loopback UDP datagrams asynchronously through the IOCP
+	// receive path. Let the three synchronous sends reach the socket receive
+	// queue before asserting that the 1ms drain window coalesces them.
+	time.Sleep(2 * time.Millisecond)
 	batch, invalid, err := readLatestPoseBatch(listener, make([]byte, 1500), time.Second)
 	if err != nil {
 		t.Fatalf("readLatestPoseBatch() error = %v", err)

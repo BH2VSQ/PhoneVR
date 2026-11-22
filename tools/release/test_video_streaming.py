@@ -96,10 +96,15 @@ class VideoStreamingIntegrationTests(unittest.TestCase):
         self.assertIn("FFmpeg stdout", HOST_SERVICE)
         self.assertIn("describeRawBGRAFrame", HOST_SERVICE)
 
-    def test_ffmpeg_children_do_not_create_console_windows_on_windows(self):
-        helper = (ROOT / "windows-host" / "internal" / "encoder" / "process_windows.go").read_text(encoding="utf-8")
-        self.assertIn("HideWindow:    true", helper)
+    def test_all_host_children_do_not_create_console_windows_on_windows(self):
+        helper = (ROOT / "windows-host" / "internal" / "childprocess" / "process_windows.go").read_text(encoding="utf-8")
+        driver_manager = (ROOT / "windows-host" / "cmd" / "phonevr-host" / "driver_manager_windows.go").read_text(encoding="utf-8")
+        encoder_helper = (ROOT / "windows-host" / "internal" / "encoder" / "process_windows.go").read_text(encoding="utf-8")
+        self.assertIn("HideWindow = true", helper)
         self.assertIn("CREATE_NO_WINDOW", helper)
+        self.assertEqual(driver_manager.count("exec.Command("), 3)
+        self.assertEqual(driver_manager.count("childprocess.HideConsoleWindow(cmd)"), 3)
+        self.assertIn("childprocess.HideConsoleWindow(cmd)", encoder_helper)
 
     def test_display_redirect_overrides_hmd_virtual_output_properties(self):
         self.assertIn("vr::k_ulDisplayRedirectContainer", DRIVER)

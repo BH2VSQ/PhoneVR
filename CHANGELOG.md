@@ -310,3 +310,10 @@
 - Publish `Prop_HasVirtualDisplayComponent_Bool` and `Prop_GraphicsAdapterLuid_Uint64` into OpenVR's `k_ulDisplayRedirectContainer` override container and read the effective values back from the HMD during activation.
 - Make Host hardware H.264 preflight synchronous before the TCP pairing listener starts; the previous goroutine-based probe could still race with the first Android handshake.
 - Add regression checks for DisplayRedirect registration order, HMD property overrides, and synchronous encoder preflight.
+
+## 0.4.19 - Silent Host child-process startup and Windows UDP test stabilization
+
+- Centralized Windows child-process launch configuration in `internal/childprocess`. The Host now applies both `STARTF_USESHOWWINDOW`/`HideWindow` and `CREATE_NO_WINDOW` to every helper command it starts.
+- Applied silent launch configuration to Steam registry discovery (`reg.exe`), SteamVR driver lookup/registration (`vrpathreg.exe`), FFmpeg encoder inventory, hardware preflight and the persistent H.264 encoder. Captured stdout/stderr and error reporting remain available to the Host log.
+- Fixed the Windows pose-batch unit-test flake by allowing the UDP/IOCP receive path a one-millisecond drain interval. The production change remains below the 5.5ms period of a 180Hz sensor and avoids falsely treating a short burst as a single datagram.
+- All Go tests, repeated pose-batch test runs, `go vet`, Windows/amd64 cross-compilation and Python release tests pass in the current environment. Native Windows build and runtime confirmation that no helper console windows flash remain to be confirmed on the target PC.

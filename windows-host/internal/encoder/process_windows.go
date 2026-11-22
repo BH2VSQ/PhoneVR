@@ -4,17 +4,11 @@ package encoder
 
 import (
 	"os/exec"
-	"syscall"
+
+	"github.com/vsq-studio/phonevr-host/internal/childprocess"
 )
 
-// configureFFmpegProcess prevents each FFmpeg preflight or streaming process
-// from creating a visible console window beside the native PhoneVR Host UI.
+// configureFFmpegProcess applies the Host-wide silent child-process policy.
 func configureFFmpegProcess(cmd *exec.Cmd) {
-	if cmd == nil {
-		return
-	}
-	cmd.SysProcAttr = &syscall.SysProcAttr{
-		HideWindow:    true,
-		CreationFlags: 0x08000000, // CREATE_NO_WINDOW
-	}
+	childprocess.HideConsoleWindow(cmd)
 }

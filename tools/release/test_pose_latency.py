@@ -37,7 +37,7 @@ class PoseLatencyRegressionTests(unittest.TestCase):
         self.assertIn("poseBatchToForward(batch)", HOST_SERVICE)
         self.assertIn("maxPoseBatchForward = 32", HOST_SERVICE)
         self.assertIn("SetReadBuffer(16 * 1024)", HOST_SERVICE)
-        self.assertIn("time.Now().Add(250 * time.Microsecond)", HOST_SERVICE)
+        self.assertIn("poseBatchDrainWindow = time.Millisecond", HOST_SERVICE)
 
     def test_pose_publisher_is_independent_of_runframe_and_reports_both_cadences(self):
         hmd = DRIVER.split("class PhoneVRHmd", 1)[1].split("class VirtualDisplayComponent", 1)[0]

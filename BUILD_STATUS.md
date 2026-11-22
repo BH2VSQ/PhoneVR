@@ -1,5 +1,32 @@
 # Build status
 
+Revision: PhoneVR 0.4.19 silent Host child processes and Windows UDP receive-test stabilization, 2026-11-22
+
+## Changes in this revision
+
+- Added a shared Windows child-process helper that applies `HideWindow` and `CREATE_NO_WINDOW` while preserving any existing process creation flags.
+- Applied the helper to all Windows Host subprocess call sites: `reg.exe` registry discovery, SteamVR `vrpathreg.exe` lookup/registration and all FFmpeg inventory/preflight/streaming invocations.
+- Kept stdout/stderr capture intact, so command output and failures continue to appear in the PhoneVR Host runtime log without opening child console windows.
+- Increased the short UDP pose-batch drain window to 1ms to accommodate Windows UDP/IOCP delivery scheduling; the window remains below the 5.5ms period of a 180Hz sensor.
+- Added a Windows-specific child-process configuration unit test and expanded Python integration checks to ensure every Host `exec.Command` call in the driver manager applies the silent-launch helper.
+
+## Passed in this environment
+
+- `go test ./...`
+- `go test ./cmd/phonevr-host -run TestReadLatestPoseBatchCoalescesQueuedDatagrams -count=100`
+- `go test -race ./...`
+- `go vet ./...`
+- Windows/amd64 test-binary cross-compilation for Host, encoder and childprocess packages
+- Python release/integration tests: 44 tests
+
+## Not verified in this environment
+
+- Native Windows PowerShell build pipeline rerun: the user's submitted run built the SteamVR DLL successfully, but stopped on the now-adjusted UDP batch test before building Host executable.
+- Runtime confirmation on the target PC that registry and SteamVR helper processes no longer flash console windows.
+- SteamVR/QSV/Redmi K40 end-to-end performance validation.
+
+---
+
 Revision: PhoneVR 0.4.19 virtual VSync stability and low-latency follow-up, 2026-11-22
 
 ## Changes in this revision

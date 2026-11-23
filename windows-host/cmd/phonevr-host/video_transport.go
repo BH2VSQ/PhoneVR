@@ -259,36 +259,12 @@ func (s *HostService) transportCandidateHealthyLocked(deviceID, transport string
 	if !device.LastPingAt.IsZero() && now.Sub(device.LastPingAt) > 7*time.Second {
 		return false
 	}
-	active := s.activeVideoDeviceID == deviceID && s.activeVideoTransport == transport
-	parallelActive := s.activeVideoDeviceID == deviceID && s.activeVideoTransport == "parallel"
-	if parallelActive {
-		// Each route must independently prove that its receive path is ready.
-		// Do not grant an unprobed route an initial grace period: the other
-		// transport can carry video while this path continues receiving probes.
-		// This avoids sending AOA packets before Android has bound its loopback
-		// forwarding socket, and lets a recovered route rejoin without a restart.
-		return !health.ProbeAt.IsZero() && now.Sub(health.ProbeAt) <= 4*time.Second
-	}
-	if !active {
-		// A route must prove that its actual video receive path is ready before
-		// the first access unit is sent. This also closes the startup race where
-		// Android has accepted Welcome but its shared UDP receiver/USB forwarder
-		// has not finished binding yet.
-		if health.ProbeAt.IsZero() || now.Sub(health.ProbeAt) > 4*time.Second {
-			return false
-		}
-	}
-	// A UDP write can succeed even when packets never reach Android. Once a
-	// route has been selected, require recent receiver feedback from that exact
-	// source. This is the end-to-end signal that detects silent network loss.
-	if s.activeVideoDeviceID == deviceID && s.activeVideoTransport == transport &&
-		!s.activeVideoSince.IsZero() && now.Sub(s.activeVideoSince) > 4*time.Second {
-		if health.FeedbackAt.IsZero() || now.Sub(health.FeedbackAt) > 3*time.Second ||
-			health.LastPacketAgeMS < 0 || health.LastPacketAgeMS > 1800 {
-			return false
-		}
-	}
-	return true
+	// Route reachability is proven by a receiver acknowledgement to a tiny
+	// packet sent over this exact path. Do not use last-media-packet age as a
+	// route-health gate: an encoder stall can stop media packets even while Wi-Fi
+	// remains healthy, and demoting the route would also tear down the SteamVR
+	// capture bridge that is needed when encoding resumes.
+	return !health.ProbeAt.IsZero() && now.Sub(health.ProbeAt) <= 4*time.Second
 }
 
 func (s *HostService) expireSilentActiveTransportLocked(now time.Time) {
@@ -304,13 +280,12 @@ func (s *HostService) expireSilentActiveTransportLocked(now time.Time) {
 	}
 	key := s.activeVideoDeviceID + "|" + s.activeVideoTransport
 	health := s.transportHealth[key]
-	stale := health.FeedbackAt.IsZero() || now.Sub(health.FeedbackAt) > 3*time.Second ||
-		health.LastPacketAgeMS < 0 || health.LastPacketAgeMS > 1800
+	stale := health.ProbeAt.IsZero() || now.Sub(health.ProbeAt) > 4*time.Second
 	if !stale || (!health.UnhealthyUntil.IsZero() && now.Before(health.UnhealthyUntil)) {
 		return
 	}
 	health.UnhealthyUntil = now.Add(5 * time.Second)
-	health.LastError = s.activeVideoTransport + " 视频接收反馈超时"
+	health.LastError = s.activeVideoTransport + " 视频路径探测应答超时"
 	s.transportHealth[key] = health
 	s.lastTransportSwitchReason = health.LastError
 }
@@ -481,13 +456,18 @@ func (s *HostService) updateVideoTransportFeedbackWithRate(deviceID, transport s
 	if decodedAgeMS < -1 {
 		decodedAgeMS = -1
 	}
+	var probeLog string
 	s.mu.Lock()
 	key := strings.TrimSpace(deviceID) + "|" + transport
 	if strings.TrimSpace(deviceID) != "" {
 		health := s.transportHealth[key]
 		now := time.Now()
+		probeWasFresh := !health.ProbeAt.IsZero() && now.Sub(health.ProbeAt) <= 2*time.Second
 		health.FeedbackAt = now
 		if probe {
+			if !probeWasFresh {
+				probeLog = fmt.Sprintf("Video path probe acknowledged: device=%s transport=%s", strings.TrimSpace(deviceID), transport)
+			}
 			health.ProbeAt = now
 			health.UnhealthyUntil = time.Time{}
 		} else {
@@ -510,6 +490,9 @@ func (s *HostService) updateVideoTransportFeedbackWithRate(deviceID, transport s
 		s.transportHealth[key] = health
 	}
 	s.mu.Unlock()
+	if probeLog != "" {
+		s.addLog(probeLog)
+	}
 }
 
 func (s *HostService) videoStripeUSBSharePermilleLocked(deviceID string) int {
@@ -572,8 +555,9 @@ func (s *HostService) videoTransportStatus() VideoTransportSnapshot {
 var errVideoTransportUnavailable = errors.New("selected video transport is unavailable")
 
 // probeStandbyVideoPaths sends a tiny datagram over every currently connected
-// standby video path. Android acknowledges a probe only after the packet reaches
-// the shared video receiver, proving the UDP or AOA Bulk data path itself works.
+// video path, including the active route. Android acknowledges only after the
+// packet reaches the shared video receiver, proving that the route is reachable
+// even when no encoded media frame is currently being produced.
 func (s *HostService) probeStandbyVideoPaths() {
 	now := time.Now()
 	s.mu.Lock()
@@ -589,10 +573,13 @@ func (s *HostService) probeStandbyVideoPaths() {
 	}
 	var targets []probeTarget
 	for deviceID, group := range groups {
-		if group.usb != nil && !(s.activeVideoDeviceID == deviceID && s.activeVideoTransport == "usb") {
+		// Probe active and standby paths alike. The acknowledgement keeps the
+		// socket/bulk receiver health independent from whether the encoder is
+		// currently producing media frames.
+		if group.usb != nil {
 			targets = append(targets, probeTarget{target: videoTarget{USB: group.usb.USBLink, Transport: "usb", DeviceID: deviceID}})
 		}
-		if group.network != nil && !(s.activeVideoDeviceID == deviceID && s.activeVideoTransport == "network") {
+		if group.network != nil {
 			if tcp, ok := group.network.Conn.RemoteAddr().(*net.TCPAddr); ok && tcp.IP != nil {
 				targets = append(targets, probeTarget{target: videoTarget{
 					UDP:       &net.UDPAddr{IP: append(net.IP(nil), tcp.IP...), Port: androidVideoPort},

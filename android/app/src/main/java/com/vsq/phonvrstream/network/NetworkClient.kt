@@ -233,10 +233,31 @@ class NetworkClient(
             stats.copy(displayFps = displayFps)
         }
         latestVideoStats = combined
-        // Both routes feed the same socket. Report per-source receive goodput so
-        // Host can estimate each path's capacity and weight future fragments.
-        sendVideoTransportFeedback("network", -1L, -1L, probe = false, receiveBytesPerSecond = stats.networkReceiveBytesPerSecond)
-        sendVideoTransportFeedback("usb", -1L, -1L, probe = false, receiveBytesPerSecond = stats.usbReceiveBytesPerSecond)
+        // Both routes feed the same socket. Keep media-data freshness separate
+        // from path reachability: the Host probes each route independently, while
+        // these ages describe only the route that delivered the latest media packet.
+        val sourceAddress = stats.lastSourceAddress.orEmpty()
+        val sourceTransport = when (sourceAddress) {
+            "127.0.0.1", "::1" -> "usb"
+            "" -> ""
+            else -> "network"
+        }
+        val sourcePacketAge = if (sourceTransport.isNotEmpty()) stats.lastPacketAgeMs else -1L
+        val sourceDecodedAge = if (sourceTransport.isNotEmpty()) stats.lastDecodedAgeMs else -1L
+        sendVideoTransportFeedback(
+            "network",
+            if (sourceTransport == "network") sourcePacketAge else -1L,
+            if (sourceTransport == "network") sourceDecodedAge else -1L,
+            probe = false,
+            receiveBytesPerSecond = stats.networkReceiveBytesPerSecond,
+        )
+        sendVideoTransportFeedback(
+            "usb",
+            if (sourceTransport == "usb") sourcePacketAge else -1L,
+            if (sourceTransport == "usb") sourceDecodedAge else -1L,
+            probe = false,
+            receiveBytesPerSecond = stats.usbReceiveBytesPerSecond,
+        )
         mainHandler.post { videoStatsListener(combined) }
     }
 
@@ -1425,7 +1446,7 @@ class NetworkClient(
         private const val MAX_VIDEO_REORDER_GRACE_MS = 250
         const val DISCOVERY_PORT = 48100
         private const val PROTOCOL_VERSION = 1
-        private const val CLIENT_VERSION = "PhoneVRStream-0.5.20"
+        private const val CLIENT_VERSION = "PhoneVRStream-0.5.21"
         private const val DISCOVERY_REQUEST = "PHONEVR_DISCOVER_V1"
         private const val DISCOVERY_RESPONSE_PREFIX = "PHONEVR_HOST_V1 "
         private const val DISCOVERY_WINDOW_MS = 1800L

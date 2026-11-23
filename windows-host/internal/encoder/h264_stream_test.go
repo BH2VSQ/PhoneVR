@@ -183,15 +183,27 @@ func TestH264TimestampBackpressureIsRecoverable(t *testing.T) {
 	}
 }
 
-func TestH264OutputStallRequiresBackedUpQueueAndNoRecentAccessUnits(t *testing.T) {
+func TestH264OutputStallRequiresBackedUpQueueAndIdleStdout(t *testing.T) {
 	stalled := &H264EncoderSession{timestamps: make(chan uint64, h264PendingFrameLimit)}
 	for i := 0; i < h264PendingFrameLimit/2; i++ {
 		stalled.timestamps <- uint64(i)
 	}
 	stalled.inputFrames.Store(uint64(h264PendingFrameLimit / 2))
-	stalled.lastAccessUnitNs.Store(time.Now().Add(-3 * time.Second).UnixNano())
-	if !stalled.OutputStalled(2 * time.Second) {
-		t.Fatal("expected a backed-up encoder with no recent access unit to be stalled")
+	stalled.lastAccessUnitNs.Store(time.Now().Add(-6 * time.Second).UnixNano())
+	stalled.lastOutputNs.Store(time.Now().Add(-6 * time.Second).UnixNano())
+	if !stalled.OutputStalled(5 * time.Second) {
+		t.Fatal("expected a backed-up encoder with idle stdout and no recent access unit to be stalled")
+	}
+
+	stdoutActive := &H264EncoderSession{timestamps: make(chan uint64, h264PendingFrameLimit)}
+	for i := 0; i < h264PendingFrameLimit/2; i++ {
+		stdoutActive.timestamps <- uint64(i)
+	}
+	stdoutActive.inputFrames.Store(uint64(h264PendingFrameLimit / 2))
+	stdoutActive.lastAccessUnitNs.Store(time.Now().Add(-6 * time.Second).UnixNano())
+	stdoutActive.lastOutputNs.Store(time.Now().UnixNano())
+	if stdoutActive.OutputStalled(5 * time.Second) {
+		t.Fatal("active FFmpeg stdout must prevent false stall detection while waiting for an AU boundary")
 	}
 
 	healthy := &H264EncoderSession{timestamps: make(chan uint64, h264PendingFrameLimit)}
@@ -200,7 +212,8 @@ func TestH264OutputStallRequiresBackedUpQueueAndNoRecentAccessUnits(t *testing.T
 	}
 	healthy.inputFrames.Store(uint64(h264PendingFrameLimit / 2))
 	healthy.lastAccessUnitNs.Store(time.Now().UnixNano())
-	if healthy.OutputStalled(2 * time.Second) {
+	healthy.lastOutputNs.Store(time.Now().UnixNano())
+	if healthy.OutputStalled(5 * time.Second) {
 		t.Fatal("recently emitted access units must prevent false stall detection")
 	}
 }

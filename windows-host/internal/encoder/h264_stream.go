@@ -14,9 +14,10 @@ import (
 )
 
 const (
-	h264StreamMaxAccessUnit = 16 * 1024 * 1024
-	h264PendingFrameLimit   = 4 // Bound encoder timestamp backlog to about 67 ms at 60 FPS.
-	H264OutputStallTimeout  = 2 * time.Second
+	h264StreamMaxAccessUnit       = 16 * 1024 * 1024
+	h264PendingFrameLimit         = 4 // Bound encoder timestamp backlog to about 67 ms at 60 FPS.
+	H264StartupOutputStallTimeout = 8 * time.Second
+	H264OutputStallTimeout        = 5 * time.Second
 )
 
 // ErrH264Backpressure means FFmpeg has accepted the maximum number of input
@@ -261,19 +262,28 @@ func startH264EncoderWithCapability(ctx context.Context, ffmpegPath string, widt
 // access-unit stream. Listing an encoder in `ffmpeg -encoders` is not enough:
 // driver/runtime libraries or full-profile throughput may still be unavailable.
 func ProbeHardwareH264Encoders(ctx context.Context, ffmpegPath string, width, height, fps int) ([]Capability, error) {
+	validated, _, err := ProbeHardwareH264EncodersDetailed(ctx, ffmpegPath, width, height, fps)
+	return validated, err
+}
+
+// ProbeHardwareH264EncodersDetailed also returns per-backend rejection reasons.
+// A machine may expose several encoder names in FFmpeg while only one can
+// initialize against its current GPU driver and target profile; logging those
+// rejections makes runtime failover availability explicit.
+func ProbeHardwareH264EncodersDetailed(ctx context.Context, ffmpegPath string, width, height, fps int) ([]Capability, []string, error) {
 	if width < 16 || height < 16 || fps < 1 || fps > 120 {
-		return nil, errors.New("invalid H.264 encoder probe profile")
+		return nil, nil, errors.New("invalid H.264 encoder probe profile")
 	}
 	if ffmpegPath == "" {
 		resolved, err := exec.LookPath("ffmpeg")
 		if err != nil {
-			return nil, fmt.Errorf("find FFmpeg: %w", err)
+			return nil, nil, fmt.Errorf("find FFmpeg: %w", err)
 		}
 		ffmpegPath = resolved
 	}
 	capabilities, err := ProbeFFmpeg(ctx, ffmpegPath)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	var failures []string
 	var validated []Capability
@@ -288,12 +298,12 @@ func ProbeHardwareH264Encoders(ctx context.Context, ffmpegPath string, width, he
 		validated = append(validated, candidate)
 	}
 	if len(validated) > 0 {
-		return validated, nil
+		return validated, failures, nil
 	}
 	if len(failures) == 0 {
-		return nil, errors.New("FFmpeg exposes no hardware H.264 encoder (NVENC/AMF/QSV); CPU encoding is disabled for live VR streaming")
+		return nil, nil, errors.New("FFmpeg exposes no hardware H.264 encoder (NVENC/AMF/QSV); CPU encoding is disabled for live VR streaming")
 	}
-	return nil, fmt.Errorf("no hardware H.264 encoder could initialize: %s; CPU encoding is disabled for live VR streaming", strings.Join(failures, "; "))
+	return nil, failures, fmt.Errorf("no hardware H.264 encoder could initialize: %s; CPU encoding is disabled for live VR streaming", strings.Join(failures, "; "))
 }
 
 // ProbeHardwareH264Encoder remains as a compatibility helper for callers that
@@ -445,11 +455,40 @@ func (s *H264EncoderSession) OutputStalled(timeout time.Duration) bool {
 	if s == nil || s.InputFrames() < uint64(h264PendingFrameLimit/2) || s.PendingFrames() < h264PendingFrameLimit/2 {
 		return false
 	}
-	last := s.lastAccessUnitNs.Load()
-	if last <= 0 {
+	lastAccessUnit := s.lastAccessUnitNs.Load()
+	if lastAccessUnit <= 0 || time.Since(time.Unix(0, lastAccessUnit)) < timeout {
 		return false
 	}
-	return time.Since(time.Unix(0, last)) >= timeout
+	// stdout may still be receiving bytes while the AUD parser waits for a
+	// complete access-unit boundary. Do not kill a live process based solely on
+	// the absence of a completed AU; require the FFmpeg pipe itself to be idle.
+	lastOutput := s.lastOutputNs.Load()
+	if lastOutput > 0 && time.Since(time.Unix(0, lastOutput)) < timeout {
+		return false
+	}
+	return true
+}
+
+func (s *H264EncoderSession) LastOutputAge() time.Duration {
+	if s == nil {
+		return 0
+	}
+	last := s.lastOutputNs.Load()
+	if last <= 0 {
+		return 0
+	}
+	return time.Since(time.Unix(0, last))
+}
+
+func (s *H264EncoderSession) LastAccessUnitAge() time.Duration {
+	if s == nil {
+		return 0
+	}
+	last := s.lastAccessUnitNs.Load()
+	if last <= 0 {
+		return 0
+	}
+	return time.Since(time.Unix(0, last))
 }
 func (s *H264EncoderSession) EncoderName() string {
 	if s == nil {

@@ -539,7 +539,7 @@ func TestManualVideoTransportModesDoNotUseTheOtherPath(t *testing.T) {
 	}
 }
 
-func TestActiveVideoTransportRequiresRecentEndToEndFeedback(t *testing.T) {
+func TestActiveVideoTransportRemainsSelectedWhenMediaPausesButProbeIsHealthy(t *testing.T) {
 	service := NewHostService(false)
 	if err := service.SetVideoTransport(string(VideoTransportAuto), string(VideoPreferNetwork)); err != nil {
 		t.Fatal(err)
@@ -555,15 +555,52 @@ func TestActiveVideoTransportRequiresRecentEndToEndFeedback(t *testing.T) {
 	}
 	service.mu.Lock()
 	service.transportHealth["phone-1|usb"] = transportHealth{ProbeAt: time.Now()}
-	service.activeVideoSince = time.Now().Add(-5 * time.Second)
+	service.activeVideoSince = time.Now().Add(-15 * time.Second)
 	service.transportHealth["phone-1|network"] = transportHealth{
-		FeedbackAt: time.Now().Add(-5 * time.Second), LastPacketAgeMS: 5000,
+		ProbeAt: time.Now(), FeedbackAt: time.Now().Add(-10 * time.Second), LastPacketAgeMS: 9000,
 	}
 	service.mu.Unlock()
 
 	target, ok = service.currentVideoTarget()
-	if !ok || target.Transport != "usb" {
-		t.Fatalf("silent network-loss fallback = %+v, enabled=%t; want USB AOA", target, ok)
+	if !ok || target.Transport != "network" {
+		t.Fatalf("active network route with a recent path probe = %+v, enabled=%t; want network", target, ok)
+	}
+}
+
+func TestActiveNetworkVideoPathIsProbedWhileSelected(t *testing.T) {
+	receiver, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: androidVideoPort})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer receiver.Close()
+	if err := receiver.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	sender, err := net.ListenUDP("udp", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sender.Close()
+	service := NewHostService(false)
+	service.videoUDP = sender
+	addVideoTransportTestDevice(t, service, "phone-1", "192.0.2.10:50000", "Wi-Fi / LAN")
+	device := service.devices["192.0.2.10:50000"]
+	device.Conn = makeVideoTransportTestConn(t, &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 48101})
+	service.devices["192.0.2.10:50000"] = device
+	service.updateVideoTransportFeedback("phone-1", "network", -1, -1, true)
+	target, ok := service.currentVideoTarget()
+	if !ok || target.Transport != "network" {
+		t.Fatalf("initial active route = %+v, enabled=%t; want network", target, ok)
+	}
+	service.lastVideoPathProbeAt = time.Time{}
+	service.probeStandbyVideoPaths()
+	buffer := make([]byte, 32)
+	n, _, err := receiver.ReadFromUDP(buffer)
+	if err != nil {
+		t.Fatalf("active network path did not receive a probe: %v", err)
+	}
+	if string(buffer[:n]) != videoPathProbePayload {
+		t.Fatalf("active network probe payload = %q; want %q", buffer[:n], videoPathProbePayload)
 	}
 }
 

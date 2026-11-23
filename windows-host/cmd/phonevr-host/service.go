@@ -557,7 +557,10 @@ func (s *HostService) ProbeVideoEncoders(ffmpegPath string) {
 	for _, candidate := range ffmpegCandidates {
 		s.addLog(fmt.Sprintf("Video encoder candidate (adapter/session unverified): %s | %s | %s", candidate.Name, candidate.Codec, candidate.Backend))
 	}
-	validated, probeErr := encoder.ProbeHardwareH264Encoders(ctx, ffmpegPath, videoWidth, videoHeight, videoFrameRate)
+	validated, rejected, probeErr := encoder.ProbeHardwareH264EncodersDetailed(ctx, ffmpegPath, videoWidth, videoHeight, videoFrameRate)
+	for _, reason := range rejected {
+		s.addLog("Live VR hardware H.264 candidate rejected: " + reason)
+	}
 	s.mu.Lock()
 	s.videoEncoderReady = probeErr == nil && len(validated) > 0
 	s.videoEncoderCandidates = append([]encoder.Capability(nil), validated...)
@@ -2284,7 +2287,7 @@ func (s *HostService) videoEncoderLoop(ctx context.Context) {
 	defer s.wg.Done()
 	var session *encoder.H264EncoderSession
 	var retryAfter time.Time
-	retryDelay := 5 * time.Second
+	retryDelay := 2 * time.Second
 	var sessionStartedAt time.Time
 	var lastBackpressureLog time.Time
 	candidateIndex := 0
@@ -2305,7 +2308,7 @@ func (s *HostService) videoEncoderLoop(ctx context.Context) {
 		candidateIndex = 0
 		s.addLog(fmt.Sprintf("H.264 backend %s failed (%s); no alternate prevalidated hardware encoder is available, retrying primary after %s", failedName, reason, retryDelay))
 		retryAfter = time.Now().Add(retryDelay)
-		retryDelay = minDuration(retryDelay*2, 60*time.Second)
+		retryDelay = minDuration(retryDelay*2, 8*time.Second)
 	}
 	var framesInWindow uint64
 	statsStart := time.Now()
@@ -2418,14 +2421,25 @@ func (s *HostService) videoEncoderLoop(ctx context.Context) {
 				s.videoDroppedFrames.Add(1)
 				s.releaseRawVideoFrame(frame)
 				if errors.Is(err, encoder.ErrH264Backpressure) {
-					// Drop input while the encoder catches up. If a full pending queue
-					// has produced no complete H.264 access unit for two seconds, the
-					// process is genuinely stalled and must be recycled with backoff.
-					if session.OutputStalled(encoder.H264OutputStallTimeout) {
+					// Drop input while the encoder catches up. Recycle only when the
+					// pending queue is backed up and both stdout and completed access
+					// units have been idle beyond the startup/runtime grace period.
+					stallTimeout := encoder.H264OutputStallTimeout
+					if session.OutputAccessUnits() == 0 {
+						stallTimeout = encoder.H264StartupOutputStallTimeout
+					}
+					if session.OutputStalled(stallTimeout) {
 						stderr := session.StderrTail()
-						stallErr := fmt.Sprintf("H.264 encoder stalled without access units for %s (pending=%d, input=%d, stdout=%d bytes, output access units=%d, stderr=%q)",
-							encoder.H264OutputStallTimeout, session.PendingFrames(), session.InputFrames(), session.OutputBytes(), session.OutputAccessUnits(), stderr)
+						stallErr := fmt.Sprintf("H.264 encoder stalled (timeout=%s, last-output-age=%s, last-access-unit-age=%s, pending=%d, input=%d, stdout=%d bytes, output access units=%d, stderr=%q)",
+							stallTimeout, session.LastOutputAge().Round(time.Millisecond), session.LastAccessUnitAge().Round(time.Millisecond),
+							session.PendingFrames(), session.InputFrames(), session.OutputBytes(), session.OutputAccessUnits(), stderr)
 						failedName := session.EncoderName()
+						// Once the encoder has delivered a meaningful run of frames, use
+						// a short recovery delay instead of carrying startup backoff into
+						// later failures. This prevents 60-second blackouts after one QSV stall.
+						if session.OutputAccessUnits() >= 30 || time.Since(sessionStartedAt) >= 10*time.Second {
+							retryDelay = 2 * time.Second
+						}
 						s.addLog(stallErr + "; closing failed session")
 						session.Close()
 						session = nil
@@ -2443,14 +2457,17 @@ func (s *HostService) videoEncoderLoop(ctx context.Context) {
 				s.addLog(fmt.Sprintf("Persistent H.264 encoder process %s failed: %v; stderr=%q", failedName, err, stderr))
 				session.Close()
 				session = nil
-				if time.Since(sessionStartedAt) > 15*time.Second {
-					retryDelay = 5 * time.Second
+				if time.Since(sessionStartedAt) > 10*time.Second {
+					retryDelay = 2 * time.Second
 				}
 				advanceEncoderCandidate(failedName, err.Error())
 				continue
 			}
 			s.releaseRawVideoFrame(frame)
 			framesInWindow++
+			if session.OutputAccessUnits() >= 30 && time.Since(sessionStartedAt) >= 5*time.Second {
+				retryDelay = 2 * time.Second
+			}
 			logPipelineStats(session)
 		}
 	}

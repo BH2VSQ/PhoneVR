@@ -1,3 +1,19 @@
+## 0.5.21 - Network path health and H.264 stall recovery
+
+- Separate video-path reachability from media-frame freshness. Host now validates the active and standby UDP/AOA routes using receiver-acknowledged PVRP probes; a temporary encoder pause or empty media queue no longer marks an otherwise reachable Wi-Fi route unhealthy.
+- Send periodic path probes to active routes as well as standby routes. Log the first/recovered probe acknowledgement so Host logs show whether Android's shared UDP receiver is reachable.
+- Fix Android video feedback to report the actual packet age and decode age for the source that most recently delivered media. The previous implementation sent `-1` for both fields on every periodic update, which made Host's active-route health check reject a working route after its initial grace period.
+- Increase the H.264 first-output startup grace period to 8 seconds and the steady-state stall threshold to 5 seconds. A session is now recycled only when the access-unit stream and FFmpeg stdout are both idle while its pending input queue is backed up.
+- Bound QSV retry backoff to 8 seconds and reset it after a sustained successful run. This prevents one transient runtime failure from creating repeated 40-60 second video blackouts.
+- Record rejected hardware H.264 preflight candidates individually, so the next log shows why NVENC/AMF were unavailable and whether QSV is the only usable hardware backend.
+- Add regression tests for active UDP route probing, preserving a path during media pauses, and avoiding false encoder-stall detection while FFmpeg stdout remains active.
+- Synchronize repository, Android, Windows Host, SteamVR driver and AOA metadata to `0.5.21`; Android `versionCode` is `56`.
+
+## 0.5.21 - Automated release
+
+- Android versionName and versionCode bumped by the manual release workflow.
+- Windows Host version metadata updated from the repository VERSION file.
+
 ## 0.5.20 - Network-only transport and H.264 runtime recovery
 
 - Network-only video transport now pauses USB AOA WinUSB device enumeration. Switching to USB, Auto, or Parallel wakes the scanner immediately; switching back to Network cancels the active enumeration loop.

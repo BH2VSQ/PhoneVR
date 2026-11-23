@@ -1,26 +1,30 @@
-# PhoneVR 0.5.20 build status
+# PhoneVR 0.5.21 build status
 
-## This revision (0.5.20)
+## This revision (0.5.21)
 
-- Network-only mode disables USB AOA WinUSB enumeration. The scanner loop waits without polling while Network is selected, responds immediately to transport-mode changes, and resumes only for USB, Auto, or Parallel modes.
-- Host startup reports whether USB AOA discovery is enabled or paused. The SteamVR bridge waiting message now distinguishes a healthy negotiated route from a generic decoder-negotiation failure.
-- Preflight keeps the full list of hardware H.264 encoders that pass the real 1600x720@60 synthetic test. If a live backend fails at startup, exits, or stalls without producing access units, the Host advances to the next validated hardware backend and retries the primary only after exhausting alternatives.
-- Capture the last 8 KiB of FFmpeg stderr and attach it to process-exit/stall diagnostics. This is especially important for diagnosing the reported QSV zero-output/exit-status-1 failure.
-- Android metadata is `versionName 0.5.20`, `versionCode 55`; repository, Host, SteamVR driver, and AOA accessory metadata are synchronized to `0.5.20`.
+- Separate active/standby video-route reachability from media freshness. The Host probes every selected UDP/AOA path and keeps a reachable route available while the H.264 encoder is temporarily idle.
+- Fix Android `video_feedback`: report actual packet/decode age for the latest network or USB media source instead of always sending `-1`.
+- Increase H.264 startup no-output timeout to 8 seconds and steady-state stall timeout to 5 seconds. Only recycle a backed-up encoder when both the completed-access-unit stream and FFmpeg stdout have stopped progressing.
+- Cap QSV retry backoff at 8 seconds and reset it after a sustained output run. Log each rejected hardware H.264 candidate and the first/recovered path-probe acknowledgement.
+- Add Host regression tests for active-route probes, preserving active Network paths during a media pause, and FFmpeg stdout progress preventing false stall detection.
+- Android metadata is `versionName 0.5.21`, `versionCode 56`; repository, Host, SteamVR driver and AOA accessory metadata are synchronized to `0.5.21`.
 
-## 0.5.20 validation status
+## 0.5.21 validation status
 
 - `cd windows-host && go test ./...`: passed.
 - `cd windows-host && go test -race ./...`: passed.
 - `cd windows-host && go vet ./...`: passed.
 - `cd windows-host && GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build ./cmd/phonevr-host`: passed.
-- Android APK packaging, SteamVR Driver native build, Windows hardware QSV execution, and real device network streaming are not verified in this environment.
+- Android Gradle build/APK packaging, SteamVR Driver native build, real Intel QSV runtime and physical Wi-Fi headset streaming remain unverified in this environment.
 
-## Log findings from the reported session
+## Log findings from the 2026-11-23 runtime session
 
-- USB AOA enumeration occurred at roughly 15-second log intervals while Network mode was selected. The scanner internally retries more frequently, with identical diagnostics throttled in the log. The 0.5.20 mode gate addresses this unnecessary WinUSB activity.
-- At 20:36:45 the Host initialized `h264_qsv` for 1600x720@60, but FFmpeg stdout remained at 0 bytes, produced 0 H.264 access units, and accumulated four pending frames. At 20:36:47 the Host declared the encoder stalled; FFmpeg later exited with status 1. This is an encoder/runtime failure before UDP fragmentation, so changing UDP resend timing would not fix this exact failure.
-- The supplied log does not contain a usable FFmpeg error detail explaining why QSV exited. Version 0.5.20 preserves and reports stderr tail for the next reproduction. If QSV is the only validated H.264 hardware backend on the PC, it will still need the next runtime log to identify the driver/runtime failure; no unverified CPU fallback is silently enabled.
+- Host selected Network Only and correctly logged `USB AOA scanner paused (network-only video transport)`. The Android device `M2012K11AC` paired over Wi-Fi/LAN at `192.168.2.242`; Host's LAN interface was `192.168.2.3`. Pose telemetry initially remained near 180-190 Hz.
+- Encoder preflight validated only one hardware H.264 backend: `h264_qsv`. NVENC and AMF appeared in FFmpeg's encoder inventory but were not validated for the live 1600x720@60 profile. The Host therefore had no hardware failover backend.
+- QSV repeatedly entered backpressure. The log shows successful output bursts, including 25.5 FPS / 1,868 UDP fragments at 21:04:23 and 20.9 FPS / 1,124 fragments at 21:06:23. The process was then recycled after the old 2-second no-access-unit threshold. The retry backoff grew to 60 seconds, accounting for much of the prolonged blackout.
+- The log repeatedly reported that no healthy negotiated video route existed, including near periods where UDP fragments were being sent. Source inspection found the cause: Android's periodic feedback code always sent `lastPacketAgeMs=-1` and `lastDecodedAgeMs=-1`, while Host required valid media age after the active route's initial grace period. In addition, Host probed only standby routes, not the active one. This could demote a healthy Wi-Fi path whenever media temporarily paused.
+- Version 0.5.21 addresses the Host route-health logic and the Android feedback values. It also relaxes the H.264 startup/runtime watchdogs and limits recovery backoff. The supplied Host log does not include Android `PhoneVRVideo`/MediaCodec diagnostics, so actual Wi-Fi packet loss, Android reassembly loss and decoder stalls still require a paired Android log if interruptions remain after this change.
+
 
 ## 0.5.19 previous revision
 

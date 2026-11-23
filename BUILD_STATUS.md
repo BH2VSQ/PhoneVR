@@ -1,4 +1,31 @@
-# PhoneVR 0.5.25 build status
+# PhoneVR 0.5.26 build status
+
+## This revision (0.5.26)
+
+- Add dual Daydream View BLE controller pairing on Android, independent left/right GATT links, remembered device assignments, reconnect backoff and stale-report watchdog.
+- Parse the reference 19-byte report notification format and keep controller data outside the HMD pose stream.
+- Add TCP `controller_state` messages and Host-side validation/translation to the loopback-only 44-byte `PVSC` packet on UDP port 48108.
+- Register left/right OpenVR controller devices with touchpad, click, trigger compatibility alias, App/Menu, Home/System, volume inputs and 3DoF orientation.
+- Add SteamVR input profile, legacy bindings and controller hand icons.
+- Add BLE protocol unit tests and Go PVSC packet tests.
+- Product metadata synchronized to 0.5.26; Android versionCode is 61.
+
+## 0.5.26 validation status
+
+- `cd windows-host && go test ./...`: passed.
+- `cd windows-host && go test -race ./...`: passed.
+- `cd windows-host && go vet ./...`: passed.
+- `GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build ./cmd/phonevr-host`: passed.
+- Daydream BLE parser/state Kotlin standalone compile and smoke checks: passed.
+- `python3 -m unittest discover -s tools/release -p 'test_*.py'`: passed, 62 tests.
+- SteamVR input profile/legacy binding JSON and Android manifest/accessory XML parse checks: passed.
+- Android Gradle unit tests/APK: not run; Android SDK is unavailable and Gradle distribution download was blocked by DNS/network access.
+- SteamVR MSVC native driver build: not run; Windows SDK/MSVC environment is unavailable.
+- Physical single-controller BLE test, simultaneous dual-controller test and SteamVR game binding test: not run.
+- Dual BLE GATT operation is implemented but simultaneous connection behavior still requires testing on the target Android phone and two physical Daydream controllers.
+- Position tracking limitation: the Daydream remote supplies 3DoF orientation. The current controller pose uses a head-relative fixed hand offset and must be calibrated/validated in SteamVR.
+
+## Previous build status: 0.5.25
 
 ## This revision (0.5.25)
 

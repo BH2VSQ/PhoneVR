@@ -128,3 +128,36 @@ To apply a preset, the host sends only its ID:
 ```
 
 Android resolves the ID against its own local catalogue, persists the active preset and display settings, updates the stereo renderer, and returns `display_settings_ack`. Missing IDs are rejected. This keeps the phone-side preset catalogue authoritative while allowing the host to provide the complete editing interface. These messages use the existing newline-delimited TCP control channel; UDP pose packets are unchanged.
+
+
+## Daydream controller state (additive protocol-v1 capability)
+
+The Host advertises `daydream-controller-ble-v1` and `steamvr-dual-controller-v1` in the `welcome.capabilities` array. Android sends the newest left/right snapshots on the existing newline-delimited TCP control channel while either remote is active:
+
+```json
+{
+  "type": "controller_state",
+  "controllers": {
+    "left": {"connected": true, "timestampNs": 123, "packetSequence": 4, "touching": true, "touchX": 0.5, "touchY": 0.5, "click": false, "app": false, "home": false, "volumeUp": false, "volumeDown": false, "orientationX": 0.0, "orientationY": 0.0, "orientationZ": 0.0, "orientationW": 1.0, "hasOrientation": true},
+    "right": {"connected": false, "timestampNs": 124, "packetSequence": 0, "touching": false, "touchX": 0.0, "touchY": 0.0, "click": false, "app": false, "home": false, "volumeUp": false, "volumeDown": false, "orientationX": 0.0, "orientationY": 0.0, "orientationZ": 0.0, "orientationW": 1.0, "hasOrientation": false}
+  }
+}
+```
+
+The Android sender updates at up to 50 Hz while at least one remote is connected. `timestampNs` is in Android's monotonic clock domain and is diagnostic only; it must not be compared directly with Host monotonic time. A missing BLE report for 750 ms causes Android to publish a neutral disconnected state to release held inputs. The message is optional, so older protocol-v1 clients and Hosts that do not use the controller capability can ignore it.
+
+The Windows Host forwards one 44-byte packet per hand to the SteamVR driver using a loopback-only UDP connection to `127.0.0.1:48108`. The fixed `PVSC` version-1 layout uses big-endian multibyte values:
+
+| Offset | Size | Field |
+|---:|---:|---|
+| 0 | 4 | ASCII magic `PVSC` |
+| 4 | 1 | Version, value `1` |
+| 5 | 1 | Hand, `0` left or `1` right |
+| 6 | 1 | Flags: connected, touching, has orientation (bits 0..2) |
+| 7 | 1 | Buttons: click, App, Home, volume up, volume down (bits 0..4) |
+| 8 | 4 | Daydream packet sequence (`uint32`) |
+| 12 | 8 | Android monotonic timestamp (`uint64`, diagnostic only) |
+| 20 | 16 | Quaternion X/Y/Z/W (`float32`) |
+| 36 | 8 | Touch X/Y (`float32`, 0..1) |
+
+HMD orientation remains on the original 36-byte `PVSP` UDP packet at port `48102`. Controller packets never replace, enlarge or delay the HMD pose datagrams. The 3DoF controller position is estimated in the driver using fixed head-relative offsets and is not room-scale tracking.

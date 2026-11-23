@@ -21,8 +21,8 @@ android {
         applicationId = "com.vsq.phonvrstream"
         minSdk = 26
         targetSdk = 36
-        versionCode = 60
-        versionName = "0.5.25"
+        versionCode = 61
+        versionName = "0.5.26"
     }
 
     signingConfigs {

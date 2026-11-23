@@ -1,0 +1,113 @@
+{
+  "action_manifest_version": 0,
+  "alias_info": {},
+  "bindings": {
+    "/actions/legacy": {
+      "poses": [
+        {
+          "output": "/actions/legacy/in/left_pose",
+          "path": "/user/hand/left/pose/raw"
+        },
+        {
+          "output": "/actions/legacy/in/right_pose",
+          "path": "/user/hand/right/pose/raw"
+        }
+      ],
+      "sources": [
+        {
+          "path": "/user/hand/left/input/joystick",
+          "mode": "joystick",
+          "inputs": {
+            "click": {
+              "output": "/actions/legacy/in/left_axis0_press"
+            },
+            "position": {
+              "output": "/actions/legacy/in/left_axis0_value"
+            }
+          }
+        },
+        {
+          "path": "/user/hand/left/input/trigger",
+          "mode": "trigger",
+          "inputs": {
+            "click": {
+              "output": "/actions/legacy/in/left_axis1_press"
+            },
+            "pull": {
+              "output": "/actions/legacy/in/left_axis1_value1"
+            }
+          }
+        },
+        {
+          "path": "/user/hand/left/input/menu",
+          "mode": "button",
+          "inputs": {
+            "click": {
+              "output": "/actions/legacy/in/left_applicationmenu_press"
+            }
+          }
+        },
+        {
+          "path": "/user/hand/left/input/system",
+          "mode": "button",
+          "inputs": {
+            "click": {
+              "output": "/actions/legacy/in/left_system_press"
+            }
+          }
+        },
+        {
+          "path": "/user/hand/right/input/joystick",
+          "mode": "joystick",
+          "inputs": {
+            "click": {
+              "output": "/actions/legacy/in/right_axis0_press"
+            },
+            "position": {
+              "output": "/actions/legacy/in/right_axis0_value"
+            }
+          }
+        },
+        {
+          "path": "/user/hand/right/input/trigger",
+          "mode": "trigger",
+          "inputs": {
+            "click": {
+              "output": "/actions/legacy/in/right_axis1_press"
+            },
+            "pull": {
+              "output": "/actions/legacy/in/right_axis1_value1"
+            }
+          }
+        },
+        {
+          "path": "/user/hand/right/input/menu",
+          "mode": "button",
+          "inputs": {
+            "click": {
+              "output": "/actions/legacy/in/right_applicationmenu_press"
+            }
+          }
+        },
+        {
+          "path": "/user/hand/right/input/system",
+          "mode": "button",
+          "inputs": {
+            "click": {
+              "output": "/actions/legacy/in/right_system_press"
+            }
+          }
+        }
+      ]
+    }
+  },
+  "category": "legacy",
+  "controller_type": "phonevr_daydream_controller",
+  "name": "Default binding for PhoneVR Daydream Controller",
+  "description": "Touchpad click and direction, App and Home buttons",
+  "options": {
+    "mirror_actions": false,
+    "simulated_controller_type": "none"
+  },
+  "simulated_actions": []
+}

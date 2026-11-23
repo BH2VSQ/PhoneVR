@@ -1,3 +1,13 @@
+## 0.5.26 - Dual Google Daydream View BLE controllers
+
+- Add Android BLE scanning, device assignment and persistent pairing for independent left and right Daydream View controllers using the `FE55` GATT service and `00000001-1000-1000-8000-00805f9b34fb` notification characteristic.
+- Decode the 19-byte controller notification format documented by `mrdoob/daydream-controller.js`: touchpad coordinates, click/App/Home/volume buttons, 3-axis orientation, accelerometer and gyroscope values.
+- Add independent GATT lifecycle handling, reconnect backoff and a 750 ms report freshness watchdog so stale buttons and poses are cleared when notifications stop.
+- Forward controller snapshots over the existing TCP control channel without altering the HMD `PVSP` pose datagrams. Windows Host validates and forwards fixed-size `PVSC` packets over loopback UDP 48108.
+- Register separate left/right SteamVR `TrackedDeviceClass_Controller` devices with controller role hints, 3DoF poses, touchpad axes/click, compatibility trigger, App/Menu, Home/System and volume inputs. Add SteamVR input profile, legacy bindings and left/right controller artwork.
+- Keep controller orientation and inputs separate from HMD tracking. Hand position is a fixed head-relative estimate because Daydream provides 3DoF controller orientation only; no 6DoF hand tracking, grip sensor or independent trigger sensor is claimed.
+- Synchronize repository, Android, Windows Host, SteamVR driver and AOA metadata to `0.5.26`; Android `versionCode` is `61`.
+
 ## 0.5.25
 
 - Fix resolution-switch video disconnects caused by the SteamVR driver reading a newly selected profile while an already-running Host process still used its old in-memory profile.

@@ -1,80 +1,83 @@
-# Google Daydream Controller Integration
+# Google Daydream View Controller Integration
 
-Status: architecture preparation only. Controller pairing, sampling and forwarding are not enabled in this release.
+Status: dual-controller BLE and SteamVR input path implemented in PhoneVR 0.5.26. Android dual-device concurrency and physical SteamVR input still require validation with two real remotes.
 
-## Scope
+## Supported hardware and scope
 
-PhoneVRStream remains a single-HMD application. The phone IMU supplies the HMD orientation. A Daydream Controller is a separate 3DoF input device and must never overwrite or be merged into the HMD quaternion stream.
+The initial target is the original Google Daydream View handheld remote. PhoneVR supports two independently assigned remotes, one left and one right. Each remote connects directly from the Android app through BLE GATT. The Android system Bluetooth settings page is not required for routine connection; pairing/assignment is performed in the PhoneVR controller panel and the selected device addresses are stored locally.
 
-The first controller target is the original Google Daydream View controller. It is one handheld controller, not a pair of tracked hands and not a 6DoF controller. Its useful input surface includes a touchpad, click, app, home, grip, trigger and volume buttons. Its documented state also includes a 3DoF orientation quaternion and an elbow-model position estimate.
+The Daydream remote provides 3DoF orientation and buttons/touchpad. It does not provide room-scale 6DoF hand position. PhoneVR therefore registers two tracked-controller devices with rotational tracking and a fixed head-relative hand anchor. The position is a visualization/interaction estimate, not measured hand position.
 
-## Android-side provider design
+## BLE protocol from `mrdoob/daydream-controller.js`
 
-The Android app now contains a provider boundary in `controller/ControllerInputState.kt`:
+The implementation follows the publicly available `DaydreamController.js` connection and notification format: https://github.com/mrdoob/daydream-controller.js
 
-- `ControllerInputProvider` owns connection/start/stop and reports state updates.
-- `ControllerInputState` is a normalized snapshot for one controller.
-- Controller timestamps, touchpad, buttons, optional orientation and battery are kept separate from `network/HeadPose.kt`.
-
-Planned provider order:
-
-1. `GoogleVrDaydreamControllerProvider`: adapter around the Google VR SDK Daydream Controller API, where the SDK/service is available and proven compatible on the target phone.
-2. `AndroidInputDeviceProvider`: fallback for devices that Android exposes as a standard gamepad/joystick/HID input device. It uses `InputManager`, `KeyEvent`, `MotionEvent`, and `InputDevice` source/axis metadata. This fallback must not claim controller 3DoF orientation unless Android actually exposes a valid device sensor or the selected device API supplies it.
-
-Do not add a low-level Bluetooth/GATT implementation based on guessed UUIDs. Pairing and transport behavior must first be verified with the actual Daydream controller and Android phone.
-
-## Google SDK API mapping
-
-The Google VR SDK `Controller` API documents these fields:
-
-| Normalized state | Daydream SDK field |
+| Item | Value |
 |---|---|
-| `isTouching` | `isTouching` |
-| `touchX`, `touchY` | normalized `touch` point |
-| `click` | `clickButtonState` |
-| `app` | `appButtonState` |
-| `home` | `homeButtonState` |
-| `grip` | `gripButtonState` |
-| `trigger` | `triggerButtonState` |
-| `volumeUp`, `volumeDown` | matching volume button states |
-| orientation quaternion | `orientation` |
-| optional elbow-model position | `position` |
-| charging/status | `isCharging`, `batteryLevelBucket`, `trackingStatusFlags` |
+| Advertised local name | `Daydream controller` |
+| GATT service | `0000fe55-0000-1000-8000-00805f9b34fb` (`0xFE55`) |
+| Notification characteristic | `00000001-1000-1000-8000-00805f9b34fb` |
+| CCCD | `00002902-0000-1000-8000-00805f9b34fb` |
+| Notification size | 19 bytes minimum |
 
-The API expects controller state to be updated before reading its current fields. The adapter must call the SDK update function on its input loop and publish immutable snapshots to the app.
+The Android parser decodes the fields using the bit-packing and scale factors in the reference project: 5-bit sequence, controller time ticks, three signed 13-bit orientation values, three signed 13-bit acceleration values, three signed 13-bit gyro values, touch X/Y and button flags. Button flags in byte 18 are click `0x01`, Home `0x02`, App `0x04`, volume down `0x08` and volume up `0x10`. The three orientation values are converted to a normalized quaternion for the OpenVR controller pose.
 
-## Android generic input fallback
+The reference JavaScript code does not define an explicit touch-contact bit. PhoneVR infers touch contact from non-zero coordinates. Edge contact at an exact `(0,0)` coordinate and firmware-specific release-coordinate behavior need physical-device validation. The 5-bit sequence number wraps frequently and is used for diagnostics, not as a globally unique packet ID.
 
-Android's `InputDevice` API reports device sources and supported motion ranges. Standard key events and generic motion events can provide button, touchpad or joystick events when the OS exposes the controller in that form. This is a fallback for supported input events, not a substitute for the Google VR SDK controller orientation API.
+The reference JavaScript implementation creates one WebBluetooth connection per controller. It does not demonstrate concurrent dual-controller operation. PhoneVR uses two independent Android `BluetoothGatt` instances, but simultaneous operation is still a device compatibility test item.
 
-A real device compatibility test must record:
+## Android pairing and connection
 
-- Input device name, vendor ID, product ID and source flags.
-- Key codes generated by click, app, home, grip, trigger and volume.
-- Motion axes generated by touchpad movement.
-- Whether a per-device sensor manager or Daydream SDK orientation is available.
-- Pairing persistence and reconnect behavior after process restart.
+1. Open the PhoneVR menu and select **Daydream 手柄配对**.
+2. Wake a remote with its touchpad or App button, then select **扫描 Daydream Controller**.
+3. Assign the discovered device to the left hand or right hand.
+4. Repeat the scan for the second remote and assign it to the other hand.
+5. The two addresses are saved independently. Reopening PhoneVR attempts to restore both links.
+6. Use the left/right disconnect buttons to remove an assignment and clear its saved address.
 
-## PC transport and SteamVR mapping
+Android 12 and later require runtime `BLUETOOTH_SCAN` and `BLUETOOTH_CONNECT` permission. Earlier Android releases use the legacy Bluetooth permissions and fine-location permission for scanning. The controller manager maintains independent reconnect backoff for each hand. If no valid notification arrives for 750 ms, it publishes a neutral disconnected input snapshot so held buttons and tracking do not remain stuck. A later valid notification restores input automatically.
 
-Controller traffic will be an optional capability negotiated independently from HMD pose:
+## Input mapping in SteamVR
 
-- HMD remains `PVSP` pose packet version 1 on UDP pose channel.
-- Controller input will use a separate controller message/packet type and sequence/timestamp.
-- Controller transport must not increase HMD pose packet size or change HMD pose cadence.
-- A future SteamVR driver will expose a separate `TrackedDeviceClass_Controller` device and map touchpad/click/trigger/grip/app inputs to SteamVR input components.
-- The driver must expose only rotational tracking when only the Daydream 3DoF orientation is available. Do not fabricate room-scale position.
+| Daydream control | PhoneVR SteamVR input | Notes |
+|---|---|---|
+| Touchpad X/Y | `/input/joystick/x`, `/input/joystick/y` | Normalized to -1..1 while touching |
+| Touchpad contact | `/input/joystick/touch` | Contact inferred from coordinates |
+| Touchpad click | `/input/joystick/click` | Digital click |
+| Touchpad click compatibility alias | `/input/trigger/click`, `/input/trigger/value` | Exposed to legacy applications as a trigger; hardware has no independent analog trigger report in this protocol |
+| App button | `/input/menu/click` | Application/menu button |
+| Home button | `/input/system/click` | System button |
+| Volume + | `/input/volume_up/click` | Exposed as a separate button |
+| Volume - | `/input/volume_down/click` | Exposed as a separate button |
+| Controller orientation | tracked-device pose | 3DoF orientation |
 
-This controller protocol is not part of network protocol v1 yet. It will be negotiated as a capability in a future protocol revision after Android and physical-controller tests pass.
+The protocol described by the reference does not expose separate grip or trigger sensors. PhoneVR does not synthesize a grip component. Touchpad click is also exposed as a trigger compatibility alias because many legacy SteamVR applications expect a trigger-like primary action. The SteamVR input profile and legacy bindings are installed under `steamvr-driver/resources/input/`.
 
-## Support and compatibility risks
+## Separation from HMD tracking
 
-Google states that Daydream software is no longer supported and that the Daydream app may not work properly on Android 11 or later. Controller availability therefore depends on the host phone, Android version, pairing state and availability of the legacy Google VR controller service. The provider abstraction is designed to permit a generic Android input fallback without making the legacy SDK a mandatory dependency of the HMD client.
+The phone IMU remains the sole HMD pose source. HMD orientation continues over the existing `PVSP` UDP channel and is never overwritten by either controller quaternion. Controller state travels over the existing TCP control connection as a `controller_state` JSON message and is forwarded separately through the loopback-only SteamVR controller bridge on UDP port `48108`.
 
-## References
+The Host converts each hand to one 44-byte `PVSC` v1 packet. The driver validates each packet and publishes its left/right controller state independently. The control channel carries controller data at up to 50 Hz while a controller is active; pose updates are still published on the SteamVR driver frame loop.
 
-- Google VR Controller API: https://developers.google.com/vr/reference/android/com/google/vr/sdk/controller/Controller
-- Google Daydream Controller overview: https://developers.google.com/vr/discover/controllers
-- Google Daydream service support status: https://support.google.com/daydream/answer/7185096?hl=en
-- Android InputDevice API: https://developer.android.com/reference/android/view/InputDevice
-- Google VR Android quickstart and controller sample: https://developers.google.com/vr/develop/android/get-started
+## Position and coordinate limitations
+
+The Daydream report contains orientation, accelerometer and gyro data, but not a physical translation measurement. The current SteamVR controller pose uses the phone HMD pose as the parent coordinate reference and fixed left/right offsets. Controller orientation is combined with the HMD orientation. This is not an elbow-model reconstruction and must not be interpreted as optical or room-scale hand tracking. Axis orientation and hand offsets should be verified in SteamVR before relying on them in games.
+
+The current implementation does not include controller haptics, battery telemetry, a separate grip sensor, an analog trigger sensor, or an adjustable hand-model calibration screen.
+
+## Test checklist
+
+- Pair one controller as left and verify its touchpad, click, App, Home and volume inputs independently.
+- Pair a second controller as right and verify both controllers update concurrently without exchanging hand assignment.
+- Turn off one remote or let it sleep; confirm the other remains active and the inactive controller releases all inputs after the 750 ms report timeout.
+- Wake the inactive remote and confirm it resumes without restarting the HMD session.
+- Close and reopen PhoneVR; confirm saved left/right assignments reconnect.
+- Test touchpad edges, center click, all buttons and orientation axes in SteamVR's controller test/input binding UI.
+- Verify the controller tracking pose remains independent while the phone HMD is moved.
+- Test with the target phone's Android version and record whether two concurrent GATT links remain stable.
+
+## Reference
+
+- `mrdoob/daydream-controller.js`: https://github.com/mrdoob/daydream-controller.js
+- Android Bluetooth GATT: https://developer.android.com/develop/connectivity/bluetooth/ble/ble-overview
+- OpenVR driver input components: https://github.com/ValveSoftware/openvr

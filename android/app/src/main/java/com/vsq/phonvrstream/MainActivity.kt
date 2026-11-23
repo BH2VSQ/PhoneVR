@@ -1,6 +1,8 @@
 package com.vsq.phonvrstream
 
+import android.Manifest
 import android.app.Activity
+import android.content.pm.PackageManager
 import android.content.Intent
 import android.content.pm.ActivityInfo
 import android.content.res.Configuration
@@ -31,6 +33,10 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.SeekBar
 import android.widget.TextView
+import com.vsq.phonvrstream.controller.ControllerInputState
+import com.vsq.phonvrstream.controller.ControllerHand
+import com.vsq.phonvrstream.controller.DaydreamDeviceCandidate
+import com.vsq.phonvrstream.controller.DaydreamControllerManager
 import com.vsq.phonvrstream.display.StereoRenderer
 import com.vsq.phonvrstream.network.DiscoveredHost
 import com.vsq.phonvrstream.network.HeadPose
@@ -46,6 +52,7 @@ class MainActivity : Activity(), SensorEventListener {
     companion object {
         // Request 200 Hz updates where the handset IMU supports it; Android may cap this to hardware rate.
         private const val HEAD_TRACKING_SAMPLE_PERIOD_US = 5_000
+        private const val REQUEST_DAYDREAM_BLUETOOTH_PERMISSIONS = 6107
     }
 
     private lateinit var glView: GLSurfaceView
@@ -71,6 +78,12 @@ class MainActivity : Activity(), SensorEventListener {
     private lateinit var dismissLayer: View
     private lateinit var settingsPanel: LinearLayout
     private lateinit var connectionPanel: LinearLayout
+    private lateinit var controllerPanel: LinearLayout
+    private lateinit var controllerLeftStatusText: TextView
+    private lateinit var controllerRightStatusText: TextView
+    private lateinit var controllerScanStatusText: TextView
+    private lateinit var controllerCandidateList: LinearLayout
+    private lateinit var controllerManager: DaydreamControllerManager
     private lateinit var connectionStatusLabel: TextView
     private lateinit var connectionTransportLabel: TextView
     private lateinit var hostAddressInput: EditText
@@ -92,6 +105,10 @@ class MainActivity : Activity(), SensorEventListener {
     private var stereoCalibrationMode = StereoRenderer.CALIBRATION_OFF
     private var calibrationDistortionEnabled = false
     @Volatile private var videoStreamStats = VideoStreamStats()
+    @Volatile private var leftControllerState = ControllerInputState(false, 0L)
+    @Volatile private var rightControllerState = ControllerInputState(false, 0L)
+    @Volatile private var daydreamCandidates = emptyList<DaydreamDeviceCandidate>()
+    private var pendingBluetoothPermissionAction: (() -> Unit)? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -211,6 +228,29 @@ class MainActivity : Activity(), SensorEventListener {
             },
         )
 
+        controllerManager = DaydreamControllerManager(
+            applicationContext,
+            onState = { hand, state ->
+                if (hand == ControllerHand.LEFT) leftControllerState = state else rightControllerState = state
+                networkClient.updateControllers(leftControllerState, rightControllerState)
+                mainHandler.post { updateControllerStatusLabels() }
+            },
+            onStatus = { hand, status ->
+                mainHandler.post {
+                    if (::controllerScanStatusText.isInitialized) {
+                        controllerScanStatusText.text = "${hand.label}：$status"
+                    }
+                    updateControllerStatusLabels()
+                }
+            },
+            onScanResults = { results ->
+                mainHandler.post {
+                    daydreamCandidates = results
+                    if (::controllerCandidateList.isInitialized) renderControllerCandidates()
+                }
+            },
+        )
+
         sensorManager = getSystemService(SENSOR_SERVICE) as SensorManager
         sensorThread = HandlerThread("PhoneVR-IMU", Process.THREAD_PRIORITY_DISPLAY).apply { start() }
         sensorHandler = Handler(sensorThread.looper)
@@ -262,6 +302,16 @@ class MainActivity : Activity(), SensorEventListener {
         }
         connectionPanel.visibility = View.GONE
 
+        buildControllerPanel().also { panel ->
+            controllerPanel = panel
+            val availableWidth = (resources.displayMetrics.widthPixels - dp(20)).coerceAtLeast(dp(1))
+            val panelWidth = minOf(dp(390), availableWidth)
+            val params = FrameLayout.LayoutParams(panelWidth, -1, Gravity.END)
+            params.setMargins(0, dp(62), dp(10), dp(10))
+            root.addView(panel, params)
+        }
+        controllerPanel.visibility = View.GONE
+
         buildMenuPanel().also { panel ->
             menuPanel = panel
             val params = FrameLayout.LayoutParams(dp(198), -2, Gravity.TOP or Gravity.CENTER_HORIZONTAL)
@@ -299,7 +349,8 @@ class MainActivity : Activity(), SensorEventListener {
         val hasOverlay =
             (::menuPanel.isInitialized && menuPanel.visibility == View.VISIBLE) ||
             (::settingsPanel.isInitialized && settingsPanel.visibility == View.VISIBLE) ||
-            (::connectionPanel.isInitialized && connectionPanel.visibility == View.VISIBLE)
+            (::connectionPanel.isInitialized && connectionPanel.visibility == View.VISIBLE) ||
+            (::controllerPanel.isInitialized && controllerPanel.visibility == View.VISIBLE)
         dismissLayer.visibility = if (hasOverlay) View.VISIBLE else View.GONE
     }
 
@@ -307,6 +358,7 @@ class MainActivity : Activity(), SensorEventListener {
         if (::menuPanel.isInitialized) menuPanel.visibility = View.GONE
         if (::settingsPanel.isInitialized) settingsPanel.visibility = View.GONE
         if (::connectionPanel.isInitialized) connectionPanel.visibility = View.GONE
+        if (::controllerPanel.isInitialized) controllerPanel.visibility = View.GONE
         updateDismissLayer()
     }
 
@@ -344,6 +396,7 @@ class MainActivity : Activity(), SensorEventListener {
             menuPanel.visibility = if (shouldShow) View.VISIBLE else View.GONE
             settingsPanel.visibility = View.GONE
             connectionPanel.visibility = View.GONE
+            if (::controllerPanel.isInitialized) controllerPanel.visibility = View.GONE
             updateDismissLayer()
         }.apply {
             textSize = 24f
@@ -424,6 +477,7 @@ class MainActivity : Activity(), SensorEventListener {
             connectionPanel.visibility = View.VISIBLE
             settingsPanel.visibility = View.GONE
             menuPanel.visibility = View.GONE
+            if (::controllerPanel.isInitialized) controllerPanel.visibility = View.GONE
             updateDismissLayer()
         }.apply { layoutParams = LinearLayout.LayoutParams(-1, dp(40)).apply { bottomMargin = dp(6) } })
         screenFlipButton = makeButton(screenFlipButtonText()) {
@@ -437,9 +491,167 @@ class MainActivity : Activity(), SensorEventListener {
             settingsPanel.visibility = View.VISIBLE
             connectionPanel.visibility = View.GONE
             menuPanel.visibility = View.GONE
+            if (::controllerPanel.isInitialized) controllerPanel.visibility = View.GONE
             updateDismissLayer()
+        }.apply { layoutParams = LinearLayout.LayoutParams(-1, dp(40)).apply { bottomMargin = dp(6) } })
+        panel.addView(makeButton("Daydream 手柄配对") {
+            closeOverlayPanels()
+            controllerPanel.visibility = View.VISIBLE
+            updateDismissLayer()
+            updateControllerStatusLabels()
         }.apply { layoutParams = LinearLayout.LayoutParams(-1, dp(40)) })
         return panel
+    }
+
+    private fun buildControllerPanel(): LinearLayout {
+        val panel = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(13), dp(12), dp(13), dp(12))
+            background = GradientDrawable().apply {
+                setColor(Color.argb(248, 7, 15, 27))
+                cornerRadius = dp(14).toFloat()
+                setStroke(dp(1), Color.argb(145, 105, 150, 190))
+            }
+            elevation = dp(18).toFloat()
+        }
+        panel.addView(TextView(this).apply {
+            text = "DAYDREAM CONTROLLERS"
+            textSize = 13f
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(Color.rgb(91, 206, 250))
+        })
+        panel.addView(label("双手柄 BLE 配对 · 左右设备分别连接", secondary = true).apply {
+            setPadding(0, dp(3), 0, dp(10))
+        })
+        controllerLeftStatusText = label("左手柄：未连接", secondary = false).apply {
+            textSize = 11f
+            setPadding(dp(8), dp(7), dp(8), dp(7))
+            background = controllerStatusBackground()
+        }
+        panel.addView(controllerLeftStatusText, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(5) })
+        controllerRightStatusText = label("右手柄：未连接", secondary = false).apply {
+            textSize = 11f
+            setPadding(dp(8), dp(7), dp(8), dp(7))
+            background = controllerStatusBackground()
+        }
+        panel.addView(controllerRightStatusText, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(8) })
+        val disconnectRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        disconnectRow.addView(makeButton("断开左手柄") { controllerManager.disconnect(ControllerHand.LEFT) },
+            LinearLayout.LayoutParams(0, dp(38), 1f).apply { marginEnd = dp(5) })
+        disconnectRow.addView(makeButton("断开右手柄") { controllerManager.disconnect(ControllerHand.RIGHT) },
+            LinearLayout.LayoutParams(0, dp(38), 1f).apply { marginStart = dp(5) })
+        panel.addView(disconnectRow, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(9) })
+        panel.addView(makeButton("扫描 Daydream Controller") { requestBluetoothPermissionAndScan() },
+            LinearLayout.LayoutParams(-1, dp(42)).apply { bottomMargin = dp(7) })
+        controllerScanStatusText = label("等待扫描。请先唤醒手柄。", secondary = true).apply {
+            textSize = 10f
+            setPadding(0, dp(3), 0, dp(6))
+        }
+        panel.addView(controllerScanStatusText)
+        val scroll = ScrollView(this).apply {
+            isFillViewport = true
+            clipToPadding = false
+        }
+        controllerCandidateList = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        scroll.addView(controllerCandidateList, ScrollView.LayoutParams(-1, -2))
+        panel.addView(scroll, LinearLayout.LayoutParams(-1, 0, 1f))
+        panel.addView(label("分配左右手柄：扫描到的设备可分别指定为左手或右手。两个手柄需要同时保持唤醒。", secondary = true).apply {
+            setPadding(0, dp(7), 0, dp(5))
+        })
+        panel.addView(makeButton("关闭") {
+            controllerPanel.visibility = View.GONE
+            updateDismissLayer()
+        }, LinearLayout.LayoutParams(-1, dp(40)))
+        return panel
+    }
+
+    private fun controllerStatusBackground(): GradientDrawable = GradientDrawable().apply {
+        setColor(Color.argb(155, 17, 31, 48))
+        cornerRadius = dp(8).toFloat()
+        setStroke(dp(1), Color.argb(65, 125, 165, 205))
+    }
+
+    private fun updateControllerStatusLabels() {
+        if (!::controllerLeftStatusText.isInitialized || !::controllerRightStatusText.isInitialized) return
+        controllerLeftStatusText.text = controllerStateSummary("左手柄", leftControllerState)
+        controllerRightStatusText.text = controllerStateSummary("右手柄", rightControllerState)
+    }
+
+    private fun controllerStateSummary(label: String, state: ControllerInputState): String {
+        if (!state.connected) return "$label：未连接"
+        return "$label：已连接  序号 ${state.packetSequence}  触控板 ${if (state.isTouching) "触摸中" else "空闲"}  " +
+            "点击 ${if (state.click) "按下" else "松开"}  App ${if (state.app) "按下" else "松开"}"
+    }
+
+    private fun renderControllerCandidates() {
+        if (!::controllerCandidateList.isInitialized) return
+        controllerCandidateList.removeAllViews()
+        if (daydreamCandidates.isEmpty()) {
+            controllerCandidateList.addView(label("尚未发现设备。请按下手柄触控板或 App 键唤醒。", secondary = true))
+            return
+        }
+        daydreamCandidates.forEach { candidate ->
+            val card = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(dp(9), dp(8), dp(9), dp(8))
+                background = controllerStatusBackground()
+            }
+            card.addView(TextView(this).apply {
+                text = candidate.name
+                textSize = 11f
+                typeface = Typeface.DEFAULT_BOLD
+                setTextColor(Color.WHITE)
+            })
+            card.addView(label("${candidate.address} · RSSI ${candidate.rssi} dBm", secondary = true).apply {
+                setPadding(0, dp(2), 0, dp(6))
+            })
+            val actions = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+            actions.addView(makeButton("设为左手") {
+                requestBluetoothPermissionAndRun {
+                    runCatching { controllerManager.connect(candidate.address, ControllerHand.LEFT) }
+                        .onFailure { controllerScanStatusText.text = "左手柄连接失败：${it.message}" }
+                }
+            }, LinearLayout.LayoutParams(0, dp(36), 1f).apply { marginEnd = dp(4) })
+            actions.addView(makeButton("设为右手") {
+                requestBluetoothPermissionAndRun {
+                    runCatching { controllerManager.connect(candidate.address, ControllerHand.RIGHT) }
+                        .onFailure { controllerScanStatusText.text = "右手柄连接失败：${it.message}" }
+                }
+            }, LinearLayout.LayoutParams(0, dp(36), 1f).apply { marginStart = dp(4) })
+            card.addView(actions)
+            controllerCandidateList.addView(card, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(7) })
+        }
+    }
+
+    private fun requiredBluetoothPermissions(): Array<String> = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+        arrayOf(Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT)
+    } else {
+        arrayOf(Manifest.permission.ACCESS_FINE_LOCATION)
+    }
+
+    private fun hasBluetoothPermissions(): Boolean = requiredBluetoothPermissions().all {
+        checkSelfPermission(it) == PackageManager.PERMISSION_GRANTED
+    }
+
+    private fun requestBluetoothPermissionAndRun(action: () -> Unit) {
+        if (hasBluetoothPermissions()) {
+            action()
+            return
+        }
+        pendingBluetoothPermissionAction = action
+        requestPermissions(requiredBluetoothPermissions(), REQUEST_DAYDREAM_BLUETOOTH_PERMISSIONS)
+    }
+
+    private fun requestBluetoothPermissionAndScan() {
+        requestBluetoothPermissionAndRun {
+            if (!controllerManager.hasBluetoothAdapter()) {
+                controllerScanStatusText.text = "当前手机没有蓝牙适配器"
+            } else if (!controllerManager.isBluetoothEnabled()) {
+                controllerScanStatusText.text = "请先在 Android 系统设置中打开蓝牙"
+            } else {
+                controllerManager.scan()
+            }
+        }
     }
 
     private fun screenFlipButtonText(): String =
@@ -1169,8 +1381,23 @@ class MainActivity : Activity(), SensorEventListener {
         val overlayVisible =
             (::menuPanel.isInitialized && menuPanel.visibility == View.VISIBLE) ||
             (::settingsPanel.isInitialized && settingsPanel.visibility == View.VISIBLE) ||
-            (::connectionPanel.isInitialized && connectionPanel.visibility == View.VISIBLE)
+            (::connectionPanel.isInitialized && connectionPanel.visibility == View.VISIBLE) ||
+            (::controllerPanel.isInitialized && controllerPanel.visibility == View.VISIBLE)
         if (overlayVisible) closeOverlayPanels() else super.onBackPressed()
+    }
+
+    @Deprecated("Deprecated in Android API; retained for broad target compatibility")
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode != REQUEST_DAYDREAM_BLUETOOTH_PERMISSIONS) return
+        val action = pendingBluetoothPermissionAction
+        pendingBluetoothPermissionAction = null
+        if (hasBluetoothPermissions()) {
+            controllerManager.restoreSavedConnections()
+            action?.invoke()
+        } else {
+            controllerScanStatusText.text = "未授予蓝牙权限，无法扫描或连接 Daydream 手柄"
+        }
     }
 
     override fun onConfigurationChanged(newConfig: Configuration) {
@@ -1189,6 +1416,9 @@ class MainActivity : Activity(), SensorEventListener {
             updatePoseText("IMU ${it.name}")
         } ?: updatePoseText("未检测到旋转传感器")
         updateTopHud()
+        if (::controllerManager.isInitialized && hasBluetoothPermissions()) {
+            controllerManager.restoreSavedConnections()
+        }
     }
 
     override fun onPause() {
@@ -1238,6 +1468,7 @@ class MainActivity : Activity(), SensorEventListener {
     override fun onDestroy() {
         sensorManager.unregisterListener(this)
         if (::sensorThread.isInitialized) sensorThread.quitSafely()
+        if (::controllerManager.isInitialized) controllerManager.close()
         if (::networkClient.isInitialized) networkClient.shutdown()
         super.onDestroy()
     }

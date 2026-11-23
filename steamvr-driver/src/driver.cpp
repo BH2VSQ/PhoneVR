@@ -32,6 +32,8 @@
 
 namespace phonevr {
 constexpr uint16_t kPoseBridgePort = 48103;
+constexpr uint16_t kControllerBridgePort = 48108;
+constexpr uint32_t kControllerPacketSize = 44;
 constexpr uint32_t kPosePacketSize = 36;
 constexpr uint16_t kVideoCapturePort = 48106;
 constexpr uint32_t kVideoFrameRate = 60;
@@ -1771,6 +1773,337 @@ private:
     std::atomic<uint64_t> m_componentMatches{0};
 };
 
+struct DaydreamControllerSnapshot {
+    bool connected = false;
+    bool touching = false;
+    bool hasOrientation = false;
+    bool click = false;
+    bool app = false;
+    bool home = false;
+    bool volumeUp = false;
+    bool volumeDown = false;
+    uint32_t sequence = 0;
+    uint64_t timestampNs = 0;
+    uint64_t receivedAtNs = 0;
+    double x = 0.0, y = 0.0, z = 0.0, w = 1.0;
+    double touchX = 0.0, touchY = 0.0;
+};
+
+class DaydreamControllerReceiver {
+public:
+    bool Start() {
+        if (m_running.exchange(true)) return true;
+        WSADATA data{};
+        if (WSAStartup(MAKEWORD(2, 2), &data) != 0) {
+            m_running = false;
+            return false;
+        }
+        m_socket = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+        if (m_socket == INVALID_SOCKET) {
+            WSACleanup();
+            m_running = false;
+            return false;
+        }
+        int receiveBufferBytes = 16 * 1024;
+        (void)setsockopt(m_socket, SOL_SOCKET, SO_RCVBUF,
+                         reinterpret_cast<const char*>(&receiveBufferBytes), sizeof(receiveBufferBytes));
+        DWORD timeoutMs = 100;
+        (void)setsockopt(m_socket, SOL_SOCKET, SO_RCVTIMEO,
+                         reinterpret_cast<const char*>(&timeoutMs), sizeof(timeoutMs));
+        sockaddr_in address{};
+        address.sin_family = AF_INET;
+        address.sin_port = htons(kControllerBridgePort);
+        address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        if (bind(m_socket, reinterpret_cast<sockaddr*>(&address), sizeof(address)) == SOCKET_ERROR) {
+            closesocket(m_socket);
+            m_socket = INVALID_SOCKET;
+            WSACleanup();
+            m_running = false;
+            return false;
+        }
+        m_thread = std::thread(&DaydreamControllerReceiver::Run, this);
+        return true;
+    }
+
+    void Stop() {
+        if (!m_running.exchange(false)) return;
+        const SOCKET socket = m_socket;
+        m_socket = INVALID_SOCKET;
+        if (socket != INVALID_SOCKET) {
+            shutdown(socket, SD_BOTH);
+            closesocket(socket);
+        }
+        if (m_thread.joinable()) m_thread.join();
+        WSACleanup();
+    }
+
+    DaydreamControllerSnapshot Snapshot(uint8_t hand) const {
+        if (hand > 1) return {};
+        std::lock_guard<std::mutex> lock(m_mutex);
+        return m_states[hand];
+    }
+
+    ~DaydreamControllerReceiver() { Stop(); }
+
+private:
+    static bool Decode(const uint8_t* data, int length, DaydreamControllerSnapshot* output) {
+        if (!data || !output || length != static_cast<int>(kControllerPacketSize) ||
+            std::memcmp(data, "PVSC", 4) != 0 || data[4] != 1 || data[5] > 1) return false;
+        DaydreamControllerSnapshot next{};
+        const uint8_t flags = data[6];
+        const uint8_t buttons = data[7];
+        next.connected = (flags & (1 << 0)) != 0;
+        next.touching = (flags & (1 << 1)) != 0;
+        next.hasOrientation = (flags & (1 << 2)) != 0;
+        next.click = (buttons & (1 << 0)) != 0;
+        next.app = (buttons & (1 << 1)) != 0;
+        next.home = (buttons & (1 << 2)) != 0;
+        next.volumeUp = (buttons & (1 << 3)) != 0;
+        next.volumeDown = (buttons & (1 << 4)) != 0;
+        next.sequence = ReadBE32(data + 8);
+        next.timestampNs = ReadBE64(data + 12);
+        next.x = ReadBEFloat(data + 20);
+        next.y = ReadBEFloat(data + 24);
+        next.z = ReadBEFloat(data + 28);
+        next.w = ReadBEFloat(data + 32);
+        next.touchX = ReadBEFloat(data + 36);
+        next.touchY = ReadBEFloat(data + 40);
+        const double values[] = {next.x, next.y, next.z, next.w, next.touchX, next.touchY};
+        for (double value : values) if (!std::isfinite(value)) return false;
+        next.touchX = std::clamp(next.touchX, 0.0, 1.0);
+        next.touchY = std::clamp(next.touchY, 0.0, 1.0);
+        if (next.hasOrientation) {
+            const double norm = std::sqrt(next.x * next.x + next.y * next.y + next.z * next.z + next.w * next.w);
+            if (norm < 0.5 || norm > 1.5) return false;
+            next.x /= norm; next.y /= norm; next.z /= norm; next.w /= norm;
+        } else {
+            next.x = next.y = next.z = 0.0;
+            next.w = 1.0;
+        }
+        next.receivedAtNs = MonotonicNowNs();
+        *output = next;
+        return true;
+    }
+
+    void Run() {
+        const SOCKET socket = m_socket;
+        std::array<uint8_t, 256> buffer{};
+        while (m_running.load(std::memory_order_acquire)) {
+            const int received = recv(socket, reinterpret_cast<char*>(buffer.data()),
+                                      static_cast<int>(buffer.size()), 0);
+            if (received == SOCKET_ERROR) {
+                if (!m_running.load(std::memory_order_acquire)) break;
+                const int error = WSAGetLastError();
+                if (error == WSAETIMEDOUT || error == WSAEWOULDBLOCK) continue;
+                continue;
+            }
+            DaydreamControllerSnapshot state{};
+            if (!Decode(buffer.data(), received, &state)) {
+                m_invalidPackets.fetch_add(1, std::memory_order_relaxed);
+                continue;
+            }
+            const uint8_t hand = buffer[5];
+            {
+                std::lock_guard<std::mutex> lock(m_mutex);
+                m_states[hand] = state;
+            }
+            m_receivedPackets.fetch_add(1, std::memory_order_relaxed);
+        }
+    }
+
+    std::atomic<bool> m_running{false};
+    SOCKET m_socket = INVALID_SOCKET;
+    std::thread m_thread;
+    mutable std::mutex m_mutex;
+    DaydreamControllerSnapshot m_states[2]{};
+    std::atomic<uint64_t> m_receivedPackets{0};
+    std::atomic<uint64_t> m_invalidPackets{0};
+};
+
+struct ControllerQuaternion {
+    double x = 0.0, y = 0.0, z = 0.0, w = 1.0;
+};
+
+static ControllerQuaternion MultiplyQuaternion(const ControllerQuaternion& a, const ControllerQuaternion& b) {
+    return {
+        a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y,
+        a.w * b.y - a.x * b.z + a.y * b.w + a.z * b.x,
+        a.w * b.z + a.x * b.y - a.y * b.x + a.z * b.w,
+        a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z,
+    };
+}
+
+static std::array<double, 3> RotateVector(const ControllerQuaternion& q, const std::array<double, 3>& v) {
+    const ControllerQuaternion p{v[0], v[1], v[2], 0.0};
+    const ControllerQuaternion inverse{-q.x, -q.y, -q.z, q.w};
+    const auto rotated = MultiplyQuaternion(MultiplyQuaternion(q, p), inverse);
+    return {rotated.x, rotated.y, rotated.z};
+}
+
+class PhoneVRDaydreamController final : public vr::ITrackedDeviceServerDriver {
+public:
+    explicit PhoneVRDaydreamController(bool isLeft) : m_isLeft(isLeft) {}
+    ~PhoneVRDaydreamController() override { Deactivate(); }
+
+    vr::EVRInitError Activate(uint32_t objectId) override {
+        m_objectId.store(objectId, std::memory_order_release);
+        auto* properties = vr::VRProperties();
+        const auto container = properties->TrackedDeviceToPropertyContainer(objectId);
+        const char* serial = m_isLeft ? "PHONEVR-DAYDREAM-LEFT" : "PHONEVR-DAYDREAM-RIGHT";
+        properties->SetStringProperty(container, vr::Prop_TrackingSystemName_String, "phonevr");
+        properties->SetStringProperty(container, vr::Prop_ModelNumber_String, "Google Daydream Controller");
+        properties->SetStringProperty(container, vr::Prop_SerialNumber_String, serial);
+        properties->SetStringProperty(container, vr::Prop_ManufacturerName_String, "Google");
+        properties->SetStringProperty(container, vr::Prop_RegisteredDeviceType_String, "phonevr/phonevr_daydream_controller");
+        properties->SetStringProperty(container, vr::Prop_ControllerType_String, "phonevr_daydream_controller");
+        properties->SetStringProperty(container, vr::Prop_ResourceRoot_String, "phonevr");
+        properties->SetStringProperty(container, vr::Prop_InputProfilePath_String,
+                                       "{phonevr}/input/phonevr_daydream_controller_profile.json");
+        properties->SetInt32Property(container, vr::Prop_ControllerRoleHint_Int32,
+                                     m_isLeft ? vr::TrackedControllerRole_LeftHand : vr::TrackedControllerRole_RightHand);
+        properties->SetBoolProperty(container, vr::Prop_DeviceIsWireless_Bool, true);
+        properties->SetBoolProperty(container, vr::Prop_HasControllerComponent_Bool, true);
+        properties->SetBoolProperty(container, vr::Prop_HasDisplayComponent_Bool, false);
+        properties->SetBoolProperty(container, vr::Prop_HasCameraComponent_Bool, false);
+        properties->SetBoolProperty(container, vr::Prop_HasDriverDirectModeComponent_Bool, false);
+        auto* input = vr::VRDriverInput();
+        if (!input) return vr::VRInitError_Driver_Unknown;
+        auto createBoolean = [&](const char* path, vr::VRInputComponentHandle_t* handle) {
+            return input->CreateBooleanComponent(container, path, handle) == vr::VRInputError_None;
+        };
+        auto createScalar = [&](const char* path, vr::VRInputComponentHandle_t* handle) {
+            return input->CreateScalarComponent(container, path, handle,
+                                                vr::VRScalarType_Absolute,
+                                                vr::VRScalarUnits_NormalizedTwoSided) == vr::VRInputError_None;
+        };
+        if (!createScalar("/input/joystick/x", &m_joystickX) ||
+            !createScalar("/input/joystick/y", &m_joystickY) ||
+            input->CreateScalarComponent(container, "/input/trigger/value", &m_triggerValue,
+                                         vr::VRScalarType_Absolute,
+                                         vr::VRScalarUnits_NormalizedOneSided) != vr::VRInputError_None ||
+            !createBoolean("/input/joystick/touch", &m_joystickTouch) ||
+            !createBoolean("/input/joystick/click", &m_joystickClick) ||
+            !createBoolean("/input/trigger/click", &m_triggerClick) ||
+            !createBoolean("/input/menu/click", &m_menuClick) ||
+            !createBoolean("/input/system/click", &m_systemClick) ||
+            !createBoolean("/input/volume_up/click", &m_volumeUpClick) ||
+            !createBoolean("/input/volume_down/click", &m_volumeDownClick)) {
+            if (vr::VRDriverLog()) vr::VRDriverLog()->Log("PhoneVR: failed to create a Daydream controller input component");
+            return vr::VRInitError_Driver_Unknown;
+        }
+        auto pose = MakeUntrackedPose();
+        {
+            std::lock_guard<std::mutex> lock(m_poseMutex);
+            m_pose = pose;
+        }
+        if (auto* host = vr::VRServerDriverHost())
+            host->TrackedDevicePoseUpdated(objectId, pose, sizeof(pose));
+        if (vr::VRDriverLog()) {
+            char line[200]{};
+            std::snprintf(line, sizeof(line), "PhoneVR: registered Daydream %s controller device objectId=%u (3DoF)",
+                          m_isLeft ? "left" : "right", objectId);
+            vr::VRDriverLog()->Log(line);
+        }
+        return vr::VRInitError_None;
+    }
+
+    void Deactivate() override {
+        m_objectId.store(vr::k_unTrackedDeviceIndexInvalid, std::memory_order_release);
+    }
+    void EnterStandby() override {}
+    void* GetComponent(const char*) override { return nullptr; }
+    void DebugRequest(const char*, char* response, uint32_t size) override {
+        if (response && size) response[0] = '\0';
+    }
+    vr::DriverPose_t GetPose() override {
+        std::lock_guard<std::mutex> lock(m_poseMutex);
+        return m_pose;
+    }
+
+    void Update(const DaydreamControllerSnapshot& state, const vr::DriverPose_t& hmdPose) {
+        const uint32_t objectId = m_objectId.load(std::memory_order_acquire);
+        if (objectId == vr::k_unTrackedDeviceIndexInvalid) return;
+        auto* input = vr::VRDriverInput();
+        if (!input) return;
+        const bool connected = state.connected && state.receivedAtNs != 0 &&
+            MonotonicNowNs() - state.receivedAtNs <= 3000000000ULL;
+        const bool trackingValid = connected && state.hasOrientation &&
+            hmdPose.deviceIsConnected && hmdPose.poseIsValid &&
+            MonotonicNowNs() - state.receivedAtNs <= 500000000ULL;
+        const double x = state.touching ? state.touchX * 2.0 - 1.0 : 0.0;
+        const double y = state.touching ? (0.5 - state.touchY) * 2.0 : 0.0;
+        (void)input->UpdateScalarComponent(m_joystickX, static_cast<float>(x), 0.0);
+        (void)input->UpdateScalarComponent(m_joystickY, static_cast<float>(y), 0.0);
+        (void)input->UpdateBooleanComponent(m_joystickTouch, connected && state.touching, 0.0);
+        (void)input->UpdateBooleanComponent(m_joystickClick, connected && state.click, 0.0);
+        (void)input->UpdateBooleanComponent(m_triggerClick, connected && state.click, 0.0);
+        (void)input->UpdateScalarComponent(m_triggerValue, connected && state.click ? 1.0f : 0.0f, 0.0);
+        (void)input->UpdateBooleanComponent(m_menuClick, connected && state.app, 0.0);
+        (void)input->UpdateBooleanComponent(m_systemClick, connected && state.home, 0.0);
+        (void)input->UpdateBooleanComponent(m_volumeUpClick, connected && state.volumeUp, 0.0);
+        (void)input->UpdateBooleanComponent(m_volumeDownClick, connected && state.volumeDown, 0.0);
+
+        vr::DriverPose_t pose = MakeUntrackedPose();
+        pose.deviceIsConnected = connected;
+        if (trackingValid) {
+            const ControllerQuaternion headQ{
+                hmdPose.qRotation.x, hmdPose.qRotation.y, hmdPose.qRotation.z, hmdPose.qRotation.w};
+            const ControllerQuaternion controllerQ{state.x, state.y, state.z, state.w};
+            const auto worldQ = MultiplyQuaternion(headQ, controllerQ);
+            pose.qRotation = {worldQ.w, worldQ.x, worldQ.y, worldQ.z};
+            const std::array<double, 3> localOffset = m_isLeft
+                ? std::array<double, 3>{-0.25, -0.22, -0.32}
+                : std::array<double, 3>{0.25, -0.22, -0.32};
+            const auto worldOffset = RotateVector(headQ, localOffset);
+            pose.vecPosition[0] = hmdPose.vecPosition[0] + worldOffset[0];
+            pose.vecPosition[1] = hmdPose.vecPosition[1] + worldOffset[1];
+            pose.vecPosition[2] = hmdPose.vecPosition[2] + worldOffset[2];
+            pose.result = vr::TrackingResult_Running_OK;
+            pose.poseIsValid = true;
+            pose.willDriftInYaw = true;
+            pose.shouldApplyHeadModel = false;
+            pose.poseTimeOffset = -std::min<double>(
+                static_cast<double>(MonotonicNowNs() - state.receivedAtNs) / 1.0e9, 0.05);
+        }
+        {
+            std::lock_guard<std::mutex> lock(m_poseMutex);
+            m_pose = pose;
+        }
+        if (auto* host = vr::VRServerDriverHost())
+            host->TrackedDevicePoseUpdated(objectId, pose, sizeof(pose));
+    }
+
+private:
+    static vr::DriverPose_t MakeUntrackedPose() {
+        vr::DriverPose_t pose{};
+        pose.poseTimeOffset = 0.0;
+        pose.qWorldFromDriverRotation = {1.0, 0.0, 0.0, 0.0};
+        pose.qDriverFromHeadRotation = {1.0, 0.0, 0.0, 0.0};
+        pose.qRotation = {1.0, 0.0, 0.0, 0.0};
+        pose.result = vr::TrackingResult_Uninitialized;
+        pose.deviceIsConnected = false;
+        pose.poseIsValid = false;
+        pose.willDriftInYaw = true;
+        pose.shouldApplyHeadModel = false;
+        return pose;
+    }
+
+    bool m_isLeft = false;
+    std::atomic<uint32_t> m_objectId{vr::k_unTrackedDeviceIndexInvalid};
+    mutable std::mutex m_poseMutex;
+    vr::DriverPose_t m_pose = MakeUntrackedPose();
+    vr::VRInputComponentHandle_t m_joystickX = vr::k_ulInvalidInputComponentHandle;
+    vr::VRInputComponentHandle_t m_joystickY = vr::k_ulInvalidInputComponentHandle;
+    vr::VRInputComponentHandle_t m_joystickTouch = vr::k_ulInvalidInputComponentHandle;
+    vr::VRInputComponentHandle_t m_joystickClick = vr::k_ulInvalidInputComponentHandle;
+    vr::VRInputComponentHandle_t m_triggerClick = vr::k_ulInvalidInputComponentHandle;
+    vr::VRInputComponentHandle_t m_triggerValue = vr::k_ulInvalidInputComponentHandle;
+    vr::VRInputComponentHandle_t m_menuClick = vr::k_ulInvalidInputComponentHandle;
+    vr::VRInputComponentHandle_t m_systemClick = vr::k_ulInvalidInputComponentHandle;
+    vr::VRInputComponentHandle_t m_volumeUpClick = vr::k_ulInvalidInputComponentHandle;
+    vr::VRInputComponentHandle_t m_volumeDownClick = vr::k_ulInvalidInputComponentHandle;
+};
+
 class PhoneVRProvider final : public vr::IServerTrackedDeviceProvider {
 public:
     vr::EVRInitError Init(vr::IVRDriverContext* context) override {
@@ -1780,6 +2113,12 @@ public:
             vr::VRDriverLog()->Log("PhoneVR: failed to start loopback status reporter on UDP 48105");
         m_redirect = new PhoneVRDisplayRedirect();
         m_hmd = new PhoneVRHmd();
+        m_leftController = new PhoneVRDaydreamController(true);
+        m_rightController = new PhoneVRDaydreamController(false);
+        const bool controllerReceiverReady = m_controllerReceiver.Start();
+        if (vr::VRDriverLog()) vr::VRDriverLog()->Log(controllerReceiverReady
+            ? "PhoneVR: Daydream controller bridge listening on loopback UDP 48108"
+            : "PhoneVR: Daydream controller bridge could not bind loopback UDP 48108");
         auto* host = vr::VRServerDriverHost();
         if (!host || !m_redirect->Prepare()) {
             Cleanup(); return vr::VRInitError_Driver_Unknown;
@@ -1805,11 +2144,20 @@ public:
         if (!host->TrackedDeviceAdded("PHONEVR-HMD-001", vr::TrackedDeviceClass_HMD, m_hmd)) {
             Cleanup(); return vr::VRInitError_Driver_Unknown;
         }
-        if (vr::VRDriverLog()) vr::VRDriverLog()->Log("PhoneVR 0.5.25 DisplayRedirect synchronized stream profile SteamVR driver initialized");
+        if (!host->TrackedDeviceAdded("PHONEVR-DAYDREAM-LEFT", vr::TrackedDeviceClass_Controller, m_leftController)) {
+            Cleanup(); return vr::VRInitError_Driver_Unknown;
+        }
+        if (!host->TrackedDeviceAdded("PHONEVR-DAYDREAM-RIGHT", vr::TrackedDeviceClass_Controller, m_rightController)) {
+            Cleanup(); return vr::VRInitError_Driver_Unknown;
+        }
+        if (vr::VRDriverLog()) vr::VRDriverLog()->Log("PhoneVR 0.5.26 DisplayRedirect and dual Daydream controller devices registered");
         return vr::VRInitError_None;
     }
     void Cleanup() override {
+        m_controllerReceiver.Stop();
         m_statusReporter.Stop();
+        delete m_leftController; m_leftController = nullptr;
+        delete m_rightController; m_rightController = nullptr;
         delete m_hmd; m_hmd = nullptr;
         delete m_redirect; m_redirect = nullptr;
         VR_CLEANUP_SERVER_DRIVER_CONTEXT();
@@ -1817,6 +2165,11 @@ public:
     const char* const* GetInterfaceVersions() override { return vr::k_InterfaceVersions; }
     void RunFrame() override {
         if (m_hmd) m_hmd->RunFrame();
+        if (m_hmd) {
+            const auto hmdPose = m_hmd->GetPose();
+            if (m_leftController) m_leftController->Update(m_controllerReceiver.Snapshot(0), hmdPose);
+            if (m_rightController) m_rightController->Update(m_controllerReceiver.Snapshot(1), hmdPose);
+        }
         const uint64_t now = MonotonicNowNs();
         if (m_redirect && now - m_lastDisplayDiagnosticsNs >= 5000000000ULL) {
             const double intervalSeconds = m_lastDisplayDiagnosticsNs == 0
@@ -1862,7 +2215,10 @@ public:
 private:
     PhoneVRHmd* m_hmd = nullptr;
     PhoneVRDisplayRedirect* m_redirect = nullptr;
+    PhoneVRDaydreamController* m_leftController = nullptr;
+    PhoneVRDaydreamController* m_rightController = nullptr;
     SteamVRStatusReporter m_statusReporter;
+    DaydreamControllerReceiver m_controllerReceiver;
     uint64_t m_lastDisplayDiagnosticsNs = 0;
 };
 

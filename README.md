@@ -1,6 +1,6 @@
 # PhoneVRStream
 
-Repository revision: **0.5.25**. Windows Host: **0.5.25**. Android client: **0.5.25**. Control protocol: **v1**; video packet protocol: **v1**.
+Repository revision: **0.5.26**. Windows Host: **0.5.26**. Android client: **0.5.26**. Control protocol: **v1**; video packet protocol: **v1**.
 
 PhoneVRStream is a multi-component project for using an Android phone as a PC VR streaming HMD. Both applications live in one repository and use independent build/test pipelines.
 
@@ -22,7 +22,7 @@ PhoneVRStream/
 └── dist/                       # Local build output (git-ignored)
 ```
 
-## Windows Host 0.5.25 bundled SteamVR driver
+## Windows Host 0.5.26 bundled SteamVR driver
 
 The virtual display timing is fixed at 72 Hz in this revision. Stream resolution is selected independently using the **Stream Resolution** dialog. The chosen SBS profile changes the driver's recommended target size and capture output, Host raw-frame buffers and H.264 encoder dimensions, plus the Android decoder capability negotiation. SteamVR's own resolution scale controls supersampling before capture and does not replace the PhoneVR stream profile.
 
@@ -50,7 +50,7 @@ The normal `PhoneVRHost.exe` is built with the Windows GUI subsystem and opens t
 
 All helper processes launched by the GUI Host use `CREATE_NO_WINDOW`, including Steam registry discovery, SteamVR driver registration and FFmpeg inventory/preflight/streaming. Their captured output remains available in the Host log. See `docs/2026-11-22-silent-host-child-processes.md`.
 
-## Android client 0.5.25
+## Android client 0.5.26
 
 - Landscape immersive display with OpenGL ES 3.0 stereo rendering.
 - Locally stored optical preset selector with Daydream View v1.0 (2016), Daydream View v2.0 (2017) and Generic Cardboard built-in presets.
@@ -69,9 +69,9 @@ All helper processes launched by the GUI Host use `CREATE_NO_WINDOW`, including 
 
 ## Audio streaming status
 
-Audio transport is not implemented in 0.5.25. The current build has no WASAPI capture/render workers, Android `AudioRecord`/`AudioTrack` path, audio packet protocol or virtual headset audio endpoints. The SteamVR input/output selectors therefore cannot provide end-to-end phone audio by themselves. The proposed two-way architecture and Windows endpoint requirements are documented in `docs/audio-streaming-architecture.md`.
+Audio transport is not implemented in 0.5.26. The current build has no WASAPI capture/render workers, Android `AudioRecord`/`AudioTrack` path, audio packet protocol or virtual headset audio endpoints. The SteamVR input/output selectors therefore cannot provide end-to-end phone audio by themselves. The proposed two-way architecture and Windows endpoint requirements are documented in `docs/audio-streaming-architecture.md`.
 
-## SteamVR driver 0.5.25
+## SteamVR driver 0.5.26
 
 The PhoneVR Host contains its own Windows x64 OpenVR driver inside the Host executable. The normal build compiles `steamvr-driver/`, embeds the resulting manifest, DLL and resources into both Host executables, and no longer asks users to download or select a ZIP. On startup, the Host checks whether SteamVR is installed and whether the user has disabled automatic deployment. When enabled, it copies the embedded driver into a content-versioned directory under `%LOCALAPPDATA%\PhoneVR\SteamVRDriver` and registers it with SteamVR's own `vrpathreg.exe`.
 
@@ -100,12 +100,16 @@ restart SteamVR. PhoneVR does not force-edit the user's global SteamVR settings.
 
 The real-time video path captures the final SteamVR SBS backbuffer at up to 60 FPS, GPU-scales it to the selected SBS profile, reads back through a bounded triple-buffer and passes BGRA frames to a hardware-only H.264 FFmpeg session. For LAN connections, Annex-B access units are fragmented into MTU-safe `PVRV` UDP packets and sent to Android port 48104. For USB connections, the same `PVRV` fragments are multiplexed over AOA Bulk channel 3. Android reassembles only complete frames, drops stale/incomplete access units, recovers at the next IDR after loss, decodes with `MediaCodec`, and presents to a `SurfaceTexture` consumed by the stereo OpenGL renderer. Control JSON and pose samples use separate channels on the same USB Bulk stream when USB is selected.
 
+## Daydream View dual-controller input
+
+The Android controller panel scans for Daydream Controller BLE devices and assigns one remote to the left hand and one to the right hand. Each assignment is saved separately and restored on later launches. The 19-byte BLE report is decoded locally, then controller snapshots travel on the TCP control channel. Windows Host forwards separate validated `PVSC` packets to the SteamVR driver over loopback UDP `48108`. SteamVR registers two controller devices with touchpad axes/click, trigger compatibility alias, App/Menu, Home/System and volume buttons. HMD pose continues on the independent `PVSP` channel. See `docs/daydream-controller-integration.md` for protocol, mapping and limitations.
+
 ## Current limitations
 
 - The integrated live path captures the final SteamVR SBS backbuffer, GPU-scales it, hardware-encodes H.264 on the Host and sends MTU-safe UDP fragments to Android.
 - Android reassembles complete H.264 access units, decodes them with a hardware MediaCodec decoder and presents the SBS image to SurfaceTexture; the stereo OpenGL renderer applies the existing optical warp independently to each eye.
 - Live video is enabled only after both PC hardware encoder initialization and Android hardware decoder profile validation succeed. If either is unavailable, pose/control remain available and video is disabled rather than falling back to CPU software encoding.
-- Daydream Controller Bluetooth pairing and SteamVR controller forwarding are not implemented yet.
+- PhoneVR 0.5.26 adds Android BLE pairing for two Daydream View remotes, independent left/right SteamVR controller devices, touchpad/button forwarding and 3DoF controller orientation. Simultaneous dual-GATT behavior and physical SteamVR/game bindings still require target-device validation. Controller position is a fixed head-relative estimate, not 6DoF tracking.
 - The live H.264 stream requires PC-side NVENC/AMF/QSV and a compatible hardware MediaCodec decoder. Available SBS profiles are 1280×576, 1600×720, 1920×864 and 2400×1080 at up to 60 FPS, with profile-specific target bitrates of 5/8/13/18 Mbps. End-to-end Wi-Fi tuning remains a device-level validation task.
 - Daydream View 2016 and 2017 support currently means optical profile/calibration compatibility with the physical viewer. It does not implement the discontinued Google Daydream Home/VR Services platform integration.
 

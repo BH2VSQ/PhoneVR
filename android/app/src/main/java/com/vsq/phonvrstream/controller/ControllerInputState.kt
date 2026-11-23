@@ -9,6 +9,8 @@ package com.vsq.phonvrstream.controller
 data class ControllerInputState(
     val connected: Boolean,
     val timestampNs: Long,
+    val packetSequence: Int = 0,
+    val deviceTimeTicks: Int = 0,
     val isTouching: Boolean = false,
     /** Normalized touchpad coordinates in the inclusive range 0.0..1.0. */
     val touchX: Float = 0f,
@@ -26,6 +28,12 @@ data class ControllerInputState(
     val orientationW: Float = 1f,
     /** True only when the provider supplies a valid orientation quaternion. */
     val hasOrientation: Boolean = false,
+    val accelerometerX: Float = 0f,
+    val accelerometerY: Float = 0f,
+    val accelerometerZ: Float = 0f,
+    val gyroscopeX: Float = 0f,
+    val gyroscopeY: Float = 0f,
+    val gyroscopeZ: Float = 0f,
     /** Google SDK elbow-model position estimate; not room-scale tracking. */
     val positionX: Float = 0f,
     val positionY: Float = 0f,
@@ -43,9 +51,8 @@ data class ControllerInputState(
 }
 
 /**
- * Provider boundary for future Daydream Controller / generic Android input
- * adapters. Implementations must report disconnects and release resources
- * from [stop]. No provider is activated by the HMD-only 0.3.0 build.
+ * Provider boundary for Daydream Controller and generic Android input adapters.
+ * Implementations must report disconnects and release resources from [stop].
  */
 interface ControllerInputProvider {
     val providerId: String

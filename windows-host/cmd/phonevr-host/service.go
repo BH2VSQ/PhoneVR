@@ -26,27 +26,28 @@ import (
 )
 
 const (
-	protocolVersion            = 1
-	controlHandshakeTimeout    = 8 * time.Second
-	usbControlHandshakeTimeout = 30 * time.Second
-	controlIdleTimeout         = 15 * time.Second
-	controlWriteTimeout        = 5 * time.Second
-	discoveryPortDefault       = 48100
-	controlPortDefault         = 48101
-	posePortDefault            = 48102
-	steamVRStatusPort          = 48105
-	steamVRVideoCapturePort    = 48106
-	androidVideoPort           = 48104
-	videoInputQueueDepth       = 2 // one frame may be written to FFmpeg while two newer frames wait
-	videoOutputQueueDepth      = 8 // isolate FFmpeg stdout from potentially blocking USB Bulk writes
-	videoUSBQueueDepth         = 4 // bounded independent queue for striped AOA writes
-	videoRetainedFrameLimit    = 16
-	videoRetainedFrameMaxBytes = 16 * 1024 * 1024
-	videoRetainedFrameTTL      = 700 * time.Millisecond
-	videoBridgeReadTimeout     = 10 * time.Second
-	discoveryQuery             = "PHONEVR_DISCOVER_V1"
-	discoveryPrefix            = "PHONEVR_HOST_V1 "
-	maxLogEntries              = 250
+	protocolVersion             = 1
+	controlHandshakeTimeout     = 8 * time.Second
+	usbControlHandshakeTimeout  = 30 * time.Second
+	controlIdleTimeout          = 15 * time.Second
+	controlWriteTimeout         = 5 * time.Second
+	discoveryPortDefault        = 48100
+	controlPortDefault          = 48101
+	posePortDefault             = 48102
+	steamVRStatusPort           = 48105
+	steamVRVideoCapturePort     = 48106
+	steamVRControllerBridgePort = 48108
+	androidVideoPort            = 48104
+	videoInputQueueDepth        = 2 // one frame may be written to FFmpeg while two newer frames wait
+	videoOutputQueueDepth       = 8 // isolate FFmpeg stdout from potentially blocking USB Bulk writes
+	videoUSBQueueDepth          = 4 // bounded independent queue for striped AOA writes
+	videoRetainedFrameLimit     = 16
+	videoRetainedFrameMaxBytes  = 16 * 1024 * 1024
+	videoRetainedFrameTTL       = 700 * time.Millisecond
+	videoBridgeReadTimeout      = 10 * time.Second
+	discoveryQuery              = "PHONEVR_DISCOVER_V1"
+	discoveryPrefix             = "PHONEVR_HOST_V1 "
+	maxLogEntries               = 250
 )
 
 type HostConfig struct {
@@ -162,23 +163,24 @@ type welcomeMessage struct {
 }
 
 type controlMessage struct {
-	Type                  string                `json:"type"`
-	RequestID             string                `json:"requestId,omitempty"`
-	Settings              *PhoneDisplaySettings `json:"settings,omitempty"`
-	Presets               []OpticalPreset       `json:"presets,omitempty"`
-	PresetID              string                `json:"presetId,omitempty"`
-	Action                string                `json:"action,omitempty"`
-	Status                string                `json:"status,omitempty"`
-	Message               string                `json:"message,omitempty"`
-	BatteryLevel          *int                  `json:"batteryLevel,omitempty"`
-	Charging              bool                  `json:"charging,omitempty"`
-	VideoTransport        string                `json:"videoTransport,omitempty"`
-	LastPacketAgeMS       int64                 `json:"lastPacketAgeMs,omitempty"`
-	LastDecodedAgeMS      int64                 `json:"lastDecodedAgeMs,omitempty"`
-	VideoProbe            bool                  `json:"videoProbe,omitempty"`
-	VideoRXBytesPerSecond uint64                `json:"videoRxBytesPerSecond,omitempty"`
-	VideoFrameID          uint32                `json:"frameId,omitempty"`
-	MissingFragments      []int                 `json:"missingFragments,omitempty"`
+	Type                  string                    `json:"type"`
+	Controllers           *protocol.ControllerFrame `json:"controllers,omitempty"`
+	RequestID             string                    `json:"requestId,omitempty"`
+	Settings              *PhoneDisplaySettings     `json:"settings,omitempty"`
+	Presets               []OpticalPreset           `json:"presets,omitempty"`
+	PresetID              string                    `json:"presetId,omitempty"`
+	Action                string                    `json:"action,omitempty"`
+	Status                string                    `json:"status,omitempty"`
+	Message               string                    `json:"message,omitempty"`
+	BatteryLevel          *int                      `json:"batteryLevel,omitempty"`
+	Charging              bool                      `json:"charging,omitempty"`
+	VideoTransport        string                    `json:"videoTransport,omitempty"`
+	LastPacketAgeMS       int64                     `json:"lastPacketAgeMs,omitempty"`
+	LastDecodedAgeMS      int64                     `json:"lastDecodedAgeMs,omitempty"`
+	VideoProbe            bool                      `json:"videoProbe,omitempty"`
+	VideoRXBytesPerSecond uint64                    `json:"videoRxBytesPerSecond,omitempty"`
+	VideoFrameID          uint32                    `json:"frameId,omitempty"`
+	MissingFragments      []int                     `json:"missingFragments,omitempty"`
 }
 
 type activeDevice struct {
@@ -1372,7 +1374,7 @@ func (s *HostService) handleControlConnection(ctx context.Context, conn net.Conn
 	welcome := welcomeMessage{
 		Type: "welcome", Protocol: protocolVersion, SessionID: newSessionID(),
 		ServerName: s.serverName, PosePort: s.config.PosePort,
-		Capabilities: []string{"head-pose-3dof-udp-v1", "control-heartbeat-v1", "display-settings-control-v1", "android-optical-presets-v1", "android-media-capabilities-v1"},
+		Capabilities: []string{"head-pose-3dof-udp-v1", "control-heartbeat-v1", "display-settings-control-v1", "android-optical-presets-v1", "android-media-capabilities-v1", "daydream-controller-ble-v1", "steamvr-dual-controller-v1"},
 		VideoEnabled: videoEnabled,
 	}
 	if usbLink != nil {
@@ -1419,6 +1421,17 @@ func (s *HostService) handleControlConnection(ctx context.Context, conn net.Conn
 	if err := writeJSONLineWithDeadline(conn, welcome); err != nil {
 		s.addLog("Pair response failed: " + err.Error())
 		return
+	}
+	var controllerBridge *net.UDPConn
+	if !hello.VideoOnly {
+		bridgeAddress := &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: steamVRControllerBridgePort}
+		bridge, bridgeErr := net.DialUDP("udp4", nil, bridgeAddress)
+		if bridgeErr != nil {
+			s.addLog("Daydream controller bridge unavailable: " + bridgeErr.Error())
+		} else {
+			controllerBridge = bridge
+			defer controllerBridge.Close()
+		}
 	}
 	s.mu.Lock()
 	if current, ok := s.devices[remote]; ok && current.Conn == conn {
@@ -1487,6 +1500,26 @@ func (s *HostService) handleControlConnection(ctx context.Context, conn net.Conn
 			s.updateVideoTransportFeedbackWithRate(hello.DeviceID, message.VideoTransport, message.LastPacketAgeMS, message.LastDecodedAgeMS, message.VideoProbe, message.VideoRXBytesPerSecond)
 		case "video_nack":
 			s.retransmitMissingVideoFragments(hello.DeviceID, message.VideoFrameID, message.MissingFragments)
+		case "controller_state":
+			if hello.VideoOnly || message.Controllers == nil || controllerBridge == nil {
+				continue
+			}
+			leftPacket, leftErr := protocol.EncodeControllerPacket(protocol.ControllerHandLeft, message.Controllers.Left)
+			rightPacket, rightErr := protocol.EncodeControllerPacket(protocol.ControllerHandRight, message.Controllers.Right)
+			if leftErr != nil || rightErr != nil {
+				if leftErr != nil {
+					s.addLog("Rejected invalid left Daydream controller state: " + leftErr.Error())
+				} else {
+					s.addLog("Rejected invalid right Daydream controller state: " + rightErr.Error())
+				}
+				continue
+			}
+			if _, err := controllerBridge.Write(leftPacket); err != nil {
+				s.addLog("Left Daydream controller bridge write failed: " + err.Error())
+			}
+			if _, err := controllerBridge.Write(rightPacket); err != nil {
+				s.addLog("Right Daydream controller bridge write failed: " + err.Error())
+			}
 		case "optical_presets":
 			if hello.VideoOnly {
 				continue

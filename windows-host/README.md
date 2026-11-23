@@ -1,4 +1,4 @@
-# PhoneVR Host 0.5.25 bundled SteamVR driver and live SBS video
+# PhoneVR Host 0.5.26 bundled SteamVR driver and live SBS video
 
 Executable version is injected from the repository root `VERSION` file during builds.
 
@@ -37,6 +37,10 @@ The Android app's optical preset panel is a selector only. It no longer exposes 
 The appearance panel supports light/dark modes with independent OpenGL preview backgrounds, grid/axis colors and headset material palettes. Five color-only swatches apply on left-click; right-click opens the Windows color picker to customize and save that swatch. The theme and custom swatches are saved in the user's application settings. Optical-editor and network-settings viewports follow the active palette. Child windows use a client-drawn header, without a separate Windows caption close button; the in-app Close button remains available.
 
 Network Settings provides the listener address and discovery/control/pose ports, including service start/stop/restart. Runtime Logs provides the Host event log. Dialog content supports vertical scrolling and mouse-wheel navigation, with action buttons in a fixed footer.
+
+## Daydream controller bridge
+
+The main TCP control session accepts optional `controller_state` snapshots from Android. The Host validates each left/right state and sends fixed-size `PVSC` v1 packets to `127.0.0.1:48108`; it does not expose this controller bridge on the LAN. The separate SteamVR driver owns the UDP receiver and publishes the two OpenVR controller devices. The Android HMD pose channel remains unchanged.
 
 ## Run
 

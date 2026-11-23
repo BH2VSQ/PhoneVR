@@ -2,6 +2,7 @@ package com.vsq.phonvrstream.network
 
 import android.content.Context
 import android.view.Surface
+import com.vsq.phonvrstream.controller.ControllerInputState
 import com.vsq.phonvrstream.streaming.VideoStreamReceiver
 import com.vsq.phonvrstream.streaming.VideoStreamStats
 import android.content.Intent
@@ -67,6 +68,12 @@ class NetworkClient(
     // UI callbacks only enqueue control replies. All socket writes happen on this
     // dedicated worker, never on Android's main thread.
     private val controlWriteExecutor = Executors.newSingleThreadExecutor()
+    private val controllerSenderExecutor = Executors.newCachedThreadPool()
+    private data class ControllerPair(val left: ControllerInputState, val right: ControllerInputState)
+    private val latestControllers = AtomicReference(
+        ControllerPair(ControllerInputState(false, 0L), ControllerInputState(false, 0L)),
+    )
+    private val controllerRevision = AtomicLong(0L)
     // Head tracking is latency-sensitive but lightweight. Give the dedicated
     // sender display-thread scheduling priority so UI/GC work is less likely to
     // leave hundreds of milliseconds of stale UDP samples queued.
@@ -320,6 +327,72 @@ class NetworkClient(
             queueControlMessage(auxWriter, auxGeneration, message, "USB 视频缺片反馈失败")
         }
     }
+
+
+    /** Publish the newest left/right Daydream snapshots without touching HMD pose state. */
+    fun updateControllers(left: ControllerInputState, right: ControllerInputState) {
+        latestControllers.set(ControllerPair(left.normalized(), right.normalized()))
+        controllerRevision.incrementAndGet()
+    }
+
+    private fun supportsDaydreamControllerBridge(welcome: JSONObject): Boolean {
+        val capabilities = welcome.optJSONArray("capabilities") ?: return false
+        for (index in 0 until capabilities.length()) {
+            if (capabilities.optString(index) == "daydream-controller-ble-v1") return true
+        }
+        return false
+    }
+
+    private fun startControllerStateSender(generation: Long, writer: BufferedWriter) {
+        controllerSenderExecutor.execute {
+            var lastSentRevision = -1L
+            var lastDisconnectedSendNs = 0L
+            while (isSessionActive(generation)) {
+                val pair = latestControllers.get()
+                val revision = controllerRevision.get()
+                val hasConnectedController = pair.left.connected || pair.right.connected
+                val now = System.nanoTime()
+                val shouldSend = hasConnectedController || revision != lastSentRevision ||
+                    now - lastDisconnectedSendNs >= 1_000_000_000L
+                if (shouldSend) {
+                    val payload = JSONObject()
+                        .put("type", "controller_state")
+                        .put("controllers", JSONObject()
+                            .put("left", controllerStateJson(pair.left))
+                            .put("right", controllerStateJson(pair.right)))
+                    try {
+                        writeControlMessage(writer, payload)
+                        lastSentRevision = revision
+                        lastDisconnectedSendNs = now
+                    } catch (error: Exception) {
+                        if (isSessionActive(generation)) {
+                            postStatus("Daydream 手柄数据发送失败：${error.message ?: error.javaClass.simpleName}", true)
+                        }
+                        return@execute
+                    }
+                }
+                sleepNanos(if (hasConnectedController) CONTROLLER_SEND_INTERVAL_NS else CONTROLLER_IDLE_SEND_INTERVAL_NS)
+            }
+        }
+    }
+
+    private fun controllerStateJson(state: ControllerInputState): JSONObject = JSONObject()
+        .put("connected", state.connected)
+        .put("timestampNs", state.timestampNs)
+        .put("packetSequence", state.packetSequence)
+        .put("touching", state.isTouching)
+        .put("touchX", state.touchX.toDouble())
+        .put("touchY", state.touchY.toDouble())
+        .put("click", state.click)
+        .put("app", state.app)
+        .put("home", state.home)
+        .put("volumeUp", state.volumeUp)
+        .put("volumeDown", state.volumeDown)
+        .put("orientationX", state.orientationX.toDouble())
+        .put("orientationY", state.orientationY.toDouble())
+        .put("orientationZ", state.orientationZ.toDouble())
+        .put("orientationW", state.orientationW.toDouble())
+        .put("hasOrientation", state.hasOrientation)
 
     private fun publishVideoStats(stats: VideoStreamStats) {
         lastVideoStatsNs.set(System.nanoTime())
@@ -924,6 +997,9 @@ class NetworkClient(
                 publishTransportStatus()
                 writeControlMessage(writer,
                     JSONObject().put("type", "display_settings").put("settings", currentDisplaySettings()))
+                if (supportsDaydreamControllerBridge(welcome)) {
+                    startControllerStateSender(generation, writer)
+                }
                 poseExecutor.execute { sendUsbPoseLoop(generation, openedSession) }
                 postStatus("已通过 USB AOA Bulk 连接 PC · 姿态与视频共用 USB 通道", true)
                 retryDelayMs = INITIAL_RECONNECT_DELAY_MS
@@ -1012,6 +1088,7 @@ class NetworkClient(
         auxiliaryPoseExecutor.shutdownNow()
         poseExecutor.shutdownNow()
         controlWriteExecutor.shutdownNow()
+        controllerSenderExecutor.shutdownNow()
         videoLifecycleExecutor.shutdown()
     }
 
@@ -1079,6 +1156,9 @@ class NetworkClient(
                     writer,
                     JSONObject().put("type", "display_settings").put("settings", currentDisplaySettings()),
                 )
+                if (supportsDaydreamControllerBridge(welcome)) {
+                    startControllerStateSender(generation, writer)
+                }
 
                 val posePort = welcome.optInt("posePort", DEFAULT_POSE_PORT)
                 val serverName = welcome.optString("serverName", address)
@@ -1446,7 +1526,9 @@ class NetworkClient(
         private const val MAX_VIDEO_REORDER_GRACE_MS = 250
         const val DISCOVERY_PORT = 48100
         private const val PROTOCOL_VERSION = 1
-        private const val CLIENT_VERSION = "PhoneVRStream-0.5.25"
+        private const val CLIENT_VERSION = "PhoneVRStream-0.5.26"
+        private const val CONTROLLER_SEND_INTERVAL_NS = 20_000_000L
+        private const val CONTROLLER_IDLE_SEND_INTERVAL_NS = 100_000_000L
         private const val DISCOVERY_REQUEST = "PHONEVR_DISCOVER_V1"
         private const val DISCOVERY_RESPONSE_PREFIX = "PHONEVR_HOST_V1 "
         private const val DISCOVERY_WINDOW_MS = 1800L

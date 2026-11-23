@@ -1,4 +1,4 @@
-# PhoneVR SteamVR Driver — 0.5.25 (Synchronized stream profile handoff)
+# PhoneVR SteamVR Driver — 0.5.26 (Synchronized stream profile handoff)
 
 Windows x64 OpenVR server driver foundation for the PhoneVR wireless HMD.
 
@@ -143,3 +143,7 @@ Interpretation:
 ## DisplayRedirect startup ordering follow-up (2026-11-22)
 
 The driver now pre-initializes the DisplayRedirect D3D11 device and registers the DisplayRedirect tracked device before registering the PhoneVR HMD. It also writes the virtual-display capability and graphics-adapter LUID to OpenVR's `k_ulDisplayRedirectContainer`, then logs the effective values read through the HMD's property container. This addresses the observed startup sequence where SteamVR queried the HMD display component before DisplayRedirect activation had finished. See `docs/2026-11-22-displayredirect-startup-order.md`.
+
+## Daydream View controllers
+
+The driver registers `PHONEVR-DAYDREAM-LEFT` and `PHONEVR-DAYDREAM-RIGHT` as separate `TrackedDeviceClass_Controller` devices. It receives validated 44-byte `PVSC` v1 state packets on loopback UDP `127.0.0.1:48108`, assigns `TrackedControllerRole_LeftHand` and `TrackedControllerRole_RightHand`, and updates touchpad, click, trigger-compatibility, menu, system and volume components. Controller orientation is 3DoF. A fixed head-relative hand anchor is used for position until a genuine position source is available. The SteamVR profile and default legacy binding are in `resources/input/`.

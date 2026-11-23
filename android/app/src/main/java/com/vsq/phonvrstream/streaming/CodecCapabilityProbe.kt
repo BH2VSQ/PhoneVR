@@ -18,6 +18,7 @@ data class VideoDecoderCapability(
     val maxFrameRate: Double,
     val maxInstances: Int?,
     val supportsSbs1600x720At60: Boolean,
+    val supportedSbsProfiles: List<String>,
     val profileLevels: List<String>,
     val colorFormats: List<Int>,
 )
@@ -71,6 +72,11 @@ object CodecCapabilityProbe {
                     supportsSbs1600x720At60 = hardware && runCatching {
                         video.areSizeAndRateSupported(1600, 720, 60.0)
                     }.getOrDefault(false),
+                    supportedSbsProfiles = if (hardware) listOf(
+                        1280 to 576, 1600 to 720, 1920 to 864, 2400 to 1080,
+                    ).filter { (width, height) -> runCatching {
+                        video.areSizeAndRateSupported(width, height, 60.0)
+                    }.getOrDefault(false) }.map { (width, height) -> "${width}x${height}" } else emptyList(),
                     profileLevels = capability.profileLevels.take(32).map { "${it.profile}:${it.level}" },
                     colorFormats = capability.colorFormats.take(32).toList(),
                 )
@@ -83,6 +89,7 @@ object CodecCapabilityProbe {
                 "classificationReliable=${codec.hardwareClassificationReliable}, " +
                 "max=${codec.maxWidth}x${codec.maxHeight}@${codec.maxFrameRate}, " +
                 "supports1600x720@60=${codec.supportsSbs1600x720At60}, " +
+                "supportedSbsProfiles=${codec.supportedSbsProfiles.joinToString(",")}, " +
                 "profiles=${codec.profileLevels.joinToString(",")}")
         }
         Log.i(TAG, "MediaCodec probe: SDK=${Build.VERSION.SDK_INT}, H.264 decoders=${result.count { it.mimeType == "video/avc" }}")
@@ -115,6 +122,7 @@ object CodecCapabilityProbe {
                 .put("maxHeight", capability.maxHeight)
                 .put("maxFrameRate", capability.maxFrameRate)
                 .put("supportsSbs1600x720At60", capability.supportsSbs1600x720At60)
+                .put("supportedSbsProfiles", JSONArray(capability.supportedSbsProfiles))
                 .put("maxInstances", capability.maxInstances)
                 .put("profileLevels", JSONArray(capability.profileLevels))
                 .put("colorFormats", JSONArray().also { formats -> capability.colorFormats.forEach { formats.put(it) } }))

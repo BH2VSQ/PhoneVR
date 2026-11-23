@@ -146,6 +146,10 @@ func TestRawH264EncoderArgsUseHardwareFormatsAndBoundedQSVQueue(t *testing.T) {
 		t.Fatalf("expected NV12 hardware input and low-latency mux flushing, args: %s", nvenc)
 	}
 	qsv := strings.Join(rawH264EncoderArgs(Capability{Name: "h264_qsv", Codec: CodecH264, Backend: BackendQSV, Hardware: true}, 1600, 720, 60), " ")
+	highResolution := strings.Join(rawH264EncoderArgsWithBitrate(Capability{Name: "h264_qsv", Codec: CodecH264, Backend: BackendQSV, Hardware: true}, 2400, 1080, 60, 18), " ")
+	if !strings.Contains(highResolution, "-video_size 2400x1080") || !strings.Contains(highResolution, "-b:v 18M") || !strings.Contains(highResolution, "-maxrate 18M") {
+		t.Fatalf("high-resolution QSV profile must apply its negotiated size and bitrate: %s", highResolution)
+	}
 	for _, option := range []string{"-async_depth 2", "-low_delay_brc 1", "-pix_fmt nv12", "-bf 0", "-aud 1"} {
 		if !strings.Contains(qsv, option) {
 			t.Fatalf("QSV args missing %q: %s", option, qsv)

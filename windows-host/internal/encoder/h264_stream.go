@@ -197,10 +197,17 @@ func startH264Encoder(ctx context.Context, ffmpegPath string, width, height, fps
 // reconnect. The Host owns this session for its lifetime, independently of the
 // loopback TCP capture connection.
 func StartH264EncoderWithCapability(ctx context.Context, ffmpegPath string, width, height, fps int, selected Capability, callback AccessUnitCallback, logf func(string)) (*H264EncoderSession, error) {
+	return StartH264EncoderWithCapabilityAndBitrate(ctx, ffmpegPath, width, height, fps, 8, selected, callback, logf)
+}
+
+// StartH264EncoderWithCapabilityAndBitrate starts the negotiated profile with
+// a bitrate selected for its pixel rate. Keep the older API at 8 Mbps so other
+// callers retain the original behavior.
+func StartH264EncoderWithCapabilityAndBitrate(ctx context.Context, ffmpegPath string, width, height, fps, bitrateMbps int, selected Capability, callback AccessUnitCallback, logf func(string)) (*H264EncoderSession, error) {
 	if !selected.Hardware || selected.Codec != CodecH264 || selected.Name == "" {
 		return nil, errors.New("a prevalidated hardware H.264 encoder capability is required")
 	}
-	if width < 16 || height < 16 || fps < 1 || fps > 120 {
+	if width < 16 || height < 16 || fps < 1 || fps > 120 || bitrateMbps < 1 || bitrateMbps > 100 {
 		return nil, errors.New("invalid H.264 encoder profile")
 	}
 	if callback == nil {
@@ -213,11 +220,15 @@ func StartH264EncoderWithCapability(ctx context.Context, ffmpegPath string, widt
 		}
 		ffmpegPath = resolved
 	}
-	return startH264EncoderWithCapability(ctx, ffmpegPath, width, height, fps, selected, callback, logf)
+	return startH264EncoderWithCapabilityAndBitrate(ctx, ffmpegPath, width, height, fps, bitrateMbps, selected, callback, logf)
 }
 
 func startH264EncoderWithCapability(ctx context.Context, ffmpegPath string, width, height, fps int, selected Capability, callback AccessUnitCallback, logf func(string)) (*H264EncoderSession, error) {
-	args := rawH264EncoderArgs(selected, width, height, fps)
+	return startH264EncoderWithCapabilityAndBitrate(ctx, ffmpegPath, width, height, fps, 8, selected, callback, logf)
+}
+
+func startH264EncoderWithCapabilityAndBitrate(ctx context.Context, ffmpegPath string, width, height, fps, bitrateMbps int, selected Capability, callback AccessUnitCallback, logf func(string)) (*H264EncoderSession, error) {
+	args := rawH264EncoderArgsWithBitrate(selected, width, height, fps, bitrateMbps)
 	cmd := exec.CommandContext(ctx, ffmpegPath, args...)
 	configureFFmpegProcess(cmd)
 	stdin, err := cmd.StdinPipe()
@@ -360,20 +371,25 @@ func testH264Encoder(ctx context.Context, path string, capability Capability, wi
 }
 
 func h264CodecArgs(capability Capability, fps int) []string {
+	return h264CodecArgsWithBitrate(capability, fps, 8)
+}
+
+func h264CodecArgsWithBitrate(capability Capability, fps, bitrateMbps int) []string {
+	bitrate := fmt.Sprintf("%dM", bitrateMbps)
+	maxRate := bitrate
+	buffer := fmt.Sprintf("%dM", max(1, bitrateMbps/4))
 	gop := fmt.Sprint(max(1, fps/2))
 	switch capability.Backend {
 	case BackendNVENC:
-		return []string{"-c:v", capability.Name, "-preset", "p1", "-tune", "ll", "-rc", "cbr", "-b:v", "8M", "-maxrate", "8M", "-bufsize", "2M", "-g", gop, "-bf", "0", "-zerolatency", "1"}
+		return []string{"-c:v", capability.Name, "-preset", "p1", "-tune", "ll", "-rc", "cbr", "-b:v", bitrate, "-maxrate", maxRate, "-bufsize", buffer, "-g", gop, "-bf", "0", "-zerolatency", "1"}
 	case BackendAMF:
-		return []string{"-c:v", capability.Name, "-usage", "lowlatency", "-quality", "speed", "-rc", "cbr", "-b:v", "8M", "-maxrate", "8M", "-bufsize", "2M", "-g", gop, "-bf", "0"}
+		return []string{"-c:v", capability.Name, "-usage", "lowlatency", "-quality", "speed", "-rc", "cbr", "-b:v", bitrate, "-maxrate", maxRate, "-bufsize", buffer, "-g", gop, "-bf", "0"}
 	case BackendQSV:
-		// QSV is asynchronous. Keep its hardware queue shallow for live VR;
-		// otherwise raw BGRA frames can pile up while the compositor keeps
-		// producing newer frames. LowDelayBRC also reduces per-frame bitrate
-		// variance without enabling look-ahead or B-frames.
-		return []string{"-c:v", capability.Name, "-preset", "veryfast", "-async_depth", "2", "-look_ahead", "0", "-low_delay_brc", "1", "-b:v", "8M", "-maxrate", "8M", "-bufsize", "1M", "-g", gop, "-bf", "0"}
+		// QSV is asynchronous. Keep its hardware queue shallow for live VR.
+		qsvBuffer := fmt.Sprintf("%dM", max(1, bitrateMbps/8))
+		return []string{"-c:v", capability.Name, "-preset", "veryfast", "-async_depth", "2", "-look_ahead", "0", "-low_delay_brc", "1", "-b:v", bitrate, "-maxrate", maxRate, "-bufsize", qsvBuffer, "-g", gop, "-bf", "0"}
 	default:
-		return []string{"-c:v", capability.Name, "-preset", "ultrafast", "-tune", "zerolatency", "-x264-params", "repeat-headers=1:scenecut=0", "-b:v", "8M", "-g", gop, "-bf", "0"}
+		return []string{"-c:v", capability.Name, "-preset", "ultrafast", "-tune", "zerolatency", "-x264-params", "repeat-headers=1:scenecut=0", "-b:v", bitrate, "-maxrate", maxRate, "-bufsize", buffer, "-g", gop, "-bf", "0"}
 	}
 }
 
@@ -399,11 +415,15 @@ func encoderOutputPixelFormat(capability Capability) string {
 }
 
 func rawH264EncoderArgs(capability Capability, width, height, fps int) []string {
+	return rawH264EncoderArgsWithBitrate(capability, width, height, fps, 8)
+}
+
+func rawH264EncoderArgsWithBitrate(capability Capability, width, height, fps, bitrateMbps int) []string {
 	// The rawvideo demuxer already supplies frames as they are written. The
 	// nobuffer demuxer flag is unnecessary here and can discard useful startup
 	// buffering when QSV has not yet emitted its first access unit.
 	args := []string{"-hide_banner", "-loglevel", "warning", "-f", "rawvideo", "-pixel_format", "bgra", "-video_size", fmt.Sprintf("%dx%d", width, height), "-framerate", fmt.Sprint(fps), "-i", "pipe:0", "-an"}
-	args = append(args, h264CodecArgs(capability, fps)...)
+	args = append(args, h264CodecArgsWithBitrate(capability, fps, bitrateMbps)...)
 	args = append(args, "-pix_fmt", encoderOutputPixelFormat(capability))
 	args = append(args, h264AccessUnitArgs(capability)...)
 	args = append(args, "-flush_packets", "1", "-f", "h264", "pipe:1")

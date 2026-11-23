@@ -229,42 +229,45 @@ const (
 )
 
 const (
-	idCenter         = 100
-	idSettings       = 101 // Retained internally for the preset editor; no longer shown in the main menu.
-	idPresets        = 102
-	idNetwork        = 103
-	idLogs           = 104
-	idLanguage       = 105
-	idMenu           = 106
-	idAppearance     = 107
-	idDriverManager  = 108
-	idTransport      = 109
-	idProfile        = 200
-	idApply          = 201
-	idLiveApply      = 204
-	idDialogCenter   = 202
-	idClose          = 203
-	idPresetList     = 300
-	idPresetName     = 301
-	idPresetSave     = 302
-	idPresetClone    = 303
-	idPresetRename   = 304
-	idPresetDelete   = 305
-	idPresetApply    = 306
-	idPresetEdit     = 307
-	idPresetNew      = 308
-	idThemeModeDark  = 600
-	idThemeModeLight = 604
-	idDriverRefresh  = 710
-	idDriverInstall  = 711
-	idDriverRemove   = 712
-	idNetworkApply   = 400
-	idNetworkStop    = 401
-	idNetworkStart   = 402
-	idLogsRefresh    = 500
-	idTransportMode  = 800
-	idTransportPref  = 801
-	idTransportApply = 802
+	idCenter            = 100
+	idSettings          = 101 // Retained internally for the preset editor; no longer shown in the main menu.
+	idPresets           = 102
+	idNetwork           = 103
+	idLogs              = 104
+	idLanguage          = 105
+	idMenu              = 106
+	idAppearance        = 107
+	idDriverManager     = 108
+	idTransport         = 109
+	idVideoProfile      = 110
+	idProfile           = 200
+	idApply             = 201
+	idLiveApply         = 204
+	idDialogCenter      = 202
+	idClose             = 203
+	idPresetList        = 300
+	idPresetName        = 301
+	idPresetSave        = 302
+	idPresetClone       = 303
+	idPresetRename      = 304
+	idPresetDelete      = 305
+	idPresetApply       = 306
+	idPresetEdit        = 307
+	idPresetNew         = 308
+	idThemeModeDark     = 600
+	idThemeModeLight    = 604
+	idDriverRefresh     = 710
+	idDriverInstall     = 711
+	idDriverRemove      = 712
+	idNetworkApply      = 400
+	idNetworkStop       = 401
+	idNetworkStart      = 402
+	idLogsRefresh       = 500
+	idTransportMode     = 800
+	idTransportPref     = 801
+	idTransportApply    = 802
+	idVideoProfileCombo = 810
+	idVideoProfileApply = 811
 )
 
 type nativePoint struct{ X, Y int32 }
@@ -1030,6 +1033,7 @@ func (app *nativeUI) mainMenuItems() []nativeMenuItem {
 		{ID: idLogs, Chinese: "运行日志", English: "Logs"},
 		{ID: idDriverManager, Chinese: "SteamVR 驱动管理", English: "SteamVR Driver"},
 		{ID: idTransport, Chinese: "视频传输模式", English: "Video Transport"},
+		{ID: idVideoProfile, Chinese: "串流分辨率", English: "Stream Resolution"},
 		{ID: idLanguage, Chinese: "切换为 English", English: "Switch to 中文"},
 	}
 }
@@ -1112,6 +1116,8 @@ func (app *nativeUI) handleMainCommand(id int) {
 		app.openDialog("network")
 	case idTransport:
 		app.openDialog("transport")
+	case idVideoProfile:
+		app.openDialog("videoProfile")
 	case idLogs:
 		app.openDialog("logs")
 	case idDriverManager:
@@ -1169,6 +1175,8 @@ func (app *nativeUI) openDialog(kind string) {
 		// enough vertical room for the option rows instead of sizing it like
 		// a collapsed text field.
 		width, height, title = 720, 560, app.text("视频传输模式", "Video Transport")
+	case "videoProfile":
+		width, height, title = 760, 500, app.text("串流分辨率", "Stream Resolution")
 	case "logs":
 		width, height, title = 980, 680, app.text("运行日志", "Runtime Logs")
 	case "appearance":
@@ -1323,6 +1331,27 @@ func (app *nativeUI) createDialogControls(d *nativeDialog) {
 		addButton(idThemeModeDark, app.text("夜间模式", "Dark"))
 		// Palette swatches are painted directly on the dialog. This avoids
 		// native button chrome and lets the parent receive right-click gestures.
+		addButton(idClose, app.text("关闭", "Close"))
+
+	case "videoProfile":
+		addLabel(d.hwnd, 0, app.text("双眼 SBS 串流分辨率", "STEREO SBS STREAM RESOLUTION"))
+		addLabel(d.hwnd, 1, app.text("选择实际发送到手机的编码分辨率。每眼宽度为总宽度的一半。", "Choose the encoded resolution sent to the phone. Per-eye width is half of the SBS width."))
+		profileStyle := uint32(wsChild | wsVisible | wsTabStop | wsVScroll | cbDropDownList | cbNoIntegralHeight)
+		d.controls[idVideoProfileCombo] = app.createControl(d.hwnd, "COMBOBOX", "", profileStyle, 0, 0, 10, 10, idVideoProfileCombo)
+		for _, profile := range videoStreamProfiles {
+			app.addComboItem(d.controls[idVideoProfileCombo], app.videoProfileDisplayName(profile))
+		}
+		selected := app.service.SelectedVideoStreamProfile()
+		selectedIndex := 1
+		for index, profile := range videoStreamProfiles {
+			if profile.ID == selected.ID {
+				selectedIndex = index
+				break
+			}
+		}
+		sendNativeMessage(d.controls[idVideoProfileCombo], 0x014E, uintptr(selectedIndex), 0)
+		d.status = app.createControl(d.hwnd, "STATIC", app.text("更改后需要关闭 SteamVR 并重启 PhoneVR Host，再启动 SteamVR。SteamVR 视频分辨率缩放建议设为 100%。", "After changing this setting, exit SteamVR, restart PhoneVR Host, then start SteamVR. Keep SteamVR video resolution scale at 100%."), wsChild|wsVisible, 0, 0, 10, 10, 0)
+		addButton(idVideoProfileApply, app.text("保存分辨率", "Save Resolution"))
 		addButton(idClose, app.text("关闭", "Close"))
 
 	case "transport":
@@ -1530,6 +1559,15 @@ func (app *nativeUI) layoutDialog(d *nativeDialog) {
 		move(d.controls[idNetworkStart], margin+buttonWidth+gapX, buttonY, buttonWidth, 38)
 		move(d.controls[idNetworkStop], margin+2*(buttonWidth+gapX), buttonY, buttonWidth, 38)
 		move(d.controls[idClose], margin+3*(buttonWidth+gapX), buttonY, buttonWidth, 38)
+
+	case "videoProfile":
+		margin := 28
+		move(d.labels[0], margin, 110, w-2*margin, 28)
+		move(d.labels[1], margin, 150, w-2*margin, 54)
+		move(d.controls[idVideoProfileCombo], margin, 220, w-2*margin, 144)
+		move(d.status, margin, 380, w-2*margin, 52)
+		move(d.controls[idVideoProfileApply], margin, h-58, 170, 38)
+		move(d.controls[idClose], w-margin-116, h-58, 116, 38)
 
 	case "transport":
 		margin := 28
@@ -1892,6 +1930,23 @@ func (app *nativeUI) handleDialogCommand(d *nativeDialog, id int) {
 		case idClose:
 			pDestroyWindow.Call(d.hwnd)
 		}
+	case "videoProfile":
+		if id == idVideoProfileApply {
+			index := int(sendNativeMessage(d.controls[idVideoProfileCombo], 0x0147, 0, 0))
+			if index < 0 || index >= len(videoStreamProfiles) {
+				setNativeText(d.status, app.text("请选择有效的分辨率档位", "Select a valid resolution profile"))
+				return
+			}
+			profile := videoStreamProfiles[index]
+			if err := app.service.SaveVideoStreamProfile(profile.ID); err != nil {
+				setNativeText(d.status, app.text("保存失败：", "Save failed: ")+err.Error())
+				return
+			}
+			setNativeText(d.status, app.text("已保存 ", "Saved ")+app.videoProfileDisplayName(profile)+app.text("。请退出 SteamVR，重启 PhoneVR Host 后再启动 SteamVR。SteamVR 分辨率缩放保持 100%。", ". Exit SteamVR, restart PhoneVR Host, then start SteamVR again. Keep SteamVR resolution scale at 100%."))
+		} else if id == idClose {
+			pDestroyWindow.Call(d.hwnd)
+		}
+
 	case "transport":
 		if id == idTransportApply {
 			modeIndex := int(sendNativeMessage(d.controls[idTransportMode], 0x0147, 0, 0))
@@ -2405,6 +2460,13 @@ func (app *nativeUI) text(chinese, english string) string {
 		return english
 	}
 	return chinese
+}
+
+func (app *nativeUI) videoProfileDisplayName(profile VideoStreamProfile) string {
+	if app.language == "en" && profile.EnglishName != "" {
+		return profile.EnglishName
+	}
+	return profile.DisplayName
 }
 func (app *nativeUI) presetDisplayName(preset OpticalPreset) string {
 	if preset.ID == "builtin-cardboard" {

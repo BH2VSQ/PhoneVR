@@ -26,7 +26,7 @@ data class MissingVideoFragments(
  */
 class VideoFragmentReassembler(
     private val maxInFlightFrames: Int = 8,
-    private val maxFrameBytes: Int = 4 * 1024 * 1024,
+    private val maxFrameBytes: Int = 8 * 1024 * 1024,
     private val frameTimeoutNs: Long = 350_000_000L,
     private val reorderGraceNs: Long = 120_000_000L,
 ) {

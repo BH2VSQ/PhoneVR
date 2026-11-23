@@ -1,3 +1,26 @@
+# PhoneVR 0.5.24 build status
+
+## This revision (0.5.24)
+
+- Add four selectable SBS stream profiles: 1280×576, 1600×720, 1920×864 and 2400×1080 at 60 FPS.
+- Synchronize driver recommended target size, capture texture/CPU frame dimensions, Host raw-video buffers, FFmpeg encoder input, Welcome dimensions and Android hardware decoder capability negotiation.
+- Apply profile-specific H.264 target bitrates: 5, 8, 13 and 18 Mbps. Raise Android frame reassembly capacity to 8 MiB.
+- Add the Host Stream Resolution dialog and persisted `%APPDATA%\PhoneVRStream\video-profile.json` setting. Host and SteamVR driver must both be restarted after applying a new profile.
+- Android metadata is `versionName 0.5.24`, `versionCode 59`; Host, driver and AOA descriptor metadata are synchronized to `0.5.24`.
+- Audio status: no end-to-end capture, playback, virtual endpoint or audio network transport is included. `docs/audio-streaming-architecture.md` specifies the next implementation stages.
+
+## 0.5.24 validation status
+
+- `cd windows-host && go test ./...`: passed.
+- `cd windows-host && go test -race ./...`: passed.
+- `cd windows-host && go vet ./...`: passed.
+- `GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -o /tmp/PhoneVRHost-0.5.24.exe ./cmd/phonevr-host`: passed.
+- `python3 -m unittest discover -s tools/release -p 'test_*.py'`: passed, 61 tests.
+- `git diff --check`: passed.
+- SteamVR native MSVC driver build and Android Gradle packaging were not run because the Windows SDK/WDK and Android SDK build environments are unavailable here.
+- No physical phone, actual SteamVR runtime, negotiated high-resolution decode, Windows audio endpoint, or end-to-end audio test has been performed for this revision.
+- Audio is explicitly not implemented in 0.5.24. The architecture and virtual-endpoint requirements are documented in `docs/audio-streaming-architecture.md`.
+
 # PhoneVR 0.5.23 build status
 
 ## This revision (0.5.23)

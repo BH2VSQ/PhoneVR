@@ -37,9 +37,6 @@ const (
 	steamVRStatusPort          = 48105
 	steamVRVideoCapturePort    = 48106
 	androidVideoPort           = 48104
-	videoWidth                 = 1600
-	videoHeight                = 720
-	videoFrameRate             = 60
 	videoInputQueueDepth       = 2 // one frame may be written to FFmpeg while two newer frames wait
 	videoOutputQueueDepth      = 8 // isolate FFmpeg stdout from potentially blocking USB Bulk writes
 	videoUSBQueueDepth         = 4 // bounded independent queue for striped AOA writes
@@ -305,6 +302,8 @@ type HostService struct {
 	transportPreference         VideoTransportPreference
 	transportConfigPath         string
 	transportConfigMu           sync.Mutex
+	videoProfile                VideoStreamProfile
+	videoProfilePath            string
 	usbScanWake                 chan struct{}
 	activeVideoTransport        string
 	activeVideoDeviceID         string
@@ -325,15 +324,42 @@ type HostService struct {
 
 func NewHostService(consoleLogs bool) *HostService {
 	transportConfigPath, _ := videoTransportConfigPath()
+	videoProfilePath, _ := videoStreamProfileConfigPath()
 	transportMode, transportPreference := loadVideoTransportConfigFrom(transportConfigPath)
 	return &HostService{
 		devices: make(map[string]activeDevice), connections: make(map[net.Conn]struct{}), usbLinks: make(map[string]*usbmux.Mux),
 		transportMode: transportMode, transportPreference: transportPreference, transportConfigPath: transportConfigPath,
+		videoProfile: loadVideoStreamProfile(videoProfilePath), videoProfilePath: videoProfilePath,
 		transportHealth: make(map[string]transportHealth), consoleLogs: consoleLogs,
 		usbScanWake:         make(chan struct{}, 1),
 		retainedVideoFrames: make(map[retainedVideoFrameKey]retainedVideoFrame),
 		videoNackSeen:       make(map[string]time.Time),
 	}
+}
+
+// SelectedVideoStreamProfile returns the profile currently selected on disk.
+// The active pipeline keeps the profile loaded when the Host service started.
+func (s *HostService) SelectedVideoStreamProfile() VideoStreamProfile {
+	return loadVideoStreamProfile(s.videoProfilePath)
+}
+
+// SaveVideoStreamProfile changes the next-start profile. The active Host and
+// SteamVR driver intentionally keep their existing dimensions until restarted.
+func (s *HostService) SaveVideoStreamProfile(profileID string) error {
+	return saveVideoStreamProfile(s.videoProfilePath, profileID)
+}
+
+func (s *HostService) activeVideoProfile() VideoStreamProfile {
+	profile := s.videoProfile
+	if profile.Width <= 0 || profile.Height <= 0 || profile.FPS <= 0 || profile.BitrateMbps <= 0 {
+		return defaultVideoStreamProfile()
+	}
+	return profile
+}
+
+func (s *HostService) activeVideoDimensions() (int, int, int) {
+	profile := s.activeVideoProfile()
+	return profile.Width, profile.Height, profile.FPS
 }
 
 func (s *HostService) Start(config HostConfig) error {
@@ -464,6 +490,7 @@ func (s *HostService) Start(config HostConfig) error {
 	s.videoInputQueueDrops.Store(0)
 	s.videoOutputQueueDrops.Store(0)
 	s.videoTransportSendMaxNs.Store(0)
+	videoWidth, videoHeight, _ := s.activeVideoDimensions()
 	s.videoFramePool = sync.Pool{New: func() any {
 		return &rawVideoFrame{data: make([]byte, videoWidth*videoHeight*4)}
 	}}
@@ -487,6 +514,8 @@ func (s *HostService) Start(config HostConfig) error {
 		scannerState = "paused (network-only video transport)"
 	}
 	s.addLog(fmt.Sprintf("Host started on %s | TCP %d | UDP discovery %d | UDP pose %d | USB AOA scanner %s", config.ListenAddress, config.ControlPort, config.DiscoveryPort, config.PosePort, scannerState))
+	activeProfile := s.activeVideoProfile()
+	s.addLog(fmt.Sprintf("Active SBS stream profile: %s | %dx%d@%d | H.264 target bitrate %d Mbps", activeProfile.ID, activeProfile.Width, activeProfile.Height, activeProfile.FPS, activeProfile.BitrateMbps))
 	for _, address := range networkAddresses {
 		s.addLog(fmt.Sprintf("Host interface [%s] %s: %s", address.Kind, address.Name, address.IP))
 	}
@@ -557,7 +586,8 @@ func (s *HostService) ProbeVideoEncoders(ffmpegPath string) {
 	for _, candidate := range ffmpegCandidates {
 		s.addLog(fmt.Sprintf("Video encoder candidate (adapter/session unverified): %s | %s | %s", candidate.Name, candidate.Codec, candidate.Backend))
 	}
-	validated, rejected, probeErr := encoder.ProbeHardwareH264EncodersDetailed(ctx, ffmpegPath, videoWidth, videoHeight, videoFrameRate)
+	videoWidth, videoHeight, videoFPS := s.activeVideoDimensions()
+	validated, rejected, probeErr := encoder.ProbeHardwareH264EncodersDetailed(ctx, ffmpegPath, videoWidth, videoHeight, videoFPS)
 	for _, reason := range rejected {
 		s.addLog("Live VR hardware H.264 candidate rejected: " + reason)
 	}
@@ -1265,7 +1295,8 @@ func (s *HostService) handleControlConnection(ctx context.Context, conn net.Conn
 	hardwareEncoderReady := s.videoEncoderReady
 	encoderError := s.videoEncoderError
 	s.mu.RUnlock()
-	selectedAndroidDecoder := selectH264DecoderProfile(mediaCapabilities, videoWidth, videoHeight, videoFrameRate)
+	videoWidth, videoHeight, videoFPS := s.activeVideoDimensions()
+	selectedAndroidDecoder := selectH264DecoderProfile(mediaCapabilities, videoWidth, videoHeight, videoFPS)
 	if selectedAndroidDecoder == "" {
 		s.addLog(fmt.Sprintf("Android H.264 decoder negotiation details for %s: %s",
 			hello.DeviceName, describeH264DecoderCapabilities(mediaCapabilities)))
@@ -1321,7 +1352,7 @@ func (s *HostService) handleControlConnection(ctx context.Context, conn net.Conn
 		welcome.VideoMimeType = "video/avc"
 		welcome.VideoWidth = videoWidth
 		welcome.VideoHeight = videoHeight
-		welcome.VideoFPS = videoFrameRate
+		welcome.VideoFPS = videoFPS
 		welcome.VideoReorderGraceMS = s.videoReorderGraceMilliseconds()
 		welcome.VideoDecoderName = selectedAndroidDecoder
 		if usbLink != nil {
@@ -1336,8 +1367,8 @@ func (s *HostService) handleControlConnection(ctx context.Context, conn net.Conn
 		welcome.VideoReason = encoderError
 		s.addLog("Video streaming disabled for " + hello.DeviceName + ": " + encoderError)
 	} else {
-		welcome.VideoReason = fmt.Sprintf("Android needs a hardware H.264 decoder supporting %dx%d@%d", videoWidth, videoHeight, videoFrameRate)
-		s.addLog(fmt.Sprintf("Video streaming disabled for %s: Android did not advertise hardware H.264 %dx%d@%d support", hello.DeviceName, videoWidth, videoHeight, videoFrameRate))
+		welcome.VideoReason = fmt.Sprintf("Android needs a hardware H.264 decoder supporting %dx%d@%d", videoWidth, videoHeight, videoFPS)
+		s.addLog(fmt.Sprintf("Video streaming disabled for %s: Android did not advertise hardware H.264 %dx%d@%d support", hello.DeviceName, videoWidth, videoHeight, videoFPS))
 	}
 	if usbLink != nil {
 		if payload, marshalErr := json.Marshal(welcome); marshalErr == nil {
@@ -1527,21 +1558,34 @@ func (s *HostService) handleControlConnection(ctx context.Context, conn net.Conn
 // We do not start video when the phone cannot decode the negotiated profile.
 func selectH264DecoderProfile(raw json.RawMessage, width, height, fps int) string {
 	var entries []struct {
-		Name                           string  `json:"name"`
-		MimeType                       string  `json:"mimeType"`
-		MaxWidth                       int     `json:"maxWidth"`
-		MaxHeight                      int     `json:"maxHeight"`
-		MaxFrameRate                   float64 `json:"maxFrameRate"`
-		HardwareAccelerated            bool    `json:"hardwareAccelerated"`
-		HardwareClassificationReliable bool    `json:"hardwareClassificationReliable"`
-		SupportsTargetProfile          bool    `json:"supportsSbs1600x720At60"`
+		Name                           string   `json:"name"`
+		MimeType                       string   `json:"mimeType"`
+		MaxWidth                       int      `json:"maxWidth"`
+		MaxHeight                      int      `json:"maxHeight"`
+		MaxFrameRate                   float64  `json:"maxFrameRate"`
+		HardwareAccelerated            bool     `json:"hardwareAccelerated"`
+		HardwareClassificationReliable bool     `json:"hardwareClassificationReliable"`
+		SupportsTargetProfile          bool     `json:"supportsSbs1600x720At60"`
+		SupportedSBSProfiles           []string `json:"supportedSbsProfiles"`
 	}
 	if len(raw) == 0 || json.Unmarshal(raw, &entries) != nil {
 		return ""
 	}
+	targetProfile := fmt.Sprintf("%dx%d", width, height)
 	for _, item := range entries {
+		profileSupported := false
+		for _, advertised := range item.SupportedSBSProfiles {
+			if strings.TrimSpace(advertised) == targetProfile {
+				profileSupported = true
+				break
+			}
+		}
+		// Older clients only advertise the original 1600x720 capability bit.
+		if width == 1600 && height == 720 && item.SupportsTargetProfile {
+			profileSupported = true
+		}
 		if strings.TrimSpace(item.Name) != "" && strings.EqualFold(item.MimeType, "video/avc") &&
-			item.HardwareAccelerated && item.SupportsTargetProfile &&
+			item.HardwareAccelerated && profileSupported &&
 			item.MaxWidth >= width && item.MaxHeight >= height && item.MaxFrameRate >= float64(fps) {
 			return item.Name
 		}
@@ -1551,14 +1595,15 @@ func selectH264DecoderProfile(raw json.RawMessage, width, height, fps int) strin
 
 func describeH264DecoderCapabilities(raw json.RawMessage) string {
 	var entries []struct {
-		Name                           string  `json:"name"`
-		MimeType                       string  `json:"mimeType"`
-		MaxWidth                       int     `json:"maxWidth"`
-		MaxHeight                      int     `json:"maxHeight"`
-		MaxFrameRate                   float64 `json:"maxFrameRate"`
-		HardwareAccelerated            bool    `json:"hardwareAccelerated"`
-		HardwareClassificationReliable bool    `json:"hardwareClassificationReliable"`
-		SupportsTargetProfile          bool    `json:"supportsSbs1600x720At60"`
+		Name                           string   `json:"name"`
+		MimeType                       string   `json:"mimeType"`
+		MaxWidth                       int      `json:"maxWidth"`
+		MaxHeight                      int      `json:"maxHeight"`
+		MaxFrameRate                   float64  `json:"maxFrameRate"`
+		HardwareAccelerated            bool     `json:"hardwareAccelerated"`
+		HardwareClassificationReliable bool     `json:"hardwareClassificationReliable"`
+		SupportsTargetProfile          bool     `json:"supportsSbs1600x720At60"`
+		SupportedSBSProfiles           []string `json:"supportedSbsProfiles"`
 	}
 	if len(raw) == 0 {
 		return "MediaCodec capability array is empty"
@@ -1571,9 +1616,9 @@ func describeH264DecoderCapabilities(raw json.RawMessage) string {
 		if !strings.EqualFold(item.MimeType, "video/avc") {
 			continue
 		}
-		reports = append(reports, fmt.Sprintf("%s max=%dx%d@%.1f hw=%t hw-classification-reliable=%t supports-1600x720@60=%t",
+		reports = append(reports, fmt.Sprintf("%s max=%dx%d@%.1f hw=%t hw-classification-reliable=%t supports-1600x720@60=%t profiles=%s",
 			item.Name, item.MaxWidth, item.MaxHeight, item.MaxFrameRate,
-			item.HardwareAccelerated, item.HardwareClassificationReliable, item.SupportsTargetProfile))
+			item.HardwareAccelerated, item.HardwareClassificationReliable, item.SupportsTargetProfile, strings.Join(item.SupportedSBSProfiles, ",")))
 	}
 	if len(reports) == 0 {
 		return "no video/avc decoder advertised"
@@ -2135,10 +2180,11 @@ func (s *HostService) videoCaptureLoop(ctx context.Context, listener net.Listene
 }
 
 func (s *HostService) acquireRawVideoFrame() *rawVideoFrame {
-	if frame, ok := s.videoFramePool.Get().(*rawVideoFrame); ok && frame != nil && len(frame.data) == videoWidth*videoHeight*4 {
+	width, height, _ := s.activeVideoDimensions()
+	if frame, ok := s.videoFramePool.Get().(*rawVideoFrame); ok && frame != nil && len(frame.data) == width*height*4 {
 		return frame
 	}
-	return &rawVideoFrame{data: make([]byte, videoWidth*videoHeight*4)}
+	return &rawVideoFrame{data: make([]byte, width*height*4)}
 }
 
 func (s *HostService) releaseRawVideoFrame(frame *rawVideoFrame) {
@@ -2178,6 +2224,7 @@ func (s *HostService) enqueueRawVideoFrame(frame *rawVideoFrame) {
 }
 
 func (s *HostService) handleVideoCaptureConnection(ctx context.Context, conn net.Conn) {
+	videoWidth, videoHeight, _ := s.activeVideoDimensions()
 	if tcp, ok := conn.(*net.TCPConn); ok {
 		_ = tcp.SetReadBuffer(16 * 1024 * 1024)
 	}
@@ -2285,6 +2332,7 @@ func minDuration(a, b time.Duration) time.Duration {
 // brief loopback reconnects can no longer spawn and destroy FFmpeg repeatedly.
 func (s *HostService) videoEncoderLoop(ctx context.Context) {
 	defer s.wg.Done()
+	videoWidth, videoHeight, videoFPS := s.activeVideoDimensions()
 	var session *encoder.H264EncoderSession
 	var retryAfter time.Time
 	retryDelay := 2 * time.Second
@@ -2395,7 +2443,7 @@ func (s *HostService) videoEncoderLoop(ctx context.Context) {
 					candidateIndex = 0
 				}
 				selected := candidates[candidateIndex]
-				created, createErr := encoder.StartH264EncoderWithCapability(ctx, ffmpegPath, videoWidth, videoHeight, videoFrameRate, selected,
+				created, createErr := encoder.StartH264EncoderWithCapabilityAndBitrate(ctx, ffmpegPath, videoWidth, videoHeight, videoFPS, s.activeVideoProfile().BitrateMbps, selected,
 					func(accessUnit []byte, id uint32, timestamp uint64, key bool) error {
 						s.videoEncodedFrames.Add(1)
 						// Never perform transport I/O on FFmpeg's stdout reader goroutine.
@@ -2414,7 +2462,7 @@ func (s *HostService) videoEncoderLoop(ctx context.Context) {
 				}
 				session = created
 				sessionStartedAt = time.Now()
-				s.addLog("Persistent live VR hardware H.264 encoder started: " + session.EncoderName())
+				s.addLog("Persistent live VR hardware H.264 encoder started: " + session.EncoderName() + fmt.Sprintf(" at %dx%d@%d, %d Mbps", videoWidth, videoHeight, videoFPS, s.activeVideoProfile().BitrateMbps))
 			}
 
 			if err := session.WriteFrame(frame.data, frame.timestampNs); err != nil {

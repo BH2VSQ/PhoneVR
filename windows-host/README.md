@@ -1,4 +1,4 @@
-# PhoneVR Host 0.5.23 bundled SteamVR driver and live SBS video
+# PhoneVR Host 0.5.24 bundled SteamVR driver and live SBS video
 
 Executable version is injected from the repository root `VERSION` file during builds.
 
@@ -125,7 +125,7 @@ Automatic mode sends a frame over one verified route and fails over to the other
 
 ## Live stereo video stream
 
-When the Android client reports a hardware MediaCodec H.264 decoder supporting 1600×720 at 60 FPS, and Host has verified a working PC hardware H.264 encoder, the driver streams the final SBS compositor image to Host over loopback TCP `127.0.0.1:48106`. Host encodes with NVENC, AMF or QSV and sends MTU-safe H.264 Annex-B UDP fragments to the phone on port `48104`. CPU software encoding is disabled for this live path to protect SteamVR rendering performance. The virtual display remains fixed at 72 Hz; the retired Host refresh-rate setting is no longer present.
+When the Android client reports a hardware MediaCodec H.264 decoder supporting the selected SBS profile at 60 FPS, and Host has verified a working PC hardware H.264 encoder at the same dimensions, the driver streams the final SBS compositor image to Host over loopback TCP `127.0.0.1:48106`. The selectable profiles are 1280×576, 1600×720, 1920×864 and 2400×1080; profile-specific target bitrates are 5, 8, 13 and 18 Mbps. Host encodes with NVENC, AMF or QSV and sends MTU-safe H.264 Annex-B UDP fragments to the phone on port `48104`. CPU software encoding is disabled for this live path to protect SteamVR rendering performance. The virtual display remains fixed at 72 Hz; the retired Host refresh-rate setting is no longer present. Use the Host Stream Resolution dialog to choose the encoded SBS size, then restart Host and SteamVR. Keep SteamVR's render scale at 100% to avoid rendering a larger target only to scale it down again.
 
 
 

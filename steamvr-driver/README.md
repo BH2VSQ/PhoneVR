@@ -1,4 +1,4 @@
-# PhoneVR SteamVR Driver — 0.5.23 (Compositor frame-pacing diagnostics)
+# PhoneVR SteamVR Driver — 0.5.24 (Compositor frame-pacing diagnostics)
 
 Windows x64 OpenVR server driver foundation for the PhoneVR wireless HMD.
 
@@ -64,7 +64,8 @@ The output is `dist/steamvr-driver`. The `tools/install-steamvr-driver.ps1` help
 uses a bounded keyed-mutex acquire (10 ms maximum), and queues a small staging
 texture copy as a GPU-completion fence. `WaitForPresent` maps this synchronization
 texture. When a compatible phone and hardware encoder are ready, the driver also
-GPU-scales the final SBS compositor image to 1600×720 and queues it in a bounded
+GPU-scales the final SBS compositor image to the selected profile dimensions
+(1280×576, 1600×720, 1920×864 or 2400×1080) and queues it in a bounded
 triple-staging ring. A background worker reads BGRA frames and forwards them to
 the Host over loopback TCP `127.0.0.1:48106`; it never performs CPU readback,
 encoding or socket I/O inside `Present`. Host performs hardware-only H.264
@@ -115,7 +116,7 @@ installation.
 
 ## Live video capture
 
-The driver captures the final SBS compositor backbuffer only while a paired Android client has successfully negotiated hardware H.264 decode and Host has validated a hardware H.264 encoder. D3D11 performs GPU scaling to 1600×720; a bounded triple-staging ring and background worker deliver BGRA frames to the Host's loopback TCP bridge on `127.0.0.1:48106`. Host then hardware-encodes and transmits `PVRV` UDP fragments to Android port `48104`. The 72 Hz virtual-display timing is fixed in this revision; the removed refresh-rate menu no longer writes a per-user timing file.
+The driver captures the final SBS compositor backbuffer only while a paired Android client has successfully negotiated hardware H.264 decode and Host has validated a hardware H.264 encoder. D3D11 performs GPU scaling to the selected stream profile; a bounded triple-staging ring and background worker deliver BGRA frames to the Host's loopback TCP bridge on `127.0.0.1:48106`. Host then hardware-encodes and transmits `PVRV` UDP fragments to Android port `48104`. The 72 Hz virtual-display timing is fixed in this revision. The driver and Host read the selected profile ID from `%APPDATA%\PhoneVRStream\video-profile.json`; restart both Host and SteamVR after changing it. SteamVR's render scale at 100% best matches the selected encoded profile.
 
 
 ## DisplayRedirect diagnostics (0.4.19)

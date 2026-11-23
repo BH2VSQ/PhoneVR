@@ -28,16 +28,55 @@
 #include <thread>
 #include <vector>
 #include <deque>
+#include <fstream>
 
 namespace phonevr {
 constexpr uint16_t kPoseBridgePort = 48103;
 constexpr uint32_t kPosePacketSize = 36;
-constexpr uint32_t kEyeWidth = 800;
-constexpr uint32_t kEyeHeight = 720;
 constexpr uint16_t kVideoCapturePort = 48106;
-constexpr uint16_t kVideoWidth = 1600;
-constexpr uint16_t kVideoHeight = 720;
 constexpr uint32_t kVideoFrameRate = 60;
+
+struct VideoStreamProfile {
+    uint16_t width;
+    uint16_t height;
+    const char* id;
+};
+
+const VideoStreamProfile& ActiveVideoStreamProfile() {
+    static const VideoStreamProfile profile = []() -> VideoStreamProfile {
+        wchar_t appData[MAX_PATH]{};
+        const DWORD length = GetEnvironmentVariableW(L"APPDATA", appData, MAX_PATH);
+        if (length == 0 || length >= MAX_PATH) return {1600, 720, "balanced"};
+        std::wstring path(appData);
+        path += L"\\PhoneVRStream\\video-profile.json";
+        HANDLE file = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                                  nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (file == INVALID_HANDLE_VALUE) return {1600, 720, "balanced"};
+        char buffer[1024]{};
+        DWORD bytesRead = 0;
+        const BOOL readOk = ReadFile(file, buffer, sizeof(buffer) - 1, &bytesRead, nullptr);
+        CloseHandle(file);
+        if (!readOk || bytesRead == 0) return {1600, 720, "balanced"};
+        const std::string json(buffer, bytesRead);
+        const auto isProfile = [&json](const char* id) {
+            const size_t key = json.find("\"profileId\"");
+            if (key == std::string::npos) return false;
+            const size_t colon = json.find(':', key);
+            if (colon == std::string::npos) return false;
+            const size_t quote = json.find('\"', colon + 1);
+            if (quote == std::string::npos) return false;
+            const size_t end = json.find('\"', quote + 1);
+            if (end == std::string::npos) return false;
+            return json.compare(quote + 1, end - quote - 1, id) == 0;
+        };
+        // The config file is produced by PhoneVR Host and contains one known profile ID.
+        if (isProfile("performance")) return {1280, 576, "performance"};
+        if (isProfile("high")) return {1920, 864, "high"};
+        if (isProfile("maximum")) return {2400, 1080, "maximum"};
+        return {1600, 720, "balanced"};
+    }();
+    return profile;
+}
 constexpr size_t kVideoCaptureSlots = 3;
 constexpr double gDisplayRefreshRateHz = 72.0;
 constexpr double DisplayFrameIntervalSeconds() { return 1.0 / gDisplayRefreshRateHz; }
@@ -427,17 +466,18 @@ private:
 class HmdDisplay final : public vr::IVRDisplayComponent {
 public:
     void GetWindowBounds(int32_t* x, int32_t* y, uint32_t* width, uint32_t* height) override {
-        *x = 0; *y = 0; *width = kEyeWidth * 2; *height = kEyeHeight;
+        *x = 0; *y = 0; *width = ActiveVideoStreamProfile().width; *height = ActiveVideoStreamProfile().height;
     }
     bool IsDisplayOnDesktop() override { return false; }
     bool IsDisplayRealDisplay() override { return false; }
     void GetRecommendedRenderTargetSize(uint32_t* width, uint32_t* height) override {
-        *width = kEyeWidth * 2; *height = kEyeHeight;
+        *width = ActiveVideoStreamProfile().width; *height = ActiveVideoStreamProfile().height;
     }
     void GetEyeOutputViewport(vr::EVREye eye, uint32_t* x, uint32_t* y,
                               uint32_t* width, uint32_t* height) override {
-        *x = eye == vr::Eye_Left ? 0 : kEyeWidth;
-        *y = 0; *width = kEyeWidth; *height = kEyeHeight;
+        const uint32_t eyeWidth = ActiveVideoStreamProfile().width / 2;
+        *x = eye == vr::Eye_Left ? 0 : eyeWidth;
+        *y = 0; *width = eyeWidth; *height = ActiveVideoStreamProfile().height;
     }
     void GetProjectionRaw(vr::EVREye, float* left, float* right, float* top, float* bottom) override {
         *left = -1.0f; *right = 1.0f; *top = -1.0f; *bottom = 1.0f;
@@ -1184,7 +1224,7 @@ float4 main(float4 position : SV_POSITION, float2 uv : TEXCOORD0) : SV_TARGET {
         // The HMD render target now matches the encoded SBS profile. In that
         // common path, copy directly into the CPU-readable staging ring instead
         // of doing a full-size input copy, shader draw, and output copy.
-        if (source.Width == kVideoWidth && source.Height == kVideoHeight &&
+        if (source.Width == ActiveVideoStreamProfile().width && source.Height == ActiveVideoStreamProfile().height &&
             source.Format == DXGI_FORMAT_B8G8R8A8_UNORM) {
             D3D11_TEXTURE2D_DESC staging = source;
             staging.MipLevels = 1;
@@ -1207,7 +1247,7 @@ float4 main(float4 position : SV_POSITION, float2 uv : TEXCOORD0) : SV_TARGET {
             m_captureWidth = source.Width;
             m_captureHeight = source.Height;
             if (vr::VRDriverLog())
-                vr::VRDriverLog()->Log("PhoneVR: direct BGRA capture path enabled; render target matches 1600x720 stream");
+                vr::VRDriverLog()->Log("PhoneVR: direct BGRA capture path enabled; render target matches active stream profile");
             return true;
         }
 
@@ -1220,7 +1260,7 @@ float4 main(float4 position : SV_POSITION, float2 uv : TEXCOORD0) : SV_TARGET {
         if (FAILED(hr)) { LogD3DFailure("CreateShaderResourceView(video)", hr); ReleaseVideoCaptureResourcesUnlocked(); return false; }
 
         D3D11_TEXTURE2D_DESC output{};
-        output.Width = kVideoWidth; output.Height = kVideoHeight; output.MipLevels = 1; output.ArraySize = 1;
+        output.Width = ActiveVideoStreamProfile().width; output.Height = ActiveVideoStreamProfile().height; output.MipLevels = 1; output.ArraySize = 1;
         output.Format = DXGI_FORMAT_B8G8R8A8_UNORM; output.SampleDesc.Count = 1;
         output.Usage = D3D11_USAGE_DEFAULT; output.BindFlags = D3D11_BIND_RENDER_TARGET;
         hr = m_device->CreateTexture2D(&output, nullptr, &m_captureOutputTexture);
@@ -1256,7 +1296,7 @@ float4 main(float4 position : SV_POSITION, float2 uv : TEXCOORD0) : SV_TARGET {
         m_captureDirectCopy = false;
         m_captureResourcesReady = true;
         if (vr::VRDriverLog()) {
-            char line[192]{}; std::snprintf(line, sizeof(line), "PhoneVR: H.264 capture resources ready: source %ux%u -> SBS %ux%u @ %u FPS", source.Width, source.Height, kVideoWidth, kVideoHeight, kVideoFrameRate);
+            char line[192]{}; std::snprintf(line, sizeof(line), "PhoneVR: H.264 capture resources ready: source %ux%u -> SBS %ux%u @ %u FPS", source.Width, source.Height, ActiveVideoStreamProfile().width, ActiveVideoStreamProfile().height, kVideoFrameRate);
             vr::VRDriverLog()->Log(line);
         }
         return true;
@@ -1283,7 +1323,7 @@ float4 main(float4 position : SV_POSITION, float2 uv : TEXCOORD0) : SV_TARGET {
             m_context->CopyResource(m_captureInputTexture, m_sharedTexture);
             ID3D11RenderTargetView* target = m_captureRtv;
             m_context->OMSetRenderTargets(1, &target, nullptr);
-            D3D11_VIEWPORT viewport{}; viewport.Width = static_cast<float>(kVideoWidth); viewport.Height = static_cast<float>(kVideoHeight); viewport.MaxDepth = 1.0f;
+            D3D11_VIEWPORT viewport{}; viewport.Width = static_cast<float>(ActiveVideoStreamProfile().width); viewport.Height = static_cast<float>(ActiveVideoStreamProfile().height); viewport.MaxDepth = 1.0f;
             m_context->RSSetViewports(1, &viewport);
             m_context->IASetInputLayout(nullptr); m_context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
             m_context->VSSetShader(m_captureVS, nullptr, 0); m_context->PSSetShader(m_capturePS, nullptr, 0);
@@ -1361,7 +1401,7 @@ float4 main(float4 position : SV_POSITION, float2 uv : TEXCOORD0) : SV_TARGET {
         }
         SOCKET bridge = INVALID_SOCKET;
         uint64_t lastStatsNs = 0;
-        std::vector<uint8_t> pixels(static_cast<size_t>(kVideoWidth) * kVideoHeight * 4);
+        std::vector<uint8_t> pixels(static_cast<size_t>(ActiveVideoStreamProfile().width) * ActiveVideoStreamProfile().height * 4);
         while (m_captureRunning.load(std::memory_order_acquire)) {
             if (bridge == INVALID_SOCKET) {
                 bridge = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
@@ -1431,10 +1471,10 @@ float4 main(float4 position : SV_POSITION, float2 uv : TEXCOORD0) : SV_TARGET {
                 const HRESULT hr = m_context->Map(slot.staging, 0, D3D11_MAP_READ,
                                                    D3D11_MAP_FLAG_DO_NOT_WAIT, &mapped);
                 if (SUCCEEDED(hr)) {
-                    for (uint32_t row = 0; row < kVideoHeight; ++row)
-                        std::memcpy(pixels.data() + static_cast<size_t>(row) * kVideoWidth * 4,
+                    for (uint32_t row = 0; row < ActiveVideoStreamProfile().height; ++row)
+                        std::memcpy(pixels.data() + static_cast<size_t>(row) * ActiveVideoStreamProfile().width * 4,
                                     static_cast<const uint8_t*>(mapped.pData) + static_cast<size_t>(row) * mapped.RowPitch,
-                                    static_cast<size_t>(kVideoWidth) * 4);
+                                    static_cast<size_t>(ActiveVideoStreamProfile().width) * 4);
                     m_context->Unmap(slot.staging, 0);
                     readbackReady = true;
                     m_videoFramesReadback.fetch_add(1, std::memory_order_relaxed);
@@ -1463,8 +1503,8 @@ float4 main(float4 position : SV_POSITION, float2 uv : TEXCOORD0) : SV_TARGET {
             if (readbackReady) {
                 uint8_t header[32]{}; std::memcpy(header, "PVRC", 4); header[4] = 1; header[5] = 1;
                 PutBE16(header + 6, 32); PutBE32(header + 8, frameId); PutBE64(header + 12, timestampNs);
-                PutBE16(header + 20, kVideoWidth); PutBE16(header + 22, kVideoHeight);
-                PutBE32(header + 24, kVideoWidth * 4); PutBE32(header + 28, static_cast<uint32_t>(pixels.size()));
+                PutBE16(header + 20, ActiveVideoStreamProfile().width); PutBE16(header + 22, ActiveVideoStreamProfile().height);
+                PutBE32(header + 24, ActiveVideoStreamProfile().width * 4); PutBE32(header + 28, static_cast<uint32_t>(pixels.size()));
                 int sendError = 0;
                 const bool sentFrame = SendAll(bridge, reinterpret_cast<const char*>(header), sizeof(header), &sendError) &&
                                        SendAll(bridge, reinterpret_cast<const char*>(pixels.data()), pixels.size(), &sendError);
@@ -1763,7 +1803,7 @@ public:
         if (!host->TrackedDeviceAdded("PHONEVR-HMD-001", vr::TrackedDeviceClass_HMD, m_hmd)) {
             Cleanup(); return vr::VRInitError_Driver_Unknown;
         }
-        if (vr::VRDriverLog()) vr::VRDriverLog()->Log("PhoneVR 0.5.23 DisplayRedirect order-fix diagnostics SteamVR driver initialized");
+        if (vr::VRDriverLog()) vr::VRDriverLog()->Log("PhoneVR 0.5.24 DisplayRedirect configurable stream profiles SteamVR driver initialized");
         return vr::VRInitError_None;
     }
     void Cleanup() override {

@@ -1,3 +1,13 @@
+## 0.5.24 - Configurable SBS stream resolution and audio-path investigation
+
+- Add Performance 1280×576, Balanced 1600×720, High 1920×864 and Maximum 2400×1080 SBS profiles, including profile-specific 5/8/13/18 Mbps H.264 target bitrates.
+- Store the selected stream profile in `%APPDATA%\PhoneVRStream\video-profile.json`. The SteamVR driver reads the same profile for its recommended render target and virtual-display capture output; the Host uses it for raw BGRA buffers, hardware-encoder preflight, H.264 dimensions and Welcome negotiation.
+- Extend Android MediaCodec capability reporting to advertise each exact SBS size/rate profile. The Host only enables video when a hardware H.264 decoder explicitly supports the selected profile. Keep the legacy 1600×720 capability bit for older Android clients.
+- Increase Android H.264 access-unit reassembly capacity to 8 MiB for larger high-resolution keyframes.
+- Add the native Host Stream Resolution dialog. A profile change is saved for the next startup and requires restarting PhoneVR Host and SteamVR. Recommend SteamVR resolution scale at 100% to avoid unnecessary supersampling before the stream scaler.
+- Document the missing audio endpoints and define independent WASAPI loopback playback and phone-microphone return paths. Audio streaming itself remains unimplemented in this revision.
+- Synchronize repository, Android, Windows Host, SteamVR driver and AOA metadata to `0.5.24`; Android `versionCode` is `59`.
+
 ## 0.5.23 - SteamVR compositor pacing diagnostics
 
 - Extend the virtual display timing snapshot with maximum `Present` interval, long-interval counters, pending-Present overwrite count, virtual-VSync wake overshoot, missed virtual ticks and keyed-mutex acquisition failures.

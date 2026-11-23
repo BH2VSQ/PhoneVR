@@ -1,3 +1,10 @@
+## 0.5.29 - First-level menu scrolling fix
+
+- Put the complete first-level menu opened by the top `⋮` button into one vertically scrollable viewport, including connection state, pose/video status and all menu actions. This addresses clipped actions on short landscape screens where the first-level menu previously had no scrolling container.
+- Bound the ScrollView to the usable display height while preserving content-driven height when the menu fits. Enable smooth scrolling and visible vertical scroll feedback.
+- Keep the controller pairing panel scroll behavior and normalized button spacing from 0.5.28.
+- Synchronize repository, Android, Windows Host, SteamVR driver and AOA metadata to `0.5.29`; Android `versionCode` is `64`.
+
 ## 0.5.28 - Android controller menu scrolling and button spacing
 
 - Make the entire Daydream controller pairing panel vertically scrollable, including controller status, scan controls, discovered-device cards and left/right assignment actions. Keep the close button fixed at the bottom so it remains reachable on short landscape displays.

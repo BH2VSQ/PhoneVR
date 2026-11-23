@@ -1,22 +1,23 @@
-# PhoneVR 0.5.28 build status
+# PhoneVR 0.5.29 build status
 
-## This revision (0.5.28)
+## This revision (0.5.29)
 
-- Make the complete Daydream controller pairing panel vertically scrollable. The title, connection status, scan action, discovered device cards and left/right assignment buttons now live inside one ScrollView, while the close button remains pinned at the bottom.
-- Configure the controller ScrollView with fill-viewport measurement, smooth scrolling, vertical scroll feedback and descendant touch/focus handling so short landscape displays can reach every controller action.
-- Normalize the bottom spacing of the screen-rotation button to 6 dp, matching the optical-preset button and other main-menu buttons.
-- Product metadata synchronized to 0.5.28; Android versionCode is 63.
+- Fix the first-level menu opened by the top `⋮` button. The connection/status block and every menu action now live inside one vertical `ScrollView`, so the full menu remains reachable on short landscape screens and with enlarged display scaling.
+- Give the first-level menu ScrollView an explicit maximum height based on the available display height. Its own height remains content-driven below that limit, preserving the compact appearance when all actions fit.
+- Enable smooth vertical scrolling, scrollbar feedback, overscroll behavior and descendant focus handling. Existing menu actions and 6 dp button spacing remain unchanged.
+- Keep the Daydream controller pairing panel's independent full-panel scrolling from 0.5.28.
+- Product metadata synchronized to 0.5.29; Android versionCode is 64.
 
-## 0.5.28 validation status
+## 0.5.29 validation status
 
-- `python3 -m unittest discover -s tools/release -p 'test_*.py'`: passed, 66 tests.
+- `python3 -m unittest discover -s tools/release -p 'test_*.py'`: passed, 67 tests.
 - `cd windows-host && go test ./...`: passed.
 - `cd windows-host && go test -race ./...`: passed.
 - `cd windows-host && go vet ./...`: passed.
 - `GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build ./cmd/phonevr-host`: passed.
-- Android Gradle build: not run because Android SDK Platform 36 and Build Tools 36.0.0 are unavailable in this environment. CI must confirm APK compilation.
-- SteamVR MSVC driver build: not run because Windows MSVC and the Windows SDK are unavailable in this environment. No native driver source was changed in this revision.
-- Physical Android menu scrolling and BLE pairing usability checks remain pending.
+- Android Gradle build: not run because no Android SDK Platform 36 or Build Tools 36.0.0 are installed in this environment. CI must confirm APK compilation.
+- SteamVR MSVC driver build: not run; no native driver source was changed in this revision.
+- Physical Android main-menu scrolling remains to be verified on the target handset.
 
 ## Previous build status: 0.5.25
 
@@ -67,7 +68,7 @@
 - Add SteamVR virtual-display timing telemetry for maximum `Present` callback interval, intervals exceeding 1.5 and 3 nominal 72 Hz periods, pending-Present overwrites, actual `WaitForPresent` wake overshoot, missed virtual VSync ticks, and keyed-mutex acquisition failures.
 - Emit the counters in the existing five-second `virtual display` driver diagnostic line. The new counters are observational only. The 72 Hz clock, 60 FPS capture ceiling, pose prediction, D3D11 capture behavior and H.264 encoder configuration are unchanged.
 - Keep the 800x720 per-eye render target, 1600x720 SBS stream and 8 Mbps H.264 target unchanged. A higher-resolution profile needs end-to-end capability negotiation and runtime performance validation.
-- Android metadata is `versionName 0.5.28`, `versionCode 63`; repository, Host, SteamVR driver and AOA accessory metadata are synchronized to `0.5.28`.
+- Android metadata is `versionName 0.5.29`, `versionCode 64`; repository, Host, SteamVR driver and AOA accessory metadata are synchronized to `0.5.29`.
 
 ## 0.5.23 validation status
 

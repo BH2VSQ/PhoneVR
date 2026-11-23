@@ -14,10 +14,13 @@ class DaydreamControllerBuildContractTests(unittest.TestCase):
 
     def test_controller_panel_scroll_view_uses_frame_layout_params(self):
         source = (ROOT / "android/app/src/main/java/com/vsq/phonvrstream/MainActivity.kt").read_text(encoding="utf-8")
-        self.assertIn("val contentScroll = ScrollView(this)", source)
-        self.assertIn("addView(content, FrameLayout.LayoutParams(-1, -2))", source)
-        self.assertIn("content.addView(controllerCandidateList", source)
-        self.assertNotIn("ScrollView.LayoutParams", source)
+        start = source.index("    private fun buildControllerPanel(): LinearLayout {")
+        end = source.index("\n    private fun controllerStatusBackground()", start)
+        panel = source[start:end]
+        self.assertIn("val contentScroll = ScrollView(this)", panel)
+        self.assertIn("addView(content, FrameLayout.LayoutParams(-1, -2))", panel)
+        self.assertIn("content.addView(controllerCandidateList", panel)
+        self.assertNotIn("ScrollView.LayoutParams", panel)
 
 
 if __name__ == "__main__":

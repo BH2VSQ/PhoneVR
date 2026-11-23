@@ -418,7 +418,45 @@ class MainActivity : Activity(), SensorEventListener {
                 setStroke(dp(1), Color.argb(145, 105, 150, 190))
             }
             elevation = dp(16).toFloat()
+            isClickable = true
         }
+
+        // The first-level menu can exceed the available height in landscape or
+        // with display scaling enabled. Keep every item inside one scrollable
+        // viewport instead of allowing the lower actions to be clipped.
+        val menuContent = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+        }
+        val maxMenuHeight = (resources.displayMetrics.heightPixels - dp(70)).coerceAtLeast(dp(120))
+        val menuScroll = object : ScrollView(this) {
+            override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+                val parentLimit = when (View.MeasureSpec.getMode(heightMeasureSpec)) {
+                    View.MeasureSpec.UNSPECIFIED -> maxMenuHeight
+                    else -> minOf(View.MeasureSpec.getSize(heightMeasureSpec), maxMenuHeight)
+                }
+                val boundedHeightSpec = View.MeasureSpec.makeMeasureSpec(
+                    parentLimit,
+                    View.MeasureSpec.AT_MOST,
+                )
+                super.onMeasure(widthMeasureSpec, boundedHeightSpec)
+            }
+        }.apply {
+            isFillViewport = false
+            isSmoothScrollingEnabled = true
+            isVerticalScrollBarEnabled = true
+            scrollBarStyle = View.SCROLLBARS_INSIDE_OVERLAY
+            clipToPadding = false
+            overScrollMode = View.OVER_SCROLL_IF_CONTENT_SCROLLS
+            descendantFocusability = ViewGroup.FOCUS_AFTER_DESCENDANTS
+            isClickable = true
+            isFocusable = true
+        }
+        menuScroll.addView(
+            menuContent,
+            ScrollView.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT),
+        )
+        panel.addView(menuScroll, LinearLayout.LayoutParams(-1, -2))
+
         val statusPanel = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(9), dp(7), dp(9), dp(7))
@@ -464,16 +502,16 @@ class MainActivity : Activity(), SensorEventListener {
             setPadding(0, dp(5), 0, 0)
         }
         statusPanel.addView(menuVideoDetailText)
-        panel.addView(statusPanel, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(8) })
+        menuContent.addView(statusPanel, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(8) })
 
-        panel.addView(makeButton("视角居中") {
+        menuContent.addView(makeButton("视角居中") {
             referencePose = lastRawPose
             renderer.updateOrientation(0f, 0f, 0f, 1f)
             menuPanel.visibility = View.GONE
             updateDismissLayer()
             updatePoseText("视角已居中")
         }.apply { layoutParams = LinearLayout.LayoutParams(-1, dp(40)).apply { bottomMargin = dp(6) } })
-        panel.addView(makeButton("连接 PC") {
+        menuContent.addView(makeButton("连接 PC") {
             connectionPanel.visibility = View.VISIBLE
             settingsPanel.visibility = View.GONE
             menuPanel.visibility = View.GONE
@@ -486,15 +524,15 @@ class MainActivity : Activity(), SensorEventListener {
             screenFlipButton.text = screenFlipButtonText()
             applyScreenOrientation()
         }
-        panel.addView(screenFlipButton, LinearLayout.LayoutParams(-1, dp(40)).apply { bottomMargin = dp(6) })
-        panel.addView(makeButton("光学预设") {
+        menuContent.addView(screenFlipButton, LinearLayout.LayoutParams(-1, dp(40)).apply { bottomMargin = dp(6) })
+        menuContent.addView(makeButton("光学预设") {
             settingsPanel.visibility = View.VISIBLE
             connectionPanel.visibility = View.GONE
             menuPanel.visibility = View.GONE
             if (::controllerPanel.isInitialized) controllerPanel.visibility = View.GONE
             updateDismissLayer()
         }.apply { layoutParams = LinearLayout.LayoutParams(-1, dp(40)).apply { bottomMargin = dp(6) } })
-        panel.addView(makeButton("Daydream 手柄配对") {
+        menuContent.addView(makeButton("Daydream 手柄配对") {
             closeOverlayPanels()
             controllerPanel.visibility = View.VISIBLE
             updateDismissLayer()

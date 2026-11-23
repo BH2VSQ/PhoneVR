@@ -22,10 +22,27 @@ class AndroidControllerMenuLayoutTests(unittest.TestCase):
         self.assertIn('makeButton("关闭")', panel)
         self.assertNotIn("val scroll = ScrollView(this)", panel)
 
+    def test_first_level_menu_is_fully_scrollable_with_a_bounded_viewport(self):
+        source = MAIN_ACTIVITY.read_text(encoding="utf-8")
+        start = source.index("    private fun buildMenuPanel(): LinearLayout {")
+        end = source.index("\n    private fun buildControllerPanel(): LinearLayout {", start)
+        panel = source[start:end]
+
+        self.assertIn("val menuContent = LinearLayout(this)", panel)
+        self.assertIn("val menuScroll = object : ScrollView(this)", panel)
+        self.assertIn("override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int)", panel)
+        self.assertIn("View.MeasureSpec.AT_MOST", panel)
+        self.assertIn("isSmoothScrollingEnabled = true", panel)
+        self.assertIn("isVerticalScrollBarEnabled = true", panel)
+        self.assertIn("menuScroll.addView(", panel)
+        self.assertIn("panel.addView(menuScroll, LinearLayout.LayoutParams(-1, -2))", panel)
+        self.assertIn('menuContent.addView(makeButton("Daydream 手柄配对")', panel)
+        self.assertNotIn('panel.addView(makeButton("Daydream 手柄配对")', panel)
+
     def test_screen_rotation_and_optical_preset_buttons_use_same_gap(self):
         source = MAIN_ACTIVITY.read_text(encoding="utf-8")
         self.assertIn(
-            "panel.addView(screenFlipButton, LinearLayout.LayoutParams(-1, dp(40)).apply { bottomMargin = dp(6) })",
+            "menuContent.addView(screenFlipButton, LinearLayout.LayoutParams(-1, dp(40)).apply { bottomMargin = dp(6) })",
             source,
         )
         self.assertIn(

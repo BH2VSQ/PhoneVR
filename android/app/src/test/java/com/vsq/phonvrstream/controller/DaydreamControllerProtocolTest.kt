@@ -11,6 +11,7 @@ class DaydreamControllerProtocolTest {
     @Test
     fun rejectsShortNotifications() {
         assertNull(DaydreamControllerProtocol.decode(ByteArray(18), 1L))
+        assertEquals("00000002-1000-1000-8000-00805f9b34fb", DaydreamControllerProtocol.CONTROL_CHARACTERISTIC_UUID)
     }
 
     @Test
@@ -33,6 +34,21 @@ class DaydreamControllerProtocolTest {
         assertEquals(0f, state.orientationY, 1e-6f)
         assertEquals(0f, state.orientationZ, 1e-6f)
         assertEquals(1f, state.orientationW, 1e-6f)
+    }
+
+
+    @Test
+    fun decodesOrientationAsAxisAngleRotationVector() {
+        // XKF3 X rotation: 1024 / 4095 turns, approximately a quarter turn.
+        val packet = ByteArray(19)
+        packet[2] = 0x80.toByte()
+
+        val state = DaydreamControllerProtocol.decode(packet, 321L)!!.state
+        val expectedHalfAngle = (1024.0 * 2.0 * Math.PI / 4095.0) * 0.5
+        assertEquals(kotlin.math.sin(expectedHalfAngle).toFloat(), state.orientationX, 1e-4f)
+        assertEquals(0f, state.orientationY, 1e-6f)
+        assertEquals(0f, state.orientationZ, 1e-6f)
+        assertEquals(kotlin.math.cos(expectedHalfAngle).toFloat(), state.orientationW, 1e-4f)
     }
 
     @Test

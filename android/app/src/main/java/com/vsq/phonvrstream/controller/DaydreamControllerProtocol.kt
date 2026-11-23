@@ -4,12 +4,14 @@ import com.vsq.phonvrstream.tracking.Quaternion
 import kotlin.math.PI
 import kotlin.math.cos
 import kotlin.math.sin
+import kotlin.math.sqrt
 
 /** Decoder for the 19-byte BLE notification used by the original Daydream remote. */
 object DaydreamControllerProtocol {
     const val MIN_PACKET_SIZE = 19
     const val SERVICE_UUID = "0000fe55-0000-1000-8000-00805f9b34fb"
     const val REPORT_CHARACTERISTIC_UUID = "00000001-1000-1000-8000-00805f9b34fb"
+    const val CONTROL_CHARACTERISTIC_UUID = "00000002-1000-1000-8000-00805f9b34fb"
     const val CLIENT_CONFIGURATION_UUID = "00002902-0000-1000-8000-00805f9b34fb"
 
     data class Decoded(
@@ -71,7 +73,9 @@ object DaydreamControllerProtocol {
         val touchX = (((u8(packet, 16) and 0x1f) shl 3) or ((u8(packet, 17) and 0xe0) ushr 5)) / 255f
         val touchY = (((u8(packet, 17) and 0x1f) shl 3) or ((u8(packet, 18) and 0xe0) ushr 5)) / 255f
         val buttons = u8(packet, 18)
-        val orientation = fromEulerRadians(xOrientation, yOrientation, zOrientation)
+        // The BLE firmware sends the XKF3 orientation as an axis-angle rotation vector.
+        // The vector direction is the rotation axis and its magnitude is the angle in radians.
+        val orientation = fromRotationVector(xOrientation, yOrientation, zOrientation)
         val state = ControllerInputState(
             connected = true,
             timestampNs = timestampNs,
@@ -117,18 +121,16 @@ object DaydreamControllerProtocol {
         return if ((masked and 0x1000) != 0) masked - 0x2000 else masked
     }
 
-    private fun fromEulerRadians(roll: Double, pitch: Double, yaw: Double): Quaternion {
-        val cr = cos(roll * 0.5)
-        val sr = sin(roll * 0.5)
-        val cp = cos(pitch * 0.5)
-        val sp = sin(pitch * 0.5)
-        val cy = cos(yaw * 0.5)
-        val sy = sin(yaw * 0.5)
+    private fun fromRotationVector(x: Double, y: Double, z: Double): Quaternion {
+        val angle = sqrt(x * x + y * y + z * z)
+        if (!angle.isFinite() || angle < 1.0e-8) return Quaternion(0f, 0f, 0f, 1f)
+        val halfAngle = angle * 0.5
+        val axisScale = sin(halfAngle) / angle
         return Quaternion(
-            (sr * cp * cy - cr * sp * sy).toFloat(),
-            (cr * sp * cy + sr * cp * sy).toFloat(),
-            (cr * cp * sy - sr * sp * cy).toFloat(),
-            (cr * cp * cy + sr * sp * sy).toFloat(),
+            (x * axisScale).toFloat(),
+            (y * axisScale).toFloat(),
+            (z * axisScale).toFloat(),
+            cos(halfAngle).toFloat(),
         ).normalized()
     }
 }

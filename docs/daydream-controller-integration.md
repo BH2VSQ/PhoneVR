@@ -81,3 +81,23 @@ The current implementation does not include controller haptics, battery telemetr
 - `mrdoob/daydream-controller.js`: https://github.com/mrdoob/daydream-controller.js
 - Android Bluetooth GATT: https://developer.android.com/develop/connectivity/bluetooth/ble/ble-overview
 - OpenVR driver input components: https://github.com/ValveSoftware/openvr
+
+
+## 3DoF controller pose calibration and arm model
+
+PhoneVR converts the Daydream XKF3 orientation fields from their signed axis-angle rotation-vector representation into a quaternion. Treating those three values as independent Euler angles produces incorrect rotations, especially when more than one axis is active. The BLE packet reference describes the fields as an axis-angle rotation vector in turns; PhoneVR converts each packed component to radians before quaternion construction.
+
+The driver converts the controller rotation from the Daydream/Google VR controller-local forward convention to OpenVR's local `-Z` forward convention. It then maintains an orientation alignment between the controller's inertial reference and the HMD world pose. The App button has a dual action: a short press remains the menu action; holding it for approximately 800 ms recenters the controller orientation against the current HMD view direction.
+
+The Android BLE manager also attempts the Daydream FE55 Control Characteristic write `0x00` after the same hold interval. Firmware documentation identifies this command as a sensor-fusion reference recenter request. It is optional: when the characteristic is absent or the write is rejected, the host-side orientation alignment still performs the recenter. Home remains the system button.
+
+For position, the SteamVR driver uses a Google Daydream-style arm model. It estimates elbow, wrist and controller offsets from controller orientation, handedness and the HMD pose. The estimated pose includes filtered linear and angular velocities so OpenVR can predict motion between updates. These positions are inferred from a kinematic model and do not contain real hand translation. Physical reach, hand separation and depth movement cannot be recovered from a 3DoF sensor.
+
+The App-key procedure is: keep the HMD facing the direction that should become forward, hold the controller in a comfortable aiming posture, then hold App for about 0.8 seconds. A short App tap continues to invoke the menu.
+
+References:
+
+- [Google VR GvrArmModel reference](https://developers.google.com/vr/reference/unity/class/GvrArmModel)
+- [Google VR Daydream arm model overview](https://developers.google.com/vr/elements/arm-model)
+- [OpenVR Driver API pose coordinate system](https://github.com/ValveSoftware/openvr/blob/master/docs/Driver_API_Documentation.md)
+- [Daydream BLE packet and Control Characteristic reference](https://github.com/nullstalgia/daydream-catcher/blob/main/Writeups/Reference%20-%20Daydream%20%28Paprika%29.md)

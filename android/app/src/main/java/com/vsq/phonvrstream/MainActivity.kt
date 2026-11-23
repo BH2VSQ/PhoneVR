@@ -577,7 +577,11 @@ class MainActivity : Activity(), SensorEventListener {
             setTextColor(Color.rgb(91, 206, 250))
         })
         content.addView(label("双手柄 BLE 配对 · 左右设备分别连接", secondary = true).apply {
-            setPadding(0, dp(3), 0, dp(10))
+            setPadding(0, dp(3), 0, dp(5))
+        })
+        content.addView(label("指向校准：保持头显朝向目标，长按手柄 App 键约 0.8 秒。短按仍用于菜单。", secondary = true).apply {
+            textSize = 10f
+            setPadding(0, 0, 0, dp(9))
         })
         controllerLeftStatusText = label("左手柄：未连接", secondary = false).apply {
             textSize = 11f

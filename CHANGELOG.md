@@ -1,3 +1,11 @@
+## 0.5.31 - Daydream controller pose and recentering
+
+- Decode Daydream XKF3 orientation as an axis-angle rotation vector and convert it to a quaternion. Add an explicit coordinate conversion for the OpenVR controller frame.
+- Add a Google Daydream-style 3DoF arm model for left and right controllers, deriving virtual hand position from controller orientation and the HMD pose.
+- Use a short App press for the existing menu action and an approximately 800 ms App hold to recenter the controller against the HMD view. Request the Daydream sensor-fusion reference recenter command (`0x00`) over the FE55 Control Characteristic when the connected firmware exposes it.
+- Publish filtered linear and angular velocities with the estimated pose. Add C++ pose-model tests and release contract tests.
+- Add in-app guidance for the App-button recenter gesture. Synchronize repository, Android, Windows Host, SteamVR driver and AOA metadata to `0.5.31`; Android `versionCode` is `66`.
+
 ## 0.5.30 - Automated release
 
 - Android versionName and versionCode bumped by the manual release workflow.

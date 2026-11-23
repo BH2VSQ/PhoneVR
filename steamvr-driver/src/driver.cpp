@@ -12,6 +12,7 @@
 #include <dxgi1_2.h>
 #include <d3dcompiler.h>
 #include <openvr_driver.h>
+#include "daydream_pose_model.h"
 
 #include <algorithm>
 #include <array>
@@ -1920,26 +1921,6 @@ private:
     std::atomic<uint64_t> m_invalidPackets{0};
 };
 
-struct ControllerQuaternion {
-    double x = 0.0, y = 0.0, z = 0.0, w = 1.0;
-};
-
-static ControllerQuaternion MultiplyQuaternion(const ControllerQuaternion& a, const ControllerQuaternion& b) {
-    return {
-        a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y,
-        a.w * b.y - a.x * b.z + a.y * b.w + a.z * b.x,
-        a.w * b.z + a.x * b.y - a.y * b.x + a.z * b.w,
-        a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z,
-    };
-}
-
-static std::array<double, 3> RotateVector(const ControllerQuaternion& q, const std::array<double, 3>& v) {
-    const ControllerQuaternion p{v[0], v[1], v[2], 0.0};
-    const ControllerQuaternion inverse{-q.x, -q.y, -q.z, q.w};
-    const auto rotated = MultiplyQuaternion(MultiplyQuaternion(q, p), inverse);
-    return {rotated.x, rotated.y, rotated.z};
-}
-
 class PhoneVRDaydreamController final : public vr::ITrackedDeviceServerDriver {
 public:
     explicit PhoneVRDaydreamController(bool isLeft) : m_isLeft(isLeft) {}
@@ -2025,20 +2006,39 @@ public:
         if (objectId == vr::k_unTrackedDeviceIndexInvalid) return;
         auto* input = vr::VRDriverInput();
         if (!input) return;
+        const uint64_t nowNs = MonotonicNowNs();
         const bool connected = state.connected && state.receivedAtNs != 0 &&
-            MonotonicNowNs() - state.receivedAtNs <= 3000000000ULL;
+            nowNs >= state.receivedAtNs && nowNs - state.receivedAtNs <= 3000000000ULL;
         const bool trackingValid = connected && state.hasOrientation &&
             hmdPose.deviceIsConnected && hmdPose.poseIsValid &&
-            MonotonicNowNs() - state.receivedAtNs <= 500000000ULL;
+            nowNs - state.receivedAtNs <= 500000000ULL;
         const double x = state.touching ? state.touchX * 2.0 - 1.0 : 0.0;
         const double y = state.touching ? (0.5 - state.touchY) * 2.0 : 0.0;
+        DaydreamPoseOutput modeledPose{};
+        if (trackingValid) {
+            const DaydreamQuaternion headQ{
+                hmdPose.qRotation.x, hmdPose.qRotation.y, hmdPose.qRotation.z, hmdPose.qRotation.w};
+            const std::array<double, 3> headPosition{
+                hmdPose.vecPosition[0], hmdPose.vecPosition[1], hmdPose.vecPosition[2]};
+            const std::array<double, 3> headAngularVelocity{
+                hmdPose.vecAngularVelocity[0], hmdPose.vecAngularVelocity[1], hmdPose.vecAngularVelocity[2]};
+            modeledPose = m_armModel.Update(
+                DaydreamQuaternion{state.x, state.y, state.z, state.w},
+                headPosition, headQ, headAngularVelocity, nowNs, state.app, m_isLeft);
+            if (modeledPose.recentered && vr::VRDriverLog()) {
+                vr::VRDriverLog()->Log(m_isLeft
+                    ? "PhoneVR: left Daydream controller pose recentered by long-pressing App button"
+                    : "PhoneVR: right Daydream controller pose recentered by long-pressing App button");
+            }
+        }
         (void)input->UpdateScalarComponent(m_joystickX, static_cast<float>(x), 0.0);
         (void)input->UpdateScalarComponent(m_joystickY, static_cast<float>(y), 0.0);
         (void)input->UpdateBooleanComponent(m_joystickTouch, connected && state.touching, 0.0);
         (void)input->UpdateBooleanComponent(m_joystickClick, connected && state.click, 0.0);
         (void)input->UpdateBooleanComponent(m_triggerClick, connected && state.click, 0.0);
         (void)input->UpdateScalarComponent(m_triggerValue, connected && state.click ? 1.0f : 0.0f, 0.0);
-        (void)input->UpdateBooleanComponent(m_menuClick, connected && state.app, 0.0);
+        (void)input->UpdateBooleanComponent(m_menuClick,
+            connected && (trackingValid ? modeledPose.menuPressed : false), 0.0);
         (void)input->UpdateBooleanComponent(m_systemClick, connected && state.home, 0.0);
         (void)input->UpdateBooleanComponent(m_volumeUpClick, connected && state.volumeUp, 0.0);
         (void)input->UpdateBooleanComponent(m_volumeDownClick, connected && state.volumeDown, 0.0);
@@ -2046,24 +2046,23 @@ public:
         vr::DriverPose_t pose = MakeUntrackedPose();
         pose.deviceIsConnected = connected;
         if (trackingValid) {
-            const ControllerQuaternion headQ{
-                hmdPose.qRotation.x, hmdPose.qRotation.y, hmdPose.qRotation.z, hmdPose.qRotation.w};
-            const ControllerQuaternion controllerQ{state.x, state.y, state.z, state.w};
-            const auto worldQ = MultiplyQuaternion(headQ, controllerQ);
-            pose.qRotation = {worldQ.w, worldQ.x, worldQ.y, worldQ.z};
-            const std::array<double, 3> localOffset = m_isLeft
-                ? std::array<double, 3>{-0.25, -0.22, -0.32}
-                : std::array<double, 3>{0.25, -0.22, -0.32};
-            const auto worldOffset = RotateVector(headQ, localOffset);
-            pose.vecPosition[0] = hmdPose.vecPosition[0] + worldOffset[0];
-            pose.vecPosition[1] = hmdPose.vecPosition[1] + worldOffset[1];
-            pose.vecPosition[2] = hmdPose.vecPosition[2] + worldOffset[2];
+            pose.qRotation = {modeledPose.orientation.w, modeledPose.orientation.x,
+                              modeledPose.orientation.y, modeledPose.orientation.z};
+            pose.vecPosition[0] = modeledPose.position[0];
+            pose.vecPosition[1] = modeledPose.position[1];
+            pose.vecPosition[2] = modeledPose.position[2];
+            pose.vecVelocity[0] = modeledPose.velocity[0];
+            pose.vecVelocity[1] = modeledPose.velocity[1];
+            pose.vecVelocity[2] = modeledPose.velocity[2];
+            pose.vecAngularVelocity[0] = modeledPose.angularVelocity[0];
+            pose.vecAngularVelocity[1] = modeledPose.angularVelocity[1];
+            pose.vecAngularVelocity[2] = modeledPose.angularVelocity[2];
             pose.result = vr::TrackingResult_Running_OK;
             pose.poseIsValid = true;
             pose.willDriftInYaw = true;
             pose.shouldApplyHeadModel = false;
             pose.poseTimeOffset = -std::min<double>(
-                static_cast<double>(MonotonicNowNs() - state.receivedAtNs) / 1.0e9, 0.05);
+                static_cast<double>(nowNs - state.receivedAtNs) / 1.0e9, 0.05);
         }
         {
             std::lock_guard<std::mutex> lock(m_poseMutex);
@@ -2089,6 +2088,7 @@ private:
     }
 
     bool m_isLeft = false;
+    DaydreamArmModel m_armModel;
     std::atomic<uint32_t> m_objectId{vr::k_unTrackedDeviceIndexInvalid};
     mutable std::mutex m_poseMutex;
     vr::DriverPose_t m_pose = MakeUntrackedPose();
@@ -2150,7 +2150,7 @@ public:
         if (!host->TrackedDeviceAdded("PHONEVR-DAYDREAM-RIGHT", vr::TrackedDeviceClass_Controller, m_rightController)) {
             Cleanup(); return vr::VRInitError_Driver_Unknown;
         }
-        if (vr::VRDriverLog()) vr::VRDriverLog()->Log("PhoneVR 0.5.30 DisplayRedirect and dual Daydream controller devices registered");
+        if (vr::VRDriverLog()) vr::VRDriverLog()->Log("PhoneVR 0.5.31 DisplayRedirect and dual Daydream controller devices registered");
         return vr::VRInitError_None;
     }
     void Cleanup() override {

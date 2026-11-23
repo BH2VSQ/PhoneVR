@@ -7,6 +7,7 @@ import android.bluetooth.BluetoothGattCallback
 import android.bluetooth.BluetoothGattCharacteristic
 import android.bluetooth.BluetoothGattDescriptor
 import android.bluetooth.BluetoothProfile
+import android.bluetooth.BluetoothStatusCodes
 import android.bluetooth.le.ScanCallback
 import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
@@ -47,7 +48,9 @@ internal class DaydreamControllerManager(
         private const val PACKET_STALE_TIMEOUT_MS = 750L
         private val SERVICE_UUID = UUID.fromString(DaydreamControllerProtocol.SERVICE_UUID)
         private val REPORT_UUID = UUID.fromString(DaydreamControllerProtocol.REPORT_CHARACTERISTIC_UUID)
+        private val CONTROL_UUID = UUID.fromString(DaydreamControllerProtocol.CONTROL_CHARACTERISTIC_UUID)
         private val CCCD_UUID = UUID.fromString(DaydreamControllerProtocol.CLIENT_CONFIGURATION_UUID)
+        private const val APP_RECENTER_HOLD_MS = 800L
     }
 
     private val appContext = context.applicationContext
@@ -71,6 +74,7 @@ internal class DaydreamControllerManager(
         @Volatile var reconnectAttempt: Int = 0,
         @Volatile var reconnectScheduled: Boolean = false,
         @Volatile var packetGeneration: Long = 0L,
+        @Volatile var appPressGeneration: Long = 0L,
         @Volatile var lastState: ControllerInputState = ControllerInputState(false, SystemClock.elapsedRealtimeNanos()),
     )
 
@@ -331,6 +335,19 @@ internal class DaydreamControllerManager(
         ) {
             if (characteristic.uuid == REPORT_UUID) handleNotification(link, value)
         }
+
+        override fun onCharacteristicWrite(
+            gatt: BluetoothGatt,
+            characteristic: BluetoothGattCharacteristic,
+            status: Int,
+        ) {
+            if (characteristic.uuid != CONTROL_UUID || links[link.hand] !== link) return
+            if (status == BluetoothGatt.GATT_SUCCESS) {
+                Log.i(TAG, "Daydream hardware fusion reference recentered: hand=${link.hand.wireValue}")
+            } else {
+                Log.w(TAG, "Daydream hardware recenter write failed: hand=${link.hand.wireValue} status=$status")
+            }
+        }
     }
 
     private fun handleNotification(link: Link, payload: ByteArray?) {
@@ -356,8 +373,62 @@ internal class DaydreamControllerManager(
         }
         link.lastState = state
         link.packetGeneration++
+        if (next.app && !previous.app) {
+            val generation = synchronized(link) {
+                link.appPressGeneration += 1L
+                link.appPressGeneration
+            }
+            handler.postDelayed({
+                if (!closed && links[link.hand] === link && link.notificationsReady &&
+                    link.appPressGeneration == generation && link.lastState.app) {
+                    requestHardwareRecenter(link)
+                }
+            }, APP_RECENTER_HOLD_MS)
+        } else if (!next.app && previous.app) {
+            synchronized(link) { link.appPressGeneration += 1L }
+        }
         onState(link.hand, state)
         schedulePacketWatchdog(link)
+    }
+
+    private fun requestHardwareRecenter(link: Link) {
+        if (closed || links[link.hand] !== link || !link.notificationsReady || !link.lastState.app) return
+        val gatt = link.gatt ?: return
+        try {
+            val characteristic = gatt.getService(SERVICE_UUID)?.getCharacteristic(CONTROL_UUID)
+            if (characteristic == null) {
+                Log.i(TAG, "Daydream controller has no hardware recenter characteristic; using host-side alignment only")
+                return
+            }
+            val properties = characteristic.properties
+            if (properties and BluetoothGattCharacteristic.PROPERTY_WRITE == 0 &&
+                properties and BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE == 0) {
+                Log.w(TAG, "Daydream control characteristic is not writable")
+                return
+            }
+            val writeType = if (properties and BluetoothGattCharacteristic.PROPERTY_WRITE != 0) {
+                BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
+            } else {
+                BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
+            }
+            val accepted = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                gatt.writeCharacteristic(characteristic, byteArrayOf(0x00), writeType) == BluetoothStatusCodes.SUCCESS
+            } else {
+                @Suppress("DEPRECATION")
+                run {
+                    characteristic.writeType = writeType
+                    characteristic.value = byteArrayOf(0x00)
+                    gatt.writeCharacteristic(characteristic)
+                }
+            }
+            if (!accepted) {
+                Log.w(TAG, "Daydream hardware recenter request was rejected: hand=${link.hand.wireValue}")
+            }
+        } catch (error: SecurityException) {
+            Log.w(TAG, "Daydream hardware recenter missing Bluetooth permission", error)
+        } catch (error: Exception) {
+            Log.w(TAG, "Daydream hardware recenter request failed", error)
+        }
     }
 
     private fun schedulePacketWatchdog(link: Link) {

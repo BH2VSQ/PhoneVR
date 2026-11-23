@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(PhoneVRSteamVRDriver VERSION 0.5.30 LANGUAGES CXX)
+project(PhoneVRSteamVRDriver VERSION 0.5.31 LANGUAGES CXX)
 
 if(NOT WIN32)
   message(FATAL_ERROR "The first PhoneVR SteamVR driver target is Windows x64 only")
@@ -42,6 +42,13 @@ set_target_properties(driver_phonevr PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/package/bin/win64"
   LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/package/bin/win64"
 )
+
+include(CTest)
+if(BUILD_TESTING)
+  add_executable(daydream_pose_model_test tests/daydream_pose_model_test.cpp)
+  target_compile_features(daydream_pose_model_test PRIVATE cxx_std_17)
+  add_test(NAME daydream_pose_model_test COMMAND daydream_pose_model_test)
+endif()
 
 configure_file(driver.vrdrivermanifest "${CMAKE_BINARY_DIR}/package/driver.vrdrivermanifest" COPYONLY)
 install(TARGETS driver_phonevr RUNTIME DESTINATION bin/win64 LIBRARY DESTINATION bin/win64)

@@ -251,6 +251,7 @@ var errNoVideoTarget = errors.New("no paired Android video target")
 
 type HostService struct {
 	lifecycleMu                 sync.Mutex
+	videoEncoderProbeMu         sync.Mutex
 	mu                          sync.RWMutex
 	config                      HostConfig
 	serverName                  string
@@ -264,11 +265,13 @@ type HostService struct {
 	videoUDP                    *net.UDPConn
 	videoFFmpegPath             string
 	videoEncoderProbeDone       chan struct{}
+	videoEncoderProbeProfileID  string
 	videoEncoderReady           bool
 	videoEncoderSelected        encoder.Capability
 	videoEncoderCandidates      []encoder.Capability
 	videoEncoderError           string
 	videoBridgeActive           atomic.Bool
+	videoProfileMismatchLogged  atomic.Bool
 	videoFrameQueue             chan *rawVideoFrame
 	videoOutputQueue            chan encodedVideoFrame
 	videoUSBQueue               chan usbVideoWork
@@ -373,6 +376,30 @@ func (s *HostService) Start(config HostConfig) error {
 	if alreadyRunning {
 		return errors.New("PhoneVR Host is already running")
 	}
+
+	// Reload the pending profile on every service start. This also supports a
+	// Stop/Start cycle from the native UI without requiring the entire Host
+	// process to exit.
+	s.videoProfile = loadVideoStreamProfile(s.videoProfilePath)
+	activeProfile := s.activeVideoProfile()
+	s.mu.RLock()
+	probedProfileID := s.videoEncoderProbeProfileID
+	ffmpegPath := s.videoFFmpegPath
+	s.mu.RUnlock()
+	if probedProfileID != activeProfile.ID && (probedProfileID != "" || strings.TrimSpace(ffmpegPath) != "") {
+		s.addLog(fmt.Sprintf("Video profile changed to %s; rerunning hardware H.264 preflight at %dx%d@%d", activeProfile.ID, activeProfile.Width, activeProfile.Height, activeProfile.FPS))
+		s.ProbeVideoEncoders(ffmpegPath)
+	}
+	activeProfilePath, err := videoStreamProfileActiveConfigPath()
+	if err != nil {
+		return fmt.Errorf("resolve active video profile path: %w", err)
+	}
+	if err := saveVideoStreamProfile(activeProfilePath, activeProfile.ID); err != nil {
+		return fmt.Errorf("publish active video profile for SteamVR driver: %w", err)
+	}
+	s.addLog(fmt.Sprintf("SteamVR active video profile synchronized: %s | %dx%d@%d", activeProfile.ID, activeProfile.Width, activeProfile.Height, activeProfile.FPS))
+	s.videoProfileMismatchLogged.Store(false)
+
 	// Network-interface enumeration can block on virtual adapters and VPN
 	// providers. Resolve addresses once at service start, never in Snapshot(),
 	// and do it before starting real-time workers so interface queries never run
@@ -514,7 +541,6 @@ func (s *HostService) Start(config HostConfig) error {
 		scannerState = "paused (network-only video transport)"
 	}
 	s.addLog(fmt.Sprintf("Host started on %s | TCP %d | UDP discovery %d | UDP pose %d | USB AOA scanner %s", config.ListenAddress, config.ControlPort, config.DiscoveryPort, config.PosePort, scannerState))
-	activeProfile := s.activeVideoProfile()
 	s.addLog(fmt.Sprintf("Active SBS stream profile: %s | %dx%d@%d | H.264 target bitrate %d Mbps", activeProfile.ID, activeProfile.Width, activeProfile.Height, activeProfile.FPS, activeProfile.BitrateMbps))
 	for _, address := range networkAddresses {
 		s.addLog(fmt.Sprintf("Host interface [%s] %s: %s", address.Kind, address.Name, address.IP))
@@ -560,14 +586,25 @@ func normalizeHostConfig(config HostConfig) HostConfig {
 // Runtime session health is monitored separately because an encoder may pass
 // a synthetic preflight and still fail when fed live SteamVR frames.
 func (s *HostService) ProbeVideoEncoders(ffmpegPath string) {
+	s.videoEncoderProbeMu.Lock()
+	defer s.videoEncoderProbeMu.Unlock()
+
+	profile := s.activeVideoProfile()
+	done := make(chan struct{})
 	s.mu.Lock()
 	s.videoFFmpegPath = ffmpegPath
-	if s.videoEncoderProbeDone == nil {
-		s.videoEncoderProbeDone = make(chan struct{})
-	}
-	done := s.videoEncoderProbeDone
+	s.videoEncoderProbeDone = done
+	s.videoEncoderReady = false
+	s.videoEncoderCandidates = nil
+	s.videoEncoderSelected = encoder.Capability{}
+	s.videoEncoderError = "H.264 hardware encoder preflight is running"
 	s.mu.Unlock()
-	defer close(done)
+	defer func() {
+		s.mu.Lock()
+		s.videoEncoderProbeProfileID = profile.ID
+		s.mu.Unlock()
+		close(done)
+	}()
 
 	// This probe is deliberately synchronous. main() invokes it before Start(),
 	// so the TCP pairing listener cannot accept a phone before the H.264
@@ -2248,8 +2285,18 @@ func (s *HostService) handleVideoCaptureConnection(ctx context.Context, conn net
 			return
 		}
 		if int(header.Width) != videoWidth || int(header.Height) != videoHeight || header.Stride != uint32(videoWidth*4) {
-			s.addLog(fmt.Sprintf("Unexpected SteamVR video profile %dx%d stride=%d; expected %dx%d BGRA", header.Width, header.Height, header.Stride, videoWidth, videoHeight))
-			return
+			if !s.videoProfileMismatchLogged.Swap(true) {
+				s.addLog(fmt.Sprintf("SteamVR video profile mismatch: driver sends %dx%d stride=%d, Host is active at %dx%d BGRA. Mismatched frames are being discarded. Exit SteamVR, restart the Host service so it publishes the selected active profile, then launch SteamVR again.", header.Width, header.Height, header.Stride, videoWidth, videoHeight))
+			}
+			// Keep draining complete mismatched frames. Closing immediately made
+			// the driver reconnect for every compositor frame and flooded logs.
+			if _, err := io.CopyN(io.Discard, conn, int64(header.PayloadSize)); err != nil {
+				if !s.videoProfileMismatchLogged.Swap(true) {
+					s.addLog("Could not drain mismatched SteamVR raw frame: " + err.Error())
+				}
+				return
+			}
+			continue
 		}
 		if int(header.PayloadSize) != videoWidth*videoHeight*4 {
 			s.addLog(fmt.Sprintf("SteamVR raw frame payload %d does not match negotiated buffer %d", header.PayloadSize, videoWidth*videoHeight*4))

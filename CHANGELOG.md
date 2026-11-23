@@ -1,3 +1,11 @@
+## 0.5.25
+
+- Fix resolution-switch video disconnects caused by the SteamVR driver reading a newly selected profile while an already-running Host process still used its old in-memory profile.
+- Split the pending profile (`video-profile.json`) from the Host-published active profile (`video-profile-active.json`). The driver reads only the active profile marker.
+- Reload the selected profile on each Host service start and rerun hardware H.264 preflight whenever the active profile changes.
+- Drain and discard mismatched raw frames without closing the loopback connection, and emit one actionable mismatch diagnostic instead of reconnecting and logging once per frame.
+- Synchronize product metadata to 0.5.25 and Android versionCode 60.
+
 ## 0.5.24 - Configurable SBS stream resolution and audio-path investigation
 
 - Add Performance 1280×576, Balanced 1600×720, High 1920×864 and Maximum 2400×1080 SBS profiles, including profile-specific 5/8/13/18 Mbps H.264 target bitrates.

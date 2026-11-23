@@ -43,3 +43,20 @@ func TestVideoStreamProfileConfigRoundTrip(t *testing.T) {
 		t.Fatalf("missing config should use balanced profile, got %+v", got)
 	}
 }
+
+func TestPendingAndActiveVideoProfilesAreSeparated(t *testing.T) {
+	pendingPath := filepath.Join(t.TempDir(), "PhoneVRStream", "video-profile.json")
+	activePath := filepath.Join(t.TempDir(), "PhoneVRStream", "video-profile-active.json")
+	if err := saveVideoStreamProfile(pendingPath, "high"); err != nil {
+		t.Fatalf("save pending profile: %v", err)
+	}
+	if err := saveVideoStreamProfile(activePath, "balanced"); err != nil {
+		t.Fatalf("save active profile: %v", err)
+	}
+	if got := loadVideoStreamProfile(pendingPath); got.ID != "high" {
+		t.Fatalf("pending profile = %+v, want high", got)
+	}
+	if got := loadVideoStreamProfile(activePath); got.ID != "balanced" {
+		t.Fatalf("active profile = %+v, want balanced until Host restarts", got)
+	}
+}

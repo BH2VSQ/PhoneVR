@@ -1350,7 +1350,7 @@ func (app *nativeUI) createDialogControls(d *nativeDialog) {
 			}
 		}
 		sendNativeMessage(d.controls[idVideoProfileCombo], 0x014E, uintptr(selectedIndex), 0)
-		d.status = app.createControl(d.hwnd, "STATIC", app.text("更改后需要关闭 SteamVR 并重启 PhoneVR Host，再启动 SteamVR。SteamVR 视频分辨率缩放建议设为 100%。", "After changing this setting, exit SteamVR, restart PhoneVR Host, then start SteamVR. Keep SteamVR video resolution scale at 100%."), wsChild|wsVisible, 0, 0, 10, 10, 0)
+		d.status = app.createControl(d.hwnd, "STATIC", app.text("更改后请先退出 SteamVR，再重启 PhoneVR Host 服务，最后启动 SteamVR。Host 会重新检测编码器并发布活动分辨率，避免两端尺寸不一致。SteamVR 视频分辨率缩放建议设为 100%。", "After changing this setting, exit SteamVR, restart the PhoneVR Host service, then start SteamVR. Host re-probes the encoder and publishes the active resolution to prevent a profile mismatch. Keep SteamVR video resolution scale at 100%."), wsChild|wsVisible, 0, 0, 10, 10, 0)
 		addButton(idVideoProfileApply, app.text("保存分辨率", "Save Resolution"))
 		addButton(idClose, app.text("关闭", "Close"))
 
@@ -1942,7 +1942,7 @@ func (app *nativeUI) handleDialogCommand(d *nativeDialog, id int) {
 				setNativeText(d.status, app.text("保存失败：", "Save failed: ")+err.Error())
 				return
 			}
-			setNativeText(d.status, app.text("已保存 ", "Saved ")+app.videoProfileDisplayName(profile)+app.text("。请退出 SteamVR，重启 PhoneVR Host 后再启动 SteamVR。SteamVR 分辨率缩放保持 100%。", ". Exit SteamVR, restart PhoneVR Host, then start SteamVR again. Keep SteamVR resolution scale at 100%."))
+			setNativeText(d.status, app.text("已保存 ", "Saved ")+app.videoProfileDisplayName(profile)+app.text("。请退出 SteamVR，重启 PhoneVR Host 服务，再启动 SteamVR。Host 会重新检测编码器并同步活动分辨率。SteamVR 分辨率缩放保持 100%。", ". Exit SteamVR, restart the PhoneVR Host service, then start SteamVR again. Host will re-probe the encoder and synchronize the active profile. Keep SteamVR resolution scale at 100%."))
 		} else if id == idClose {
 			pDestroyWindow.Call(d.hwnd)
 		}

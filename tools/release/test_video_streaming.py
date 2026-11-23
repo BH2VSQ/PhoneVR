@@ -84,6 +84,13 @@ class VideoStreamingIntegrationTests(unittest.TestCase):
         self.assertNotIn("StartH264EncoderWithCapability", capture_handler)
         self.assertIn("CompareAndSwap(false, true)", HOST_SERVICE)
 
+    def test_host_publishes_active_profile_and_driver_ignores_pending_profile(self):
+        self.assertIn("video-profile-active.json", DRIVER)
+        self.assertIn("videoStreamProfileActiveConfigPath", (ROOT / "windows-host/cmd/phonevr-host/video_profile.go").read_text(encoding="utf-8"))
+        self.assertIn("videoEncoderProbeProfileID", HOST_SERVICE)
+        self.assertIn("SteamVR video profile mismatch:", HOST_SERVICE)
+        self.assertIn("videoProfileMismatchLogged.Swap(true)", HOST_SERVICE)
+
     def test_video_pipeline_reports_each_host_stage(self):
         for field in ("videoBridgeActive", "videoRawFrames", "videoEncodedFrames", "videoUDPFragments", "videoDroppedFrames"):
             self.assertIn(field, HOST_SERVICE)
@@ -256,7 +263,8 @@ class VideoStreamingIntegrationTests(unittest.TestCase):
         probe = HOST_SERVICE[HOST_SERVICE.index("func (s *HostService) ProbeVideoEncoders") : HOST_SERVICE.index("func (s *HostService) Stop()")]
         main = (ROOT / "windows-host/cmd/phonevr-host/main.go").read_text(encoding="utf-8")
         self.assertNotIn("go func()", probe)
-        self.assertIn("defer close(done)", probe)
+        self.assertIn("defer func()", probe)
+        self.assertIn("close(done)", probe)
         self.assertLess(main.index("service.ProbeVideoEncoders"), main.index("service.Start(config)"))
 
     def test_android_hardware_codec_reassembles_decodes_and_renders_sbs(self):

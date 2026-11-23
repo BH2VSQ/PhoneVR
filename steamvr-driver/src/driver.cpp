@@ -48,7 +48,7 @@ const VideoStreamProfile& ActiveVideoStreamProfile() {
         const DWORD length = GetEnvironmentVariableW(L"APPDATA", appData, MAX_PATH);
         if (length == 0 || length >= MAX_PATH) return {1600, 720, "balanced"};
         std::wstring path(appData);
-        path += L"\\PhoneVRStream\\video-profile.json";
+        path += L"\\PhoneVRStream\\video-profile-active.json";
         HANDLE file = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
                                   nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
         if (file == INVALID_HANDLE_VALUE) return {1600, 720, "balanced"};
@@ -69,7 +69,9 @@ const VideoStreamProfile& ActiveVideoStreamProfile() {
             if (end == std::string::npos) return false;
             return json.compare(quote + 1, end - quote - 1, id) == 0;
         };
-        // The config file is produced by PhoneVR Host and contains one known profile ID.
+        // Host publishes this active marker only after loading the profile and
+        // completing the matching hardware encoder preflight. The pending UI
+        // selection is intentionally ignored until Host is restarted.
         if (isProfile("performance")) return {1280, 576, "performance"};
         if (isProfile("high")) return {1920, 864, "high"};
         if (isProfile("maximum")) return {2400, 1080, "maximum"};
@@ -1803,7 +1805,7 @@ public:
         if (!host->TrackedDeviceAdded("PHONEVR-HMD-001", vr::TrackedDeviceClass_HMD, m_hmd)) {
             Cleanup(); return vr::VRInitError_Driver_Unknown;
         }
-        if (vr::VRDriverLog()) vr::VRDriverLog()->Log("PhoneVR 0.5.24 DisplayRedirect configurable stream profiles SteamVR driver initialized");
+        if (vr::VRDriverLog()) vr::VRDriverLog()->Log("PhoneVR 0.5.25 DisplayRedirect synchronized stream profile SteamVR driver initialized");
         return vr::VRInitError_None;
     }
     void Cleanup() override {

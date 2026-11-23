@@ -1,4 +1,4 @@
-# PhoneVR SteamVR Driver — 0.5.24 (Compositor frame-pacing diagnostics)
+# PhoneVR SteamVR Driver — 0.5.25 (Synchronized stream profile handoff)
 
 Windows x64 OpenVR server driver foundation for the PhoneVR wireless HMD.
 
@@ -116,7 +116,7 @@ installation.
 
 ## Live video capture
 
-The driver captures the final SBS compositor backbuffer only while a paired Android client has successfully negotiated hardware H.264 decode and Host has validated a hardware H.264 encoder. D3D11 performs GPU scaling to the selected stream profile; a bounded triple-staging ring and background worker deliver BGRA frames to the Host's loopback TCP bridge on `127.0.0.1:48106`. Host then hardware-encodes and transmits `PVRV` UDP fragments to Android port `48104`. The 72 Hz virtual-display timing is fixed in this revision. The driver and Host read the selected profile ID from `%APPDATA%\PhoneVRStream\video-profile.json`; restart both Host and SteamVR after changing it. SteamVR's render scale at 100% best matches the selected encoded profile.
+The driver captures the final SBS compositor backbuffer only while a paired Android client has successfully negotiated hardware H.264 decode and Host has validated a hardware H.264 encoder. D3D11 performs GPU scaling to the selected stream profile; a bounded triple-staging ring and background worker deliver BGRA frames to the Host's loopback TCP bridge on `127.0.0.1:48106`. Host then hardware-encodes and transmits `PVRV` UDP fragments to Android port `48104`. The 72 Hz virtual-display timing is fixed in this revision. Host reads the pending profile from `%APPDATA%\PhoneVRStream\video-profile.json` and publishes the active profile to `%APPDATA%\PhoneVRStream\video-profile-active.json` when its service starts. The SteamVR driver reads only the active marker, preventing a SteamVR-only restart from switching capture dimensions while Host still runs with an older encoder profile. After changing the selection, stop SteamVR, restart the Host service, then start SteamVR. SteamVR's render scale at 100% best matches the selected encoded profile.
 
 
 ## DisplayRedirect diagnostics (0.4.19)

@@ -1,6 +1,6 @@
 # PhoneVRStream
 
-Repository revision: **0.5.24**. Windows Host: **0.5.24**. Android client: **0.5.24**. Control protocol: **v1**; video packet protocol: **v1**.
+Repository revision: **0.5.25**. Windows Host: **0.5.25**. Android client: **0.5.25**. Control protocol: **v1**; video packet protocol: **v1**.
 
 PhoneVRStream is a multi-component project for using an Android phone as a PC VR streaming HMD. Both applications live in one repository and use independent build/test pipelines.
 
@@ -22,7 +22,7 @@ PhoneVRStream/
 └── dist/                       # Local build output (git-ignored)
 ```
 
-## Windows Host 0.5.24 bundled SteamVR driver
+## Windows Host 0.5.25 bundled SteamVR driver
 
 The virtual display timing is fixed at 72 Hz in this revision. Stream resolution is selected independently using the **Stream Resolution** dialog. The chosen SBS profile changes the driver's recommended target size and capture output, Host raw-frame buffers and H.264 encoder dimensions, plus the Android decoder capability negotiation. SteamVR's own resolution scale controls supersampling before capture and does not replace the PhoneVR stream profile.
 
@@ -37,7 +37,7 @@ The Windows Host has been migrated from an Edge/Chrome app-mode dashboard to a n
 - All helper processes launched by the GUI Host run without separate console windows, including Windows registry queries, SteamVR `vrpathreg.exe`, FFmpeg inventory/preflight and the persistent FFmpeg encoder. Their captured output and errors remain available in the Host log.
 - Native child windows provide Android-owned optical preset management, network settings, logs and appearance controls. The Host pulls the preset catalogue from Android when connected; the phone remains the authoritative persistent store.
 - The **Video Transport** dialog selects Automatic failover, USB AOA only, Network only or Network + USB AOA aggregation. The first-run default is **Network only**; the selected mode and automatic-mode preference are saved and restored after Host restart.
-- The **Stream Resolution** dialog selects Performance 1280×576, Balanced 1600×720, High 1920×864 or Maximum 2400×1080 SBS. The Host applies profile-specific H.264 target bitrates of 5, 8, 13 and 18 Mbps respectively, checks the phone's explicit hardware MediaCodec size/rate capabilities, and disables video if the selected profile cannot be decoded in hardware. A profile change requires restarting PhoneVR Host and SteamVR. SteamVR's per-application resolution scale should remain at 100% unless supersampling is deliberately desired.
+- The **Stream Resolution** dialog selects Performance 1280×576, Balanced 1600×720, High 1920×864 or Maximum 2400×1080 SBS. The Host applies profile-specific H.264 target bitrates of 5, 8, 13 and 18 Mbps respectively, checks the phone's explicit hardware MediaCodec size/rate capabilities, and disables video if the selected profile cannot be decoded in hardware. The UI selection is stored as a pending profile. Each Host service start reloads it, re-runs hardware encoder preflight if its dimensions changed, and publishes `video-profile-active.json`; the SteamVR driver reads only this active file. After saving a profile, exit SteamVR, stop and restart the Host service, then launch SteamVR. SteamVR's per-application resolution scale should remain at 100% unless supersampling is deliberately desired.
 - The Android client keeps LAN control/pose and AOA auxiliary sessions available together under one persistent device ID. Automatic mode fails over between the paths. Aggregation mode stripes distinct PVRV fragments across independently probe-verified UDP and AOA routes, while Android feeds both into one offset-based reassembler and one MediaCodec decoder.
 - Per-path receive goodput drives a weighted scheduler. Missing fragment indexes are reported over the control channel; Host temporarily retains encoded access units and retransmits requested fragments over the alternate route. A bounded out-of-order window protects frame order when USB and network latency differ. If one path disconnects or its queue is congested, fragments fall back to the surviving path and the recovered route rejoins after a fresh receive-path probe.
 - The Optical Presets list supports double-click editing, save, apply, create, clone, rename and delete. The former phone display settings editor is integrated into the preset editor.
@@ -50,7 +50,7 @@ The normal `PhoneVRHost.exe` is built with the Windows GUI subsystem and opens t
 
 All helper processes launched by the GUI Host use `CREATE_NO_WINDOW`, including Steam registry discovery, SteamVR driver registration and FFmpeg inventory/preflight/streaming. Their captured output remains available in the Host log. See `docs/2026-11-22-silent-host-child-processes.md`.
 
-## Android client 0.5.24
+## Android client 0.5.25
 
 - Landscape immersive display with OpenGL ES 3.0 stereo rendering.
 - Locally stored optical preset selector with Daydream View v1.0 (2016), Daydream View v2.0 (2017) and Generic Cardboard built-in presets.
@@ -69,9 +69,9 @@ All helper processes launched by the GUI Host use `CREATE_NO_WINDOW`, including 
 
 ## Audio streaming status
 
-Audio transport is not implemented in 0.5.24. The current build has no WASAPI capture/render workers, Android `AudioRecord`/`AudioTrack` path, audio packet protocol or virtual headset audio endpoints. The SteamVR input/output selectors therefore cannot provide end-to-end phone audio by themselves. The proposed two-way architecture and Windows endpoint requirements are documented in `docs/audio-streaming-architecture.md`.
+Audio transport is not implemented in 0.5.25. The current build has no WASAPI capture/render workers, Android `AudioRecord`/`AudioTrack` path, audio packet protocol or virtual headset audio endpoints. The SteamVR input/output selectors therefore cannot provide end-to-end phone audio by themselves. The proposed two-way architecture and Windows endpoint requirements are documented in `docs/audio-streaming-architecture.md`.
 
-## SteamVR driver 0.5.24
+## SteamVR driver 0.5.25
 
 The PhoneVR Host contains its own Windows x64 OpenVR driver inside the Host executable. The normal build compiles `steamvr-driver/`, embeds the resulting manifest, DLL and resources into both Host executables, and no longer asks users to download or select a ZIP. On startup, the Host checks whether SteamVR is installed and whether the user has disabled automatic deployment. When enabled, it copies the embedded driver into a content-versioned directory under `%LOCALAPPDATA%\PhoneVR\SteamVRDriver` and registers it with SteamVR's own `vrpathreg.exe`.
 

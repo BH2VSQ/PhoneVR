@@ -1,4 +1,4 @@
-# PhoneVR Host 0.5.24 bundled SteamVR driver and live SBS video
+# PhoneVR Host 0.5.25 bundled SteamVR driver and live SBS video
 
 Executable version is injected from the repository root `VERSION` file during builds.
 
@@ -13,6 +13,8 @@ The Host runs a bounded FFmpeg encoder-candidate probe at startup. Use `PhoneVRH
 `PhoneVRHost.exe` creates a native Win32 top-level application window. The UI is drawn with Win32/GDI+ and the HMD pose preview uses WGL/OpenGL. There is no WebView, browser runtime or local HTTP dashboard.
 
 The dashboard shows Host/SteamVR/HMD status, phone battery, the 3D HMD model and Yaw/Pitch/Roll. The SteamVR state pill adapts to English and Chinese labels. The preview keeps a reserved gap above the telemetry cards. It also shows the active H.264 route and whether the alternate transport is available. The Video Transport dialog provides automatic failover, USB AOA-only and network-only modes.
+
+The Stream Resolution dialog stores a pending profile separately from the active profile. Each Host service start reloads the pending selection, reruns hardware H.264 preflight if the dimensions changed, and publishes `%APPDATA%\PhoneVRStream\video-profile-active.json`. The SteamVR driver reads only this active marker. After changing a resolution, exit SteamVR, stop/restart the Host service, then launch SteamVR so both ends use the same dimensions.
 
 The main menu provides:
 

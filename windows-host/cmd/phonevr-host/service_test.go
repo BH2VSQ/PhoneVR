@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
@@ -11,6 +12,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/vsq-studio/phonevr-host/internal/videoprotocol"
 )
 
 func TestHostSnapshotIncludesVideoPipelineCounters(t *testing.T) {
@@ -990,5 +993,92 @@ func TestWriteJSONLineWithDeadlineRefreshesExpiredDeadline(t *testing.T) {
 	// their own timeout rather than inheriting an expired absolute timestamp.
 	if err := server.SetWriteDeadline(time.Time{}); err != nil {
 		t.Fatalf("clear write deadline: %v", err)
+	}
+}
+
+func TestHostServiceRestartPublishesSelectedVideoProfile(t *testing.T) {
+	configRoot := t.TempDir()
+	t.Setenv("APPDATA", configRoot)
+	t.Setenv("XDG_CONFIG_HOME", configRoot)
+
+	service := NewHostService(false)
+	config := HostConfig{
+		ListenAddress: "127.0.0.1",
+		DiscoveryPort: reservePort(t, "udp4"),
+		ControlPort:   reservePort(t, "tcp4"),
+		PosePort:      reservePort(t, "udp4"),
+	}
+	if err := service.Start(config); err != nil {
+		t.Fatalf("initial Host start: %v", err)
+	}
+	service.Stop()
+
+	if err := service.SaveVideoStreamProfile("high"); err != nil {
+		t.Fatalf("save high profile: %v", err)
+	}
+	config.DiscoveryPort = reservePort(t, "udp4")
+	config.ControlPort = reservePort(t, "tcp4")
+	config.PosePort = reservePort(t, "udp4")
+	if err := service.Start(config); err != nil {
+		t.Fatalf("Host restart with selected profile: %v", err)
+	}
+	defer service.Stop()
+
+	activePath, err := videoStreamProfileActiveConfigPath()
+	if err != nil {
+		t.Fatalf("active profile path: %v", err)
+	}
+	if active := loadVideoStreamProfile(activePath); active.ID != "high" {
+		t.Fatalf("published active profile = %+v, want high", active)
+	}
+	if width, height, fps := service.activeVideoDimensions(); width != 1920 || height != 864 || fps != 60 {
+		t.Fatalf("active Host dimensions = %dx%d@%d, want 1920x864@60", width, height, fps)
+	}
+}
+
+func TestVideoCaptureProfileMismatchIsDrainedAndLoggedOnce(t *testing.T) {
+	service := NewHostService(false)
+	ctx, cancel := context.WithCancel(context.Background())
+	server, client := net.Pipe()
+	defer client.Close()
+	done := make(chan struct{})
+	go func() {
+		service.handleVideoCaptureConnection(ctx, server)
+		_ = server.Close()
+		close(done)
+	}()
+
+	header, err := (videoprotocol.RawFrameHeader{
+		FrameID: 1, TimestampNs: 1, Width: 2, Height: 2, Stride: 8, PayloadSize: 16,
+	}).Encode()
+	if err != nil {
+		t.Fatalf("encode mismatched frame header: %v", err)
+	}
+	for frame := 0; frame < 2; frame++ {
+		if _, err := client.Write(header); err != nil {
+			t.Fatalf("write mismatched frame header %d: %v", frame, err)
+		}
+		if _, err := client.Write(make([]byte, 16)); err != nil {
+			t.Fatalf("write mismatched frame payload %d: %v", frame, err)
+		}
+	}
+	cancel()
+	_ = client.Close()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("video capture handler did not stop after context cancellation")
+	}
+
+	service.mu.RLock()
+	defer service.mu.RUnlock()
+	mismatchLogs := 0
+	for _, entry := range service.logs {
+		if strings.Contains(entry, "SteamVR video profile mismatch:") {
+			mismatchLogs++
+		}
+	}
+	if mismatchLogs != 1 {
+		t.Fatalf("profile mismatch log count = %d, want 1; logs=%v", mismatchLogs, service.logs)
 	}
 }

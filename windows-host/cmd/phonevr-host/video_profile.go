@@ -49,6 +49,17 @@ func videoStreamProfileConfigPath() (string, error) {
 	return filepath.Join(configDir, "PhoneVRStream", "video-profile.json"), nil
 }
 
+// videoStreamProfileActiveConfigPath is written only when the Host starts a
+// profile. The SteamVR driver reads this file so a pending selection cannot
+// change the driver dimensions while an older Host process is still running.
+func videoStreamProfileActiveConfigPath() (string, error) {
+	configDir, err := os.UserConfigDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(configDir, "PhoneVRStream", "video-profile-active.json"), nil
+}
+
 func loadVideoStreamProfile(path string) VideoStreamProfile {
 	fallback := defaultVideoStreamProfile()
 	if strings.TrimSpace(path) == "" {

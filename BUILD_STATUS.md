@@ -1,4 +1,23 @@
-# PhoneVR 0.5.24 build status
+# PhoneVR 0.5.25 build status
+
+## This revision (0.5.25)
+
+- Fix the Host/SteamVR stream-profile handoff. The Host stores the UI selection in `video-profile.json` and publishes the profile actually active for its running service in `video-profile-active.json`.
+- The SteamVR driver reads only `video-profile-active.json`, so restarting SteamVR while Host is still running cannot silently switch its capture dimensions away from the Host encoder/Android negotiation dimensions.
+- Every Host service start reloads the pending profile and reruns hardware H.264 preflight if the selected profile differs from the previous probe.
+- Raw-frame profile mismatches are drained and discarded without reconnecting for every frame; the Host emits one actionable mismatch log. See `docs/2026-11-24-video-profile-handoff-fix.md`.
+- Product metadata is synchronized to 0.5.25; Android versionCode is 60.
+
+## 0.5.25 validation status
+
+- `cd windows-host && go test ./...`: passed.
+- `cd windows-host && go test -race ./...`: passed.
+- `cd windows-host && go vet ./...`: passed.
+- `GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build ./cmd/phonevr-host`: passed.
+- `python3 -m unittest discover -s tools/release -p 'test_*.py'`: passed, 62 tests.
+- `git diff --check`: passed.
+- SteamVR MSVC driver build and Android APK build: not run in this Linux environment.
+- Physical Windows/SteamVR/Android profile-switch test: not run.
 
 ## This revision (0.5.24)
 

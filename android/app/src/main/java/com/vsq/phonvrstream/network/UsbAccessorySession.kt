@@ -253,6 +253,8 @@ class UsbAccessorySession private constructor(
         private const val TAG = "PhoneVRAOA"
         private const val ACTION_USB_PERMISSION = "com.vsq.phonvrstream.USB_ACCESSORY_PERMISSION"
         private const val PERMISSION_TIMEOUT_MS = 15_000L
+        private const val ACCESSORY_REOPEN_ATTEMPTS = 6
+        private const val ACCESSORY_REOPEN_DELAY_MS = 150L
         private const val CONTROL_READ_POLL_MS = 500L
         private const val CHANNEL_CONTROL = UsbMuxProtocol.CHANNEL_CONTROL
         private const val CHANNEL_POSE = UsbMuxProtocol.CHANNEL_POSE
@@ -262,12 +264,84 @@ class UsbAccessorySession private constructor(
         fun openFirstAccessory(context: Context): UsbAccessorySession {
             val appContext = context.applicationContext
             val manager = appContext.getSystemService(Context.USB_SERVICE) as UsbManager
-            val accessory = manager.accessoryList?.firstOrNull()
+            val initialAccessory = manager.accessoryList?.firstOrNull()
                 ?: throw IllegalStateException("等待 PC Host 将手机切换到 Android Accessory Mode（AOA）")
-            if (!manager.hasPermission(accessory)) requestPermission(appContext, manager, accessory)
-            val descriptor = manager.openAccessory(accessory)
-                ?: throw IllegalStateException("Android 无法打开 USB accessory 文件描述符")
-            return UsbAccessorySession(accessory, descriptor).also { it.start() }
+            if (!manager.hasPermission(initialAccessory)) {
+                Log.i(TAG, "Requesting Android permission for AOA accessory: ${describeAccessory(initialAccessory)}")
+                requestPermission(appContext, manager, initialAccessory)
+            }
+
+            // UsbManager may replace the UsbAccessory instance while the user
+            // is handling the permission prompt. Re-resolve the accessory and
+            // confirm permission against the current enumeration before open.
+            var accessory = awaitCurrentAccessory(manager, initialAccessory)
+            if (!manager.hasPermission(accessory)) {
+                requestPermission(appContext, manager, accessory)
+                accessory = awaitCurrentAccessory(manager, accessory)
+            }
+            check(manager.hasPermission(accessory)) {
+                "Android AOA 权限未应用到当前枚举的 USB accessory：${describeAccessory(accessory)}"
+            }
+
+            var descriptor: ParcelFileDescriptor? = null
+            var lastOpenError: Throwable? = null
+            for (attempt in 0 until ACCESSORY_REOPEN_ATTEMPTS) {
+                val current = runCatching { awaitCurrentAccessory(manager, accessory, maxAttempts = 2) }
+                    .getOrElse { lastOpenError = it; null }
+                if (current == null) continue
+                accessory = current
+                if (!manager.hasPermission(accessory)) {
+                    lastOpenError = SecurityException("Android AOA accessory permission disappeared during reopen")
+                    continue
+                }
+                descriptor = runCatching { manager.openAccessory(accessory) }
+                    .onFailure { lastOpenError = it }
+                    .getOrNull()
+                if (descriptor != null) break
+                Log.w(TAG, "UsbManager.openAccessory returned null (attempt ${attempt + 1}/$ACCESSORY_REOPEN_ATTEMPTS): ${describeAccessory(accessory)}")
+                sleepForAccessoryRetry()
+            }
+            val openedDescriptor = descriptor ?: throw IOException(
+                "Android 无法打开 USB accessory 文件描述符，已尝试 $ACCESSORY_REOPEN_ATTEMPTS 次" +
+                    (lastOpenError?.let { "：${it.message ?: it.javaClass.simpleName}" } ?: ""),
+                lastOpenError,
+            )
+            Log.i(TAG, "AOA accessory descriptor opened: ${describeAccessory(accessory)}")
+            return UsbAccessorySession(accessory, openedDescriptor).also { it.start() }
+        }
+
+        private fun awaitCurrentAccessory(
+            manager: UsbManager,
+            reference: UsbAccessory,
+            maxAttempts: Int = ACCESSORY_REOPEN_ATTEMPTS,
+        ): UsbAccessory {
+            repeat(maxAttempts) { attempt ->
+                val accessories = manager.accessoryList.orEmpty()
+                val matching = accessories.firstOrNull { sameAccessory(it, reference) }
+                    ?: accessories.singleOrNull()
+                if (matching != null) return matching
+                if (attempt + 1 < maxAttempts) sleepForAccessoryRetry()
+            }
+            throw IllegalStateException("AOA USB accessory 在权限确认后仍未重新枚举：${describeAccessory(reference)}")
+        }
+
+        private fun sameAccessory(left: UsbAccessory, right: UsbAccessory): Boolean =
+            left.manufacturer == right.manufacturer &&
+                left.model == right.model &&
+                left.version == right.version &&
+                left.uri == right.uri &&
+                left.description == right.description
+
+        private fun describeAccessory(accessory: UsbAccessory): String =
+            "manufacturer=${accessory.manufacturer}, model=${accessory.model}, version=${accessory.version}, uri=${accessory.uri}"
+
+        private fun sleepForAccessoryRetry() {
+            try {
+                Thread.sleep(ACCESSORY_REOPEN_DELAY_MS)
+            } catch (error: InterruptedException) {
+                Thread.currentThread().interrupt()
+                throw java.io.InterruptedIOException("等待 USB accessory 重新枚举时连接任务被中断").also { it.initCause(error) }
+            }
         }
 
         private fun requestPermission(context: Context, manager: UsbManager, accessory: UsbAccessory) {
@@ -278,6 +352,7 @@ class UsbAccessorySession private constructor(
                     val permissionIntent = intent ?: return
                     if (permissionIntent.action != ACTION_USB_PERMISSION) return
                     granted.set(permissionIntent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false))
+                    Log.i(TAG, "Android AOA permission result: granted=${granted.get()} accessory=${describeAccessory(accessory)}")
                     latch.countDown()
                 }
             }

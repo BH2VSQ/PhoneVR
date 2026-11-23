@@ -1,3 +1,18 @@
+## 0.5.15 - Persistent transport modes, AOA reconnect stability and mirrored video
+
+- Make the Android AOA video-backup connection start idempotent. Duplicate startup and USB-accessory attach notifications no longer invalidate an in-progress permission request or queue another overlapping connection worker. Store the worker Future and cancel it on disconnect so an obsolete permission wait cannot block the next AOA reconnect.
+- After Android grants USB accessory permission, resolve the current accessory enumeration again, confirm permission against that instance, and retry `openAccessory()` for transient accessory re-enumeration and descriptor-open failures. Add explicit permission, enumeration and open diagnostics.
+- Add a Windows Host transport configuration file under the user's PhoneVRStream configuration directory. The selected mode and automatic-mode preference are saved when changed and restored after Host restart. First-run default remains Network only.
+- Add **Network + USB AOA parallel** video mode. For every H.264 access unit, Host sends identical PVRV fragments over each currently probe-verified path. USB mirror writes use an independent bounded worker so a slow Bulk OUT operation cannot stall UDP delivery; a full USB queue skips only the redundant copy while preserving the network send. USB readiness probes also use the independent worker so standby AOA checks cannot stall UDP. Android feeds both copies into the existing receiver and deduplicates by frame ID and fragment index before the single MediaCodec decoder.
+- Keep the two mirrored routes independently healthy. A route is added only after its own PVRP probe acknowledgement, removed after its probe health expires or a write fails, and automatically rejoined after its receive path responds again. The surviving route continues carrying the frame stream.
+- Preserve Automatic failover, USB AOA only and Network only behavior. The Host status panel distinguishes mirrored delivery, a single surviving route and a route waiting to recover.
+- Display the current network and USB AOA connection state in both the Android connection page and menu. Clarify Host fragment metrics as total sent fragments across all selected paths.
+- Add Host regression tests for configuration persistence, independent path probe gating, byte-identical UDP/AOA mirrored video fragments and continued UDP delivery when the bounded AOA mirror queue is full.
+- Android release metadata is `versionName 0.5.15`, `versionCode 50`; synchronized Host, AOA descriptor, SteamVR driver and repository versions are `0.5.15`.
+- Go unit tests, race tests, `go vet` and Windows amd64 cross-build pass. Android Gradle compilation and APK packaging remain unverified in this environment because Gradle distribution download was blocked by unavailable outbound DNS; physical AOA reconnect and dual-path testing remain required.
+
+**Parallel mode mirrors the stream for redundancy. It does not stripe fragments to add the two links' bandwidth together.**
+
 ## 0.5.14 - Virtual HMD height and network-first default
 
 - Set the 3DoF SteamVR HMD virtual position to 1.65 m above the standing floor, including its initial untracked pose, preventing the headset origin from being placed at floor level.

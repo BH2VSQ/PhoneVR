@@ -19,7 +19,8 @@ class NetworkDiscoveryTests(unittest.TestCase):
         self.assertIn("bind(InetSocketAddress(target.localAddress, 0))", network)
         self.assertIn("target.broadcastAddress", network)
         self.assertNotIn("connectionModeSpinner", activity)
-        self.assertNotIn("连接方式", activity)
+        self.assertIn("connectionTransportLabel", activity)
+        self.assertIn("transportStatusListener", activity)
         self.assertNotIn("DiscoveryMode", network + activity)
 
     def test_removed_transport_selector_and_rndis_classifier_are_absent(self):
@@ -46,7 +47,8 @@ class NetworkDiscoveryTests(unittest.TestCase):
     def test_default_video_transport_is_network_only(self):
         service = (ROOT / "windows-host/cmd/phonevr-host/service.go").read_text(encoding="utf-8")
         transport = (ROOT / "windows-host/cmd/phonevr-host/video_transport.go").read_text(encoding="utf-8")
-        self.assertIn("transportMode: VideoTransportNetwork, transportPreference: VideoPreferNetwork", service)
+        self.assertIn("loadVideoTransportConfigFrom(transportConfigPath)", service)
+        self.assertIn("mode, preferred := VideoTransportNetwork, VideoPreferNetwork", transport)
         self.assertIn("return VideoTransportNetwork", transport)
         self.assertIn("preferred = VideoPreferNetwork", transport)
 

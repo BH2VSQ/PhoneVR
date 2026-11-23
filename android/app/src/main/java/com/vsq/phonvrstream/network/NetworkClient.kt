@@ -28,6 +28,7 @@ import java.net.Socket
 import java.net.SocketTimeoutException
 import java.nio.charset.StandardCharsets
 import java.util.concurrent.Executors
+import java.util.concurrent.Future
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
@@ -45,6 +46,7 @@ class NetworkClient(
     private val applyRemoteDeviceAction: (String) -> Unit = {},
     private val currentMediaCapabilities: () -> JSONArray = { JSONArray() },
     private val videoStatsListener: (VideoStreamStats) -> Unit = {},
+    private val transportStatusListener: (String) -> Unit = {},
 ) {
     private val appContext = context.applicationContext
     private val stableDeviceId: String by lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
@@ -57,6 +59,7 @@ class NetworkClient(
     private val discoveryExecutor = Executors.newSingleThreadExecutor()
     private val sessionExecutor = Executors.newSingleThreadExecutor()
     private val auxiliaryUsbExecutor = Executors.newSingleThreadExecutor()
+    @Volatile private var auxiliaryUsbTask: Future<*>? = null
     private val auxiliaryPoseExecutor = Executors.newSingleThreadExecutor()
     private val auxiliaryUsbGeneration = AtomicLong(0L)
     private val auxiliaryUsbRunning = AtomicBoolean(false)
@@ -546,26 +549,67 @@ class NetworkClient(
      * queue and therefore share one MediaCodec decoder.
      */
     fun connectUsbVideoBackup(deviceName: String = "Android") {
-        val generation = auxiliaryUsbGeneration.incrementAndGet()
-        auxiliaryUsbRunning.set(true)
-        synchronized(auxiliaryUsbLock) {
-            auxiliaryUsbSession?.close()
-            auxiliaryUsbSession = null
-            auxiliaryUsbWriter = null
-            auxiliaryUsbWriterGeneration = -1L
+        val generation = synchronized(auxiliaryUsbLock) {
+            // Startup and USB_ACCESSORY_ATTACHED may both request the same
+            // backup session. Keep one worker alive across permission prompts
+            // and reconnect backoff instead of invalidating it and issuing a
+            // second overlapping UsbManager permission request.
+            if (auxiliaryUsbRunning.get()) {
+                Log.d(TAG, "Ignoring duplicate AOA backup start request; existing session loop remains active")
+                publishTransportStatus()
+                return
+            }
+            auxiliaryUsbRunning.set(true)
+            auxiliaryUsbGeneration.incrementAndGet()
         }
-        auxiliaryUsbExecutor.execute { usbVideoBackupLoop(generation, deviceName) }
+        try {
+            val task = auxiliaryUsbExecutor.submit {
+                try {
+                    usbVideoBackupLoop(generation, deviceName)
+                } finally {
+                    synchronized(auxiliaryUsbLock) {
+                        if (auxiliaryUsbGeneration.get() == generation) {
+                            auxiliaryUsbRunning.set(false)
+                            auxiliaryUsbTask = null
+                        }
+                    }
+                    publishTransportStatus()
+                }
+            }
+            synchronized(auxiliaryUsbLock) {
+                if (isUsbVideoBackupActive(generation)) {
+                    auxiliaryUsbTask = task
+                } else {
+                    // Stop/disconnect may race with submission. Cancel the stale
+                    // worker rather than leaving it queued ahead of a new attach.
+                    task.cancel(true)
+                }
+            }
+        } catch (error: Exception) {
+            synchronized(auxiliaryUsbLock) {
+                if (auxiliaryUsbGeneration.get() == generation) auxiliaryUsbRunning.set(false)
+            }
+            postStatus("无法启动 USB AOA 连接任务：${error.message ?: error.javaClass.simpleName}", false)
+        }
+        publishTransportStatus()
     }
 
     fun stopUsbVideoBackup() {
-        auxiliaryUsbRunning.set(false)
-        auxiliaryUsbGeneration.incrementAndGet()
-        synchronized(auxiliaryUsbLock) {
+        val task = synchronized(auxiliaryUsbLock) {
+            auxiliaryUsbRunning.set(false)
+            auxiliaryUsbGeneration.incrementAndGet()
+            val pending = auxiliaryUsbTask
+            auxiliaryUsbTask = null
             auxiliaryUsbSession?.close()
             auxiliaryUsbSession = null
             auxiliaryUsbWriter = null
             auxiliaryUsbWriterGeneration = -1L
+            pending
         }
+        // Interrupt CountDownLatch permission waits and accessory-enumeration
+        // sleeps. Closing the session above also unblocks active Bulk reads.
+        task?.cancel(true)
+        publishTransportStatus()
     }
 
     private fun isUsbVideoBackupActive(generation: Long): Boolean =
@@ -626,6 +670,7 @@ class NetworkClient(
                         auxiliaryUsbWriterGeneration = generation
                     }
                 }
+                publishTransportStatus()
                 retryDelayMs = INITIAL_RECONNECT_DELAY_MS
                 postStatus("USB AOA 备用视频链路已连接，网络控制链路保持独立", true)
                 auxiliaryPoseExecutor.execute { sendAuxiliaryPoseLoop(generation, opened) }
@@ -634,6 +679,9 @@ class NetworkClient(
             } catch (error: ProtocolMismatchException) {
                 if (isUsbVideoBackupActive(generation)) {
                     postStatus("AOA 备用视频链路失败：${error.message}", false)
+                    synchronized(auxiliaryUsbLock) {
+                        if (auxiliaryUsbGeneration.get() == generation) auxiliaryUsbRunning.set(false)
+                    }
                     return
                 }
             } catch (error: Exception) {
@@ -648,6 +696,7 @@ class NetworkClient(
                         auxiliaryUsbWriterGeneration = -1L
                     }
                 }
+                publishTransportStatus()
             }
             if (!isUsbVideoBackupActive(generation)) return
             sleepBeforeAuxiliaryRetry(retryDelayMs, generation)
@@ -660,6 +709,26 @@ class NetworkClient(
         if (activeControlWriter == null) return false
         val generation = activeControlGeneration
         return isSessionActive(generation) && socket.isConnected && !socket.isClosed
+    }
+
+    private fun currentTransportStatusText(): String {
+        val networkConnected = hasActiveNetworkControl()
+        val directUsbConnected = usbSession?.isClosed == false && activeControlWriter != null
+        val auxiliaryUsbConnected = auxiliaryUsbWriter != null && isUsbVideoBackupConnected()
+        val usbConnected = directUsbConnected || auxiliaryUsbConnected
+        return when {
+            networkConnected && usbConnected -> "当前连接方式：网络 + USB AOA 双链路在线"
+            networkConnected -> "当前连接方式：Wi-Fi / LAN 网络"
+            usbConnected -> "当前连接方式：USB AOA Bulk"
+            auxiliaryUsbRunning.get() -> "当前连接方式：等待 USB AOA 设备或权限确认"
+            running.get() -> "当前连接方式：正在建立网络连接"
+            else -> "当前连接方式：未连接"
+        }
+    }
+
+    private fun publishTransportStatus() {
+        val status = currentTransportStatusText()
+        mainHandler.post { transportStatusListener(status) }
     }
 
     /**
@@ -804,6 +873,7 @@ class NetworkClient(
                     activeControlWriter = writer
                     activeControlGeneration = generation
                 }
+                publishTransportStatus()
                 writeControlMessage(writer,
                     JSONObject().put("type", "display_settings").put("settings", currentDisplaySettings()))
                 poseExecutor.execute { sendUsbPoseLoop(generation, openedSession) }
@@ -830,6 +900,7 @@ class NetworkClient(
                         activeControlGeneration = -1L
                     }
                 }
+                publishTransportStatus()
                 stopVideoReceiverAsync()
             }
             if (!isSessionActive(generation)) return
@@ -876,6 +947,7 @@ class NetworkClient(
         stopVideoReceiverAsync()
         publishVideoStats(VideoStreamStats(state = "等待 PC"))
         postStatus("已断开 PC", false)
+        publishTransportStatus()
     }
 
     fun shutdown() {
@@ -954,6 +1026,7 @@ class NetworkClient(
                     activeControlWriter = writer
                     activeControlGeneration = generation
                 }
+                publishTransportStatus()
                 writeControlMessage(
                     writer,
                     JSONObject().put("type", "display_settings").put("settings", currentDisplaySettings()),
@@ -1303,7 +1376,11 @@ class NetworkClient(
     }
 
     private fun postStatus(message: String, connected: Boolean) {
-        mainHandler.post { statusListener(message, connected) }
+        val transportStatus = currentTransportStatusText()
+        mainHandler.post {
+            statusListener(message, connected)
+            transportStatusListener(transportStatus)
+        }
     }
 
     private class ProtocolMismatchException(message: String) : Exception(message)
@@ -1318,7 +1395,7 @@ class NetworkClient(
         const val DEFAULT_VIDEO_FPS = 60
         const val DISCOVERY_PORT = 48100
         private const val PROTOCOL_VERSION = 1
-        private const val CLIENT_VERSION = "PhoneVRStream-0.5.14"
+        private const val CLIENT_VERSION = "PhoneVRStream-0.5.15"
         private const val DISCOVERY_REQUEST = "PHONEVR_DISCOVER_V1"
         private const val DISCOVERY_RESPONSE_PREFIX = "PHONEVR_HOST_V1 "
         private const val DISCOVERY_WINDOW_MS = 1800L

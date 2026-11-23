@@ -282,7 +282,7 @@ func (app *nativeUI) paintMain(hdc uintptr) {
 		videoState = "驱动视频桥接已连接"
 	}
 	transportState := app.videoTransportSummaryText(app.snapshot.VideoTransport)
-	videoSummary := fmt.Sprintf("VIDEO  %s    %s    RAW %d    H.264 %d    FRAGMENTS %d    DROPPED %d",
+	videoSummary := fmt.Sprintf("VIDEO  %s    %s    RAW %d    H.264 %d    SENT %d    DROPPED %d",
 		videoState, transportState, app.snapshot.VideoRawFrames, app.snapshot.VideoEncodedFrames,
 		app.snapshot.VideoUDPFragments, app.snapshot.VideoDroppedFrames)
 	drawNativeText(hdc, videoSummary, nativeRect{28, 76, int32(w - 28), 102}, p.Muted, app.fontSmall, dtVCenter|dtSingleLine|dtEndEllipsis|dtNoPrefix)
@@ -315,6 +315,8 @@ func (app *nativeUI) videoTransportSummaryText(status VideoTransportSnapshot) st
 		mode = "USB ONLY"
 	case VideoTransportNetwork:
 		mode = "NETWORK ONLY"
+	case VideoTransportParallel:
+		mode = "NETWORK + USB MIRROR"
 	}
 	active := app.text("等待链路", "WAITING")
 	backup := ""
@@ -328,6 +330,13 @@ func (app *nativeUI) videoTransportSummaryText(status VideoTransportSnapshot) st
 		active = "NETWORK"
 		if status.USBAvailable {
 			backup = " + USB READY"
+		}
+	case "parallel":
+		active = "NETWORK + USB"
+		if !status.USBAvailable {
+			active = "NETWORK ONLY (USB RECOVERING)"
+		} else if !status.NetworkAvailable {
+			active = "USB ONLY (NETWORK RECOVERING)"
 		}
 	}
 	return mode + " / " + active + backup

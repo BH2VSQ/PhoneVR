@@ -1,4 +1,4 @@
-# PhoneVR Host 0.5.14 bundled SteamVR driver and live SBS video
+# PhoneVR Host 0.5.15 bundled SteamVR driver and live SBS video
 
 Executable version is injected from the repository root `VERSION` file during builds.
 
@@ -115,6 +115,12 @@ The PhoneVR OpenVR driver is embedded inside `PhoneVRHost.exe` and `PhoneVRHost-
 At startup, Host checks SteamVR installation and registration. Unless the user has disabled automatic deployment, it copies the embedded driver into a content-versioned directory under `%LOCALAPPDATA%\PhoneVR\SteamVRDriver`, verifies the copied files, and registers the directory through SteamVR's own `bin\win64\vrpathreg.exe`.
 
 Open **SteamVR Driver** from the Host main menu to refresh status, install/repair the embedded driver, or uninstall and disable future auto-deployment. The opt-out marker is stored under `%LOCALAPPDATA%\PhoneVR`; a manual Install / Repair action removes it. Host deletes only files inside its managed driver directory. If a PhoneVR manifest is registered from a user-managed location, Host unregisters it but leaves those files untouched. Restart SteamVR after driver changes.
+
+## Video Transport modes
+
+The Video Transport dialog offers **Automatic failover**, **USB AOA only**, **Network only** and **Network + USB AOA parallel**. The current mode and automatic-mode preference are saved under the user's PhoneVRStream configuration directory and restored when Host starts again. The initial default remains Network only.
+
+Automatic mode sends a frame over one verified route and fails over to the other route when receiver feedback or path writes fail. Parallel mode mirrors the same PVRV fragments over each route after that route independently acknowledges a PVRP readiness probe. Android combines both copies in one fragment reassembler and deduplicates by frame ID and fragment index before decoding. If one route fails, the other continues; the failed route rejoins after its receive path responds to a later probe. This is redundant delivery and does not aggregate Wi-Fi and USB bandwidth.
 
 ## Live stereo video stream
 

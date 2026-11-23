@@ -1,21 +1,23 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
-
-	"github.com/vsq-studio/phonevr-host/internal/usbmux"
 )
 
 type VideoTransportMode string
 
 const (
-	VideoTransportAuto    VideoTransportMode = "auto"
-	VideoTransportUSB     VideoTransportMode = "usb"
-	VideoTransportNetwork VideoTransportMode = "network"
+	VideoTransportAuto     VideoTransportMode = "auto"
+	VideoTransportUSB      VideoTransportMode = "usb"
+	VideoTransportNetwork  VideoTransportMode = "network"
+	VideoTransportParallel VideoTransportMode = "parallel"
 )
 
 type VideoTransportPreference string
@@ -36,6 +38,53 @@ type VideoTransportSnapshot struct {
 }
 
 const videoPathProbePayload = "PVRP\x01"
+
+type videoTransportConfig struct {
+	Mode      VideoTransportMode       `json:"mode"`
+	Preferred VideoTransportPreference `json:"preferred"`
+}
+
+func videoTransportConfigPath() (string, error) {
+	base, err := os.UserConfigDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(base, "PhoneVRStream", "video-transport.json"), nil
+}
+
+func loadVideoTransportConfigFrom(path string) (VideoTransportMode, VideoTransportPreference) {
+	mode, preferred := VideoTransportNetwork, VideoPreferNetwork
+	if strings.TrimSpace(path) == "" {
+		return mode, preferred
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return mode, preferred
+	}
+	var config videoTransportConfig
+	if json.Unmarshal(data, &config) != nil {
+		return mode, preferred
+	}
+	return normalizeVideoTransportMode(string(config.Mode)), normalizeVideoTransportPreference(string(config.Preferred))
+}
+
+func saveVideoTransportConfigTo(path string, mode VideoTransportMode, preferred VideoTransportPreference) error {
+	if strings.TrimSpace(path) == "" {
+		return errors.New("video transport settings path is empty")
+	}
+	config := videoTransportConfig{
+		Mode:      normalizeVideoTransportMode(string(mode)),
+		Preferred: normalizeVideoTransportPreference(string(preferred)),
+	}
+	data, err := json.MarshalIndent(config, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	return os.WriteFile(path, data, 0o600)
+}
 
 type transportHealth struct {
 	ProbeAt          time.Time
@@ -61,6 +110,8 @@ func normalizeVideoTransportMode(mode string) VideoTransportMode {
 		return VideoTransportUSB
 	case VideoTransportNetwork:
 		return VideoTransportNetwork
+	case VideoTransportParallel:
+		return VideoTransportParallel
 	default:
 		return VideoTransportNetwork
 	}
@@ -79,8 +130,18 @@ func normalizeVideoTransportPreference(preference string) VideoTransportPreferen
 func (s *HostService) SetVideoTransport(mode, preferred string) error {
 	normalizedMode := normalizeVideoTransportMode(mode)
 	normalizedPreference := normalizeVideoTransportPreference(preferred)
-	s.mu.Lock()
+	s.transportConfigMu.Lock()
+	defer s.transportConfigMu.Unlock()
+	s.mu.RLock()
 	changed := s.transportMode != normalizedMode || s.transportPreference != normalizedPreference
+	configPath := s.transportConfigPath
+	s.mu.RUnlock()
+	if changed && configPath != "" {
+		if err := saveVideoTransportConfigTo(configPath, normalizedMode, normalizedPreference); err != nil {
+			return fmt.Errorf("save video transport settings: %w", err)
+		}
+	}
+	s.mu.Lock()
 	s.transportMode = normalizedMode
 	s.transportPreference = normalizedPreference
 	if changed {
@@ -170,9 +231,20 @@ func (s *HostService) transportCandidateHealthyLocked(deviceID, transport string
 		return false
 	}
 	active := s.activeVideoDeviceID == deviceID && s.activeVideoTransport == transport
-	if !active && s.activeVideoDeviceID != "" {
-		// A standby route must prove that its actual video receive path works.
-		// Control-channel heartbeats alone cannot detect a blocked UDP or Bulk path.
+	parallelActive := s.activeVideoDeviceID == deviceID && s.activeVideoTransport == "parallel"
+	if parallelActive {
+		// Each route must independently prove that its receive path is ready.
+		// Do not grant an unprobed route an initial grace period: the other
+		// transport can carry video while this path continues receiving probes.
+		// This avoids sending AOA packets before Android has bound its loopback
+		// forwarding socket, and lets a recovered route rejoin without a restart.
+		return !health.ProbeAt.IsZero() && now.Sub(health.ProbeAt) <= 4*time.Second
+	}
+	if !active {
+		// A route must prove that its actual video receive path is ready before
+		// the first access unit is sent. This also closes the startup race where
+		// Android has accepted Welcome but its shared UDP receiver/USB forwarder
+		// has not finished binding yet.
 		if health.ProbeAt.IsZero() || now.Sub(health.ProbeAt) > 4*time.Second {
 			return false
 		}
@@ -191,6 +263,12 @@ func (s *HostService) transportCandidateHealthyLocked(deviceID, transport string
 }
 
 func (s *HostService) expireSilentActiveTransportLocked(now time.Time) {
+	if s.activeVideoTransport == "parallel" {
+		// Mirrored mode validates each path independently through the one-second
+		// PVRP probes. The receiver's latest-source field can only name one of
+		// the two interleaved copies, so it is not a suitable aggregate watchdog.
+		return
+	}
 	if s.activeVideoDeviceID == "" || s.activeVideoTransport == "" || s.activeVideoSince.IsZero() ||
 		now.Sub(s.activeVideoSince) <= 4*time.Second {
 		return
@@ -241,6 +319,10 @@ func (s *HostService) currentVideoTarget() (videoTarget, bool) {
 		networkOK := s.transportCandidateHealthyLocked(group.deviceID, "network", group.network)
 		selected := ""
 		switch mode {
+		case VideoTransportParallel:
+			if usbOK || networkOK {
+				selected = "parallel"
+			}
 		case VideoTransportUSB:
 			if usbOK {
 				selected = "usb"
@@ -281,7 +363,15 @@ func (s *HostService) currentVideoTarget() (videoTarget, bool) {
 		target.DeviceID = group.deviceID
 		target.Transport = selected
 		target.Switched = s.activeVideoTransport != selected || s.activeVideoDeviceID != group.deviceID
-		if selected == "usb" {
+		if selected == "parallel" {
+			if usbOK {
+				target.USB = group.usb.USBLink
+			}
+			if networkOK {
+				tcp := group.network.Conn.RemoteAddr().(*net.TCPAddr)
+				target.UDP = &net.UDPAddr{IP: append(net.IP(nil), tcp.IP...), Port: androidVideoPort}
+			}
+		} else if selected == "usb" {
 			target.USB = group.usb.USBLink
 		} else {
 			tcp := group.network.Conn.RemoteAddr().(*net.TCPAddr)
@@ -410,7 +500,13 @@ func (s *HostService) probeStandbyVideoPaths() {
 	for _, item := range targets {
 		target := item.target
 		if target.USB != nil {
-			if err := target.USB.WriteFrame(usbmux.ChannelVideo, []byte(videoPathProbePayload)); err != nil {
+			// Keep even standby-path probes off the video sender goroutine. A
+			// stalled WinUSB transfer must never pause the active UDP route.
+			work := usbMirrorWork{
+				link: target.USB, deviceID: target.DeviceID,
+				fragments: [][]byte{[]byte(videoPathProbePayload)}, isProbe: true,
+			}
+			if err := s.enqueueUSBMirrorWork(work); err != nil {
 				s.markVideoTransportFailure(target, err)
 			}
 			continue

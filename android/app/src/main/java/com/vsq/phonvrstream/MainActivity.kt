@@ -60,6 +60,7 @@ class MainActivity : Activity(), SensorEventListener {
     private lateinit var settingsStore: SettingsStore
     private lateinit var poseText: TextView
     private lateinit var menuConnectionText: TextView
+    private lateinit var menuTransportText: TextView
     private lateinit var menuVideoDetailText: TextView
     private lateinit var streamStatusText: TextView
     private lateinit var screenFlipButton: Button
@@ -68,6 +69,7 @@ class MainActivity : Activity(), SensorEventListener {
     private lateinit var settingsPanel: LinearLayout
     private lateinit var connectionPanel: LinearLayout
     private lateinit var connectionStatusLabel: TextView
+    private lateinit var connectionTransportLabel: TextView
     private lateinit var hostAddressInput: EditText
     private lateinit var hostPortInput: EditText
     private lateinit var discoveredHostList: LinearLayout
@@ -81,6 +83,7 @@ class MainActivity : Activity(), SensorEventListener {
     private var lastPoseUiUpdateMs = 0L
     private var pcConnected = false
     private var connectionMessage = "正在搜索局域网 PC"
+    private var connectionTransportMessage = "当前连接方式：未连接"
     private var startupDiscoveryStarted = false
     private var screenFlipped = false
     @Volatile private var videoStreamStats = VideoStreamStats()
@@ -118,6 +121,11 @@ class MainActivity : Activity(), SensorEventListener {
                     )
                 }
                 updateTopHud()
+            },
+            transportStatusListener = { message ->
+                connectionTransportMessage = message
+                if (::connectionTransportLabel.isInitialized) connectionTransportLabel.text = message
+                if (::menuTransportText.isInitialized) menuTransportText.text = message
             },
             currentDisplaySettings = { settings.toJson() },
             currentOpticalPresets = { OpticalPreset.listToJson(opticalPresets) },
@@ -370,6 +378,14 @@ class MainActivity : Activity(), SensorEventListener {
             maxLines = 2
         }
         statusPanel.addView(menuConnectionText)
+        menuTransportText = TextView(this).apply {
+            text = connectionTransportMessage
+            textSize = 9f
+            setTextColor(Color.rgb(166, 190, 216))
+            maxLines = 2
+            setPadding(0, dp(3), 0, 0)
+        }
+        statusPanel.addView(menuTransportText)
         poseText = TextView(this).apply {
             text = "姿态  Y 0°  P 0°  R 0°"
             textSize = 10f
@@ -556,6 +572,13 @@ class MainActivity : Activity(), SensorEventListener {
             setTextColor(Color.rgb(242, 183, 112))
         }
         panel.addView(connectionStatusLabel)
+
+        connectionTransportLabel = label(connectionTransportMessage, secondary = true).apply {
+            textSize = 10f
+            setPadding(0, 0, 0, dp(9))
+            setTextColor(Color.rgb(130, 195, 255))
+        }
+        panel.addView(connectionTransportLabel)
 
         // All variable-height content lives in a weighted ScrollView. This avoids
         // hiding the connect controls on short landscape displays or small phones.

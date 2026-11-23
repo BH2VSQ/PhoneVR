@@ -42,6 +42,7 @@ const (
 	videoFrameRate             = 60
 	videoInputQueueDepth       = 2 // one frame may be written to FFmpeg while two newer frames wait
 	videoOutputQueueDepth      = 8 // isolate FFmpeg stdout from potentially blocking USB Bulk writes
+	videoUSBQueueDepth         = 4 // bounded independent queue for mirrored AOA writes
 	videoBridgeReadTimeout     = 10 * time.Second
 	discoveryQuery             = "PHONEVR_DISCOVER_V1"
 	discoveryPrefix            = "PHONEVR_HOST_V1 "
@@ -194,6 +195,14 @@ type videoTarget struct {
 	Switched  bool
 }
 
+type usbMirrorWork struct {
+	link          *usbmux.Mux
+	deviceID      string
+	fragments     [][]byte
+	otherPathSent bool
+	isProbe       bool
+}
+
 type taggedNetConn struct {
 	net.Conn
 	remote net.Addr
@@ -241,6 +250,7 @@ type HostService struct {
 	videoBridgeActive         atomic.Bool
 	videoFrameQueue           chan *rawVideoFrame
 	videoOutputQueue          chan encodedVideoFrame
+	videoUSBQueue             chan usbMirrorWork
 	videoOutputMu             sync.Mutex
 	videoOutputNeedsKeyFrame  bool
 	videoFramePool            sync.Pool
@@ -261,6 +271,8 @@ type HostService struct {
 	usbLinks                  map[string]*usbmux.Mux
 	transportMode             VideoTransportMode
 	transportPreference       VideoTransportPreference
+	transportConfigPath       string
+	transportConfigMu         sync.Mutex
 	activeVideoTransport      string
 	activeVideoDeviceID       string
 	activeVideoSince          time.Time
@@ -279,9 +291,11 @@ type HostService struct {
 }
 
 func NewHostService(consoleLogs bool) *HostService {
+	transportConfigPath, _ := videoTransportConfigPath()
+	transportMode, transportPreference := loadVideoTransportConfigFrom(transportConfigPath)
 	return &HostService{
 		devices: make(map[string]activeDevice), connections: make(map[net.Conn]struct{}), usbLinks: make(map[string]*usbmux.Mux),
-		transportMode: VideoTransportNetwork, transportPreference: VideoPreferNetwork,
+		transportMode: transportMode, transportPreference: transportPreference, transportConfigPath: transportConfigPath,
 		transportHealth: make(map[string]transportHealth), consoleLogs: consoleLogs,
 	}
 }
@@ -397,6 +411,7 @@ func (s *HostService) Start(config HostConfig) error {
 	s.videoUDP = videoUDP
 	s.videoFrameQueue = make(chan *rawVideoFrame, videoInputQueueDepth)
 	s.videoOutputQueue = make(chan encodedVideoFrame, videoOutputQueueDepth)
+	s.videoUSBQueue = make(chan usbMirrorWork, videoUSBQueueDepth)
 	s.videoOutputMu.Lock()
 	s.videoOutputNeedsKeyFrame = false
 	s.videoOutputMu.Unlock()
@@ -426,7 +441,7 @@ func (s *HostService) Start(config HostConfig) error {
 		s.addLog(fmt.Sprintf("Host interface [%s] %s: %s", address.Kind, address.Name, address.IP))
 	}
 
-	s.wg.Add(8)
+	s.wg.Add(9)
 	go s.acceptLoop(ctx, tcpListener)
 	go s.usbAccessoryLoop(ctx)
 	go s.discoveryLoop(ctx, udpDiscovery, serverName, config.ControlPort)
@@ -435,6 +450,7 @@ func (s *HostService) Start(config HostConfig) error {
 	go s.videoCaptureLoop(ctx, videoCaptureListener)
 	go s.videoEncoderLoop(ctx)
 	go s.videoTransportSendLoop(ctx)
+	go s.videoUSBMirrorSendLoop(ctx, s.videoUSBQueue)
 	return nil
 }
 
@@ -575,6 +591,9 @@ func (s *HostService) Stop() {
 		_ = mux.Close()
 	}
 	s.wg.Wait()
+	s.mu.Lock()
+	s.videoUSBQueue = nil
+	s.mu.Unlock()
 	s.addLog("Host stopped; TCP and UDP listeners released")
 }
 
@@ -1495,30 +1514,144 @@ func (s *HostService) sendEncodedVideoFrame(frame []byte, frameID uint32, timest
 	if err != nil {
 		return err
 	}
+	if target.Transport == "parallel" {
+		return s.sendVideoFragmentsParallel(fragments, target)
+	}
 	if target.USB != nil {
-		for _, packet := range fragments {
-			if err := target.USB.WriteFrame(usbmux.ChannelVideo, packet); err != nil {
-				// A failed/partial multiplex write invalidates byte-stream framing.
-				_ = target.USB.Close()
-				s.markVideoTransportFailure(target, err)
-				return fmt.Errorf("USB AOA Bulk OUT: %w", err)
-			}
-			s.videoUDPFragments.Add(1)
+		if err := s.sendVideoFragmentsUSB(fragments, target.USB); err != nil {
+			s.markVideoTransportFailure(target, err)
+			return fmt.Errorf("USB AOA Bulk OUT: %w", err)
 		}
 		return nil
+	}
+	if err := s.sendVideoFragmentsUDP(fragments, target.UDP); err != nil {
+		s.markVideoTransportFailure(target, err)
+		return fmt.Errorf("Android UDP video send: %w", err)
+	}
+	return nil
+}
+
+// sendVideoFragmentsParallel mirrors the same frame fragments to every
+// currently healthy route. Android reassembles both copies in one receiver and
+// deduplicates by frame ID + fragment index, so a fragment arriving over either
+// path can complete the access unit without creating a second decoder queue.
+func (s *HostService) sendVideoFragmentsParallel(fragments [][]byte, target videoTarget) error {
+	var routeErrors []error
+	sentOnAnyPath := false
+	if target.UDP != nil {
+		if err := s.sendVideoFragmentsUDP(fragments, target.UDP); err != nil {
+			route := target
+			route.Transport = "network"
+			s.markVideoTransportFailure(route, err)
+			routeErrors = append(routeErrors, fmt.Errorf("network UDP: %w", err))
+		} else {
+			sentOnAnyPath = true
+		}
+	}
+	if target.USB != nil {
+		work := usbMirrorWork{
+			link: target.USB, deviceID: target.DeviceID,
+			fragments: fragments, otherPathSent: sentOnAnyPath,
+		}
+		if err := s.enqueueUSBMirrorWork(work); err != nil {
+			route := target
+			route.Transport = "usb"
+			s.markVideoTransportFailure(route, err)
+			routeErrors = append(routeErrors, fmt.Errorf("USB AOA mirror queue: %w", err))
+		} else {
+			// The bounded AOA worker drains this copy independently. Its bulk
+			// writes cannot hold up the low-latency UDP sender or FFmpeg queue.
+			sentOnAnyPath = true
+		}
+	}
+	if sentOnAnyPath {
+		return nil
+	}
+	if len(routeErrors) == 0 {
+		return errVideoTransportUnavailable
+	}
+	return errors.Join(routeErrors...)
+}
+
+func (s *HostService) enqueueUSBMirrorWork(work usbMirrorWork) error {
+	s.mu.RLock()
+	queue := s.videoUSBQueue
+	s.mu.RUnlock()
+	if queue == nil {
+		return errors.New("USB AOA mirror worker is not running")
+	}
+	select {
+	case queue <- work:
+		return nil
+	default:
+		return errors.New("USB AOA mirror queue is full; network path remains preferred")
+	}
+}
+
+func (s *HostService) videoUSBMirrorSendLoop(ctx context.Context, queue <-chan usbMirrorWork) {
+	defer s.wg.Done()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case work := <-queue:
+			if work.link == nil {
+				continue
+			}
+			var err error
+			if work.isProbe {
+				if len(work.fragments) != 1 {
+					err = errors.New("invalid USB video-path probe work item")
+				} else {
+					err = work.link.WriteFrame(usbmux.ChannelVideo, work.fragments[0])
+				}
+			} else {
+				err = s.sendVideoFragmentsUSB(work.fragments, work.link)
+			}
+			if err == nil {
+				continue
+			}
+			route := videoTarget{Transport: "usb", DeviceID: work.deviceID}
+			s.markVideoTransportFailure(route, err)
+			if !work.isProbe && !work.otherPathSent {
+				s.videoDroppedFrames.Add(1)
+				dropped := s.requireVideoKeyFrame()
+				s.addLog(fmt.Sprintf("USB AOA mirrored frame send failed: %v; dropped %d queued access units and waiting for next IDR", err, dropped))
+			} else {
+				s.addLog(fmt.Sprintf("USB AOA parallel path send failed; other path remains available or probe-only work was dropped: %v", err))
+			}
+		}
+	}
+}
+
+func (s *HostService) sendVideoFragmentsUSB(fragments [][]byte, link *usbmux.Mux) error {
+	if link == nil {
+		return errors.New("USB AOA Bulk link is unavailable")
+	}
+	for _, packet := range fragments {
+		if err := link.WriteFrame(usbmux.ChannelVideo, packet); err != nil {
+			// A failed/partial multiplex write invalidates byte-stream framing.
+			_ = link.Close()
+			return err
+		}
+		s.videoUDPFragments.Add(1)
+	}
+	return nil
+}
+
+func (s *HostService) sendVideoFragmentsUDP(fragments [][]byte, target *net.UDPAddr) error {
+	if target == nil {
+		return errors.New("network UDP target is unavailable")
 	}
 	s.mu.RLock()
 	udp := s.videoUDP
 	s.mu.RUnlock()
 	if udp == nil {
-		err := errors.New("video UDP sender is unavailable")
-		s.markVideoTransportFailure(target, err)
-		return err
+		return errors.New("video UDP sender is unavailable")
 	}
 	for _, packet := range fragments {
-		if _, err := udp.WriteToUDP(packet, target.UDP); err != nil {
-			s.markVideoTransportFailure(target, err)
-			return fmt.Errorf("Android UDP video send: %w", err)
+		if _, err := udp.WriteToUDP(packet, target); err != nil {
+			return err
 		}
 		s.videoUDPFragments.Add(1)
 	}

@@ -1,6 +1,6 @@
 # PhoneVRStream
 
-Repository revision: **0.5.14**. Windows Host: **0.5.14**. Android client: **0.5.14**. Control protocol: **v1**; video packet protocol: **v1**.
+Repository revision: **0.5.15**. Windows Host: **0.5.15**. Android client: **0.5.15**. Control protocol: **v1**; video packet protocol: **v1**.
 
 PhoneVRStream is a multi-component project for using an Android phone as a PC VR streaming HMD. Both applications live in one repository and use independent build/test pipelines.
 
@@ -22,7 +22,7 @@ PhoneVRStream/
 └── dist/                       # Local build output (git-ignored)
 ```
 
-## Windows Host 0.5.14 bundled SteamVR driver
+## Windows Host 0.5.15 bundled SteamVR driver
 
 The virtual display timing is fixed at 72 Hz in this revision. The adjustable refresh-rate menu and its configuration file have been removed; this avoids presenting refresh-rate choices before the PC compositor and phone rendering path have been profiled end to end.
 
@@ -36,8 +36,9 @@ The Windows Host has been migrated from an Edge/Chrome app-mode dashboard to a n
 - At Host startup, FFmpeg is probed for a working hardware H.264 encoder. NVENC, AMF and QSV candidates are actually initialized with a short IDR test; CPU software encoding is deliberately disabled for live VR video to avoid competing with an already CPU-bound SteamVR compositor. Supply `-ffmpeg <path>` when FFmpeg is not on PATH.
 - All helper processes launched by the GUI Host run without separate console windows, including Windows registry queries, SteamVR `vrpathreg.exe`, FFmpeg inventory/preflight and the persistent FFmpeg encoder. Their captured output and errors remain available in the Host log.
 - Native child windows provide Android-owned optical preset management, network settings, logs and appearance controls. The Host pulls the preset catalogue from Android when connected; the phone remains the authoritative persistent store.
-- The **Video Transport** dialog selects Automatic failover, USB AOA only or Network only. The default is **Network only**; automatic mode remains available with USB-first or network-first preference and displays both link states plus the currently selected video route.
-- In automatic mode, the Android client keeps LAN control/pose and AOA auxiliary sessions alive together under one persistent device ID. The Host sends video through one path at a time, monitors Android receiver feedback, and changes to the surviving path when the active transport fails. A route change waits for the next IDR without restarting capture or H.264 encoding.
+- The **Video Transport** dialog selects Automatic failover, USB AOA only, Network only or Network + USB AOA parallel. The first-run default is **Network only**; the selected mode and automatic-mode preference are saved and restored after Host restart.
+- The Android client keeps LAN control/pose and AOA auxiliary sessions available together under one persistent device ID. Automatic mode fails over between the paths. Parallel mode mirrors the same PVRV fragments over every independently probe-verified path; Android deduplicates the copies before its single MediaCodec decoder. If one path disconnects, the other keeps carrying video and the recovered path rejoins after its receive path is probed again.
+- Parallel mode provides redundant delivery, not aggregated link bandwidth. It sends duplicate fragments over both links and does not stripe different portions of the stream across USB and Wi-Fi.
 - The Optical Presets list supports double-click editing, save, apply, create, clone, rename and delete. The former phone display settings editor is integrated into the preset editor.
 - Light/dark themes use separate pose-preview and headset-material palettes. Five color-only swatches support left-click to apply and right-click to open the Windows color picker; customized swatches are saved. Child windows use an in-app Close action without a separate native caption close button.
 - Chinese is the default UI language. English/Chinese switching is available and persists in the user's application data.
@@ -48,14 +49,15 @@ The normal `PhoneVRHost.exe` is built with the Windows GUI subsystem and opens t
 
 All helper processes launched by the GUI Host use `CREATE_NO_WINDOW`, including Steam registry discovery, SteamVR driver registration and FFmpeg inventory/preflight/streaming. Their captured output remains available in the Host log. See `docs/2026-11-22-silent-host-child-processes.md`.
 
-## Android client 0.5.14
+## Android client 0.5.15
 
 - Landscape immersive display with OpenGL ES 3.0 stereo rendering.
 - Locally stored optical preset selector with Daydream View v2.0 (2017) and Generic Cardboard built-in presets.
 - Existing manual display settings are migrated into an Android-local optical preset during the first upgrade; parameter editing is performed in the Windows Host preset editor.
 - IMU sensor processing on a dedicated HandlerThread, quaternion-continuous pose transmission over UDP at up to 200 Hz on LAN or over the native AOA Bulk channel on USB, TCP-style pairing/control framing and heartbeat, battery reporting and bounded auto-reconnect.
 - Automatic LAN discovery across active IPv4 interfaces and connection to the remembered Host. A separate **USB AOA 直连** action uses Android Open Accessory mode and a full-duplex Bulk stream, with no USB tethering, RNDIS or ADB data channel.
-- On normal startup, the app discovers the Host over LAN while independently monitoring for an AOA accessory session. The AOA auxiliary session feeds USB video into the same receiver as LAN UDP video and sends pose only when the network control session is unavailable. The explicit **USB AOA 直连** action remains available for USB-only operation.
+- On normal startup, the app discovers the Host over LAN while independently monitoring for an AOA accessory session. The AOA auxiliary session feeds USB video into the same receiver as LAN UDP video and sends pose only when the network control session is unavailable. The explicit **USB AOA 直连** action remains available for USB-only operation. Duplicate AOA startup notifications are coalesced into one connection worker, and Android re-resolves the accessory after permission is granted before opening its descriptor.
+- The connection page and quick menu show whether network control, USB AOA, both paths or neither path are currently connected.
 - Android-owned optical preset synchronization and preset-ID application, plus recenter operations over the TCP control channel.
 - Daydream Controller input provider interface is prepared; actual pairing and input forwarding remain future work.
 - `CodecCapabilityProbe` enumerates device MediaCodec decoders and advertises only a hardware H.264 decoder that explicitly supports the negotiated 1600×720@60 profile. `MediaCodec` decodes the H.264 SBS stream to a `SurfaceTexture`; the OpenGL stereo renderer applies the optical warp independently to the left and right halves.
@@ -63,7 +65,7 @@ All helper processes launched by the GUI Host use `CREATE_NO_WINDOW`, including 
 - The AOA reader uses 16 KiB raw reads before parsing PVRU headers. The stream decoder reassembles frames split across reads or coalesced by the USB stack; it does not issue 16-byte reads directly to the accessory file descriptor. Android raw-read sizes and PVRU CRC32 values are logged for diagnosis.
 
 
-## SteamVR driver 0.5.14
+## SteamVR driver 0.5.15
 
 The PhoneVR Host contains its own Windows x64 OpenVR driver inside the Host executable. The normal build compiles `steamvr-driver/`, embeds the resulting manifest, DLL and resources into both Host executables, and no longer asks users to download or select a ZIP. On startup, the Host checks whether SteamVR is installed and whether the user has disabled automatic deployment. When enabled, it copies the embedded driver into a content-versioned directory under `%LOCALAPPDATA%\PhoneVR\SteamVRDriver` and registers it with SteamVR's own `vrpathreg.exe`.
 

@@ -1327,6 +1327,7 @@ func (app *nativeUI) createDialogControls(d *nativeDialog) {
 			app.text("自动切换（双链路备用）", "Automatic failover (dual-path standby)"),
 			app.text("仅 USB AOA", "USB AOA only"),
 			app.text("仅网络", "Network only"),
+			app.text("网络 + USB AOA 并行", "Network + USB AOA parallel"),
 		} {
 			app.addComboItem(d.controls[idTransportMode], item)
 		}
@@ -1873,7 +1874,7 @@ func (app *nativeUI) handleDialogCommand(d *nativeDialog, id int) {
 		if id == idTransportApply {
 			modeIndex := int(sendNativeMessage(d.controls[idTransportMode], 0x0147, 0, 0))
 			prefIndex := int(sendNativeMessage(d.controls[idTransportPref], 0x0147, 0, 0))
-			mode := []string{"auto", "usb", "network"}[clampInt(modeIndex, 0, 2)]
+			mode := []string{"auto", "usb", "network", "parallel"}[clampInt(modeIndex, 0, 3)]
 			preferred := []string{"usb", "network"}[clampInt(prefIndex, 0, 1)]
 			if err := app.service.SetVideoTransport(mode, preferred); err != nil {
 				setNativeText(d.status, app.text("应用失败：", "Apply failed: ")+err.Error())
@@ -2409,6 +2410,8 @@ func comboTransportModeIndex(mode VideoTransportMode) uintptr {
 		return 1
 	case VideoTransportNetwork:
 		return 2
+	case VideoTransportParallel:
+		return 3
 	default:
 		return 0
 	}
@@ -2428,6 +2431,8 @@ func (app *nativeUI) transportDialogStatusText(status VideoTransportSnapshot) st
 		modeText = app.text("仅 USB AOA", "USB AOA only")
 	case VideoTransportNetwork:
 		modeText = app.text("仅网络", "Network only")
+	case VideoTransportParallel:
+		modeText = app.text("网络 + USB AOA 并行", "Network + USB AOA parallel")
 	}
 	activeText := app.text("未选择", "Not selected")
 	switch status.Active {
@@ -2435,6 +2440,16 @@ func (app *nativeUI) transportDialogStatusText(status VideoTransportSnapshot) st
 		activeText = "USB AOA"
 	case "network":
 		activeText = app.text("网络串流", "Network streaming")
+	case "parallel":
+		if status.USBAvailable && status.NetworkAvailable {
+			activeText = app.text("网络 + USB AOA 双路发送", "Network + USB AOA mirrored")
+		} else if status.USBAvailable {
+			activeText = app.text("USB AOA（并行模式，网络路径待恢复）", "USB AOA (parallel mode, network recovering)")
+		} else if status.NetworkAvailable {
+			activeText = app.text("网络（并行模式，USB 路径待恢复）", "Network (parallel mode, USB recovering)")
+		} else {
+			activeText = app.text("等待双路探测", "Waiting for both path probes")
+		}
 	}
 	usbState := app.text("不可用", "Unavailable")
 	if status.USBAvailable {

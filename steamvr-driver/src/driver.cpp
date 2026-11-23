@@ -137,6 +137,15 @@ struct VirtualDisplayTimingSnapshot {
     uint64_t vsyncNoWaitRenderCalls = 0;
     uint64_t maxPresentNs = 0;
     uint64_t maxWaitNs = 0;
+    uint64_t maxPresentIntervalNs = 0;
+    uint64_t presentGapsOverOneAndHalfFrames = 0;
+    uint64_t presentGapsOverThreeFrames = 0;
+    uint64_t pendingPresentOverwrites = 0;
+    uint64_t maxWaitOvershootNs = 0;
+    uint64_t waitOvershootsOverOneMs = 0;
+    uint64_t waitOvershootsOverFiveMs = 0;
+    uint64_t missedVirtualVsyncs = 0;
+    uint64_t keyedMutexAcquireFailures = 0;
 };
 
 struct Quaternion {
@@ -830,6 +839,18 @@ public:
         std::lock_guard<std::mutex> lock(m_mutex);
         if (!info || infoSize < sizeof(vr::PresentInfo_t)) return;
 
+        const uint64_t presentNowNs = MonotonicNowNs();
+        if (m_lastPresentCallbackNs != 0 && presentNowNs >= m_lastPresentCallbackNs) {
+            const uint64_t intervalNs = presentNowNs - m_lastPresentCallbackNs;
+            const uint64_t nominalIntervalNs = static_cast<uint64_t>(1.0e9 / gDisplayRefreshRateHz);
+            AtomicMax(m_maxPresentIntervalNs, intervalNs);
+            if (intervalNs > nominalIntervalNs + nominalIntervalNs / 2)
+                m_presentGapsOverOneAndHalfFrames.fetch_add(1, std::memory_order_relaxed);
+            if (intervalNs > nominalIntervalNs * 3)
+                m_presentGapsOverThreeFrames.fetch_add(1, std::memory_order_relaxed);
+        }
+        m_lastPresentCallbackNs = presentNowNs;
+
         const double requestedVsyncSeconds =
             (std::isfinite(info->flVSyncTimeInSeconds) && info->flVSyncTimeInSeconds > 0.0)
                 ? info->flVSyncTimeInSeconds : NowSeconds();
@@ -840,6 +861,8 @@ public:
             case vr::VSync_NoWaitRender: m_vsyncNoWaitRenderCalls.fetch_add(1, std::memory_order_relaxed); break;
             default: break;
         }
+        if (m_pendingPresent)
+            m_pendingPresentOverwrites.fetch_add(1, std::memory_order_relaxed);
         m_pendingPresent = true;
         m_lastFrameId = info->nFrameId;
 
@@ -882,6 +905,7 @@ public:
             const HRESULT acquire = keyedMutex->AcquireSync(0, 0);
             if (acquire != S_OK) {
                 ++m_mutexAcquireFailures;
+                m_keyedMutexAcquireFailures.fetch_add(1, std::memory_order_relaxed);
                 LogMutexAcquireFailure(acquire);
                 keyedMutex->Release();
                 return;
@@ -932,6 +956,15 @@ public:
         // WaitForPresent then advances the emulated display clock at 72 Hz.
         const VsyncSchedule schedule = ScheduleVirtualVsync(requestedVsyncNs);
         WaitUntilMonotonic(schedule.targetNs);
+        const uint64_t actualWakeNs = MonotonicNowNs();
+        if (actualWakeNs > schedule.targetNs) {
+            const uint64_t overshootNs = actualWakeNs - schedule.targetNs;
+            AtomicMax(m_maxWaitOvershootNs, overshootNs);
+            if (overshootNs > 1000000ULL)
+                m_waitOvershootsOverOneMs.fetch_add(1, std::memory_order_relaxed);
+            if (overshootNs > 5000000ULL)
+                m_waitOvershootsOverFiveMs.fetch_add(1, std::memory_order_relaxed);
+        }
 
         // Publish the virtual-vsync origin only after the scheduled event has
         // actually been reached. Publishing a future timestamp before waiting
@@ -977,6 +1010,15 @@ public:
         snapshot.vsyncNoWaitRenderCalls = m_vsyncNoWaitRenderCalls.exchange(0, std::memory_order_relaxed);
         snapshot.maxPresentNs = m_maxPresentDurationNs.exchange(0, std::memory_order_relaxed);
         snapshot.maxWaitNs = m_maxWaitDurationNs.exchange(0, std::memory_order_relaxed);
+        snapshot.maxPresentIntervalNs = m_maxPresentIntervalNs.exchange(0, std::memory_order_relaxed);
+        snapshot.presentGapsOverOneAndHalfFrames = m_presentGapsOverOneAndHalfFrames.exchange(0, std::memory_order_relaxed);
+        snapshot.presentGapsOverThreeFrames = m_presentGapsOverThreeFrames.exchange(0, std::memory_order_relaxed);
+        snapshot.pendingPresentOverwrites = m_pendingPresentOverwrites.exchange(0, std::memory_order_relaxed);
+        snapshot.maxWaitOvershootNs = m_maxWaitOvershootNs.exchange(0, std::memory_order_relaxed);
+        snapshot.waitOvershootsOverOneMs = m_waitOvershootsOverOneMs.exchange(0, std::memory_order_relaxed);
+        snapshot.waitOvershootsOverFiveMs = m_waitOvershootsOverFiveMs.exchange(0, std::memory_order_relaxed);
+        snapshot.missedVirtualVsyncs = m_missedVirtualVsyncs.exchange(0, std::memory_order_relaxed);
+        snapshot.keyedMutexAcquireFailures = m_keyedMutexAcquireFailures.exchange(0, std::memory_order_relaxed);
         return snapshot;
     }
 
@@ -1082,6 +1124,9 @@ private:
             target = now + intervalNs;
             frameAdvance = 1;
         }
+
+        if (frameAdvance > 1)
+            m_missedVirtualVsyncs.fetch_add(frameAdvance - 1, std::memory_order_relaxed);
 
         // Reserve the target for the next WaitForPresent call, but do not expose
         // it as the last completed VSync until WaitForPresent has reached it.
@@ -1470,6 +1515,7 @@ float4 main(float4 position : SV_POSITION, float2 uv : TEXCOORD0) : SV_TARGET {
     void ShutdownUnlocked() {
         ReleaseVideoCaptureResources();
         m_pendingPresent = false;
+        m_lastPresentCallbackNs = 0;
         m_sharedHandle = nullptr;
         ReleaseTexture(m_sharedTexture);
         if (m_context) { m_context->ClearState(); m_context->Flush(); m_context->Release(); m_context = nullptr; }
@@ -1495,6 +1541,7 @@ float4 main(float4 position : SV_POSITION, float2 uv : TEXCOORD0) : SV_TARGET {
     uint64_t m_adapterLuid = 0;
     uint64_t m_lastFrameId = 0;
     uint64_t m_pendingVsyncTimeNs = 0;
+    uint64_t m_lastPresentCallbackNs = 0;
     bool m_pendingPresent = false;
     std::mutex m_timingMutex;
     uint64_t m_vsyncOriginNs = 0;
@@ -1514,6 +1561,15 @@ float4 main(float4 position : SV_POSITION, float2 uv : TEXCOORD0) : SV_TARGET {
     std::atomic<uint64_t> m_vsyncNoWaitRenderCalls{0};
     std::atomic<uint64_t> m_maxPresentDurationNs{0};
     std::atomic<uint64_t> m_maxWaitDurationNs{0};
+    std::atomic<uint64_t> m_maxPresentIntervalNs{0};
+    std::atomic<uint64_t> m_presentGapsOverOneAndHalfFrames{0};
+    std::atomic<uint64_t> m_presentGapsOverThreeFrames{0};
+    std::atomic<uint64_t> m_pendingPresentOverwrites{0};
+    std::atomic<uint64_t> m_maxWaitOvershootNs{0};
+    std::atomic<uint64_t> m_waitOvershootsOverOneMs{0};
+    std::atomic<uint64_t> m_waitOvershootsOverFiveMs{0};
+    std::atomic<uint64_t> m_missedVirtualVsyncs{0};
+    std::atomic<uint64_t> m_keyedMutexAcquireFailures{0};
     std::mutex m_captureResourcesMutex;
     std::mutex m_captureQueueMutex;
     std::condition_variable m_captureCv;
@@ -1707,7 +1763,7 @@ public:
         if (!host->TrackedDeviceAdded("PHONEVR-HMD-001", vr::TrackedDeviceClass_HMD, m_hmd)) {
             Cleanup(); return vr::VRInitError_Driver_Unknown;
         }
-        if (vr::VRDriverLog()) vr::VRDriverLog()->Log("PhoneVR 0.5.22 DisplayRedirect order-fix diagnostics SteamVR driver initialized");
+        if (vr::VRDriverLog()) vr::VRDriverLog()->Log("PhoneVR 0.5.23 DisplayRedirect order-fix diagnostics SteamVR driver initialized");
         return vr::VRInitError_None;
     }
     void Cleanup() override {
@@ -1725,9 +1781,9 @@ public:
                 ? 5.0 : static_cast<double>(now - m_lastDisplayDiagnosticsNs) / 1.0e9;
             m_lastDisplayDiagnosticsNs = now;
             const auto timing = m_redirect->TakeTimingSnapshot();
-            char line[512]{};
+            char line[768]{};
             std::snprintf(line, sizeof(line),
-                          "PhoneVR: virtual display active=%s GetComponent=%llu/%llu Present=%.1fHz WaitForPresent=%.1fHz completed=%.1fHz early-wait=%llu VSync[none=%llu wait=%llu nowait=%llu] max-Present=%.2fms max-WaitForPresent=%.2fms refresh=%.1fHz",
+                          "PhoneVR: virtual display active=%s GetComponent=%llu/%llu Present=%.1fHz WaitForPresent=%.1fHz completed=%.1fHz early-wait=%llu VSync[none=%llu wait=%llu nowait=%llu] max-Present=%.2fms max-WaitForPresent=%.2fms max-Present-gap=%.2fms gaps>20.8ms=%llu gaps>41.7ms=%llu pending-overwrite=%llu VSync-overshoot[max=%.2fms >1ms=%llu >5ms=%llu] missed-ticks=%llu keyed-mutex-fail=%llu refresh=%.1fHz",
                           m_redirect->IsActive() ? "yes" : "no",
                           static_cast<unsigned long long>(m_redirect->ComponentQueryCount()),
                           static_cast<unsigned long long>(m_redirect->ComponentMatchCount()),
@@ -1738,6 +1794,15 @@ public:
                           static_cast<unsigned long long>(timing.vsyncWaitRenderCalls),
                           static_cast<unsigned long long>(timing.vsyncNoWaitRenderCalls),
                           timing.maxPresentNs / 1.0e6, timing.maxWaitNs / 1.0e6,
+                          timing.maxPresentIntervalNs / 1.0e6,
+                          static_cast<unsigned long long>(timing.presentGapsOverOneAndHalfFrames),
+                          static_cast<unsigned long long>(timing.presentGapsOverThreeFrames),
+                          static_cast<unsigned long long>(timing.pendingPresentOverwrites),
+                          timing.maxWaitOvershootNs / 1.0e6,
+                          static_cast<unsigned long long>(timing.waitOvershootsOverOneMs),
+                          static_cast<unsigned long long>(timing.waitOvershootsOverFiveMs),
+                          static_cast<unsigned long long>(timing.missedVirtualVsyncs),
+                          static_cast<unsigned long long>(timing.keyedMutexAcquireFailures),
                           gDisplayRefreshRateHz);
             if (vr::VRDriverLog()) vr::VRDriverLog()->Log(line);
         }

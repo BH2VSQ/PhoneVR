@@ -1,3 +1,10 @@
+## 0.5.23 - SteamVR compositor pacing diagnostics
+
+- Extend the virtual display timing snapshot with maximum `Present` interval, long-interval counters, pending-Present overwrite count, virtual-VSync wake overshoot, missed virtual ticks and keyed-mutex acquisition failures.
+- Emit the new counters in the SteamVR driver log every five seconds. The instrumentation observes callback timing and synchronization outcomes without changing the virtual refresh schedule, capture rate, pose prediction or encoder configuration.
+- Synchronize repository, Android, Windows Host, SteamVR driver and AOA metadata to `0.5.23`; Android `versionCode` is `58`.
+- Keep the current 800x720 per-eye render target, 1600x720 SBS stream and 8 Mbps encoder target unchanged pending a resolution and end-to-end throughput validation.
+
 ## 0.5.22 - Release-test portability fix
 
 - Fix the low-latency encoder backlog regression test to match the Go constant semantically, independent of whether `gofmt` aligns the declaration with tabs or spaces.

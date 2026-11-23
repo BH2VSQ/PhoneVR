@@ -43,3 +43,7 @@ adb logcat -v time | Select-String "PhoneVRVideo|PhoneVR|MediaCodec" | Tee-Objec
 ## Scope of 0.5.22
 
 This revision fixes the release test's whitespace-sensitive assertion. It does not change runtime FPS, bitrate, encoder presets, decoder scheduling or compositor timing. Those changes should follow the A/B measurements above so a higher target rate or bitrate does not overload a stage that is already behind.
+
+## Follow-up in 0.5.23
+
+The driver now reports maximum Present-to-Present interval, long Present gaps, pending-Present overwrites, virtual-VSync wake overshoot, skipped virtual ticks and keyed-mutex acquisition failures. See `2026-11-24-compositor-frame-pacing-metrics.md` for interpretation. These counters are diagnostic only and do not change scheduling.

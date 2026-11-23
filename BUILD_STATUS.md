@@ -1,11 +1,20 @@
-# PhoneVR 0.5.22 build status
+# PhoneVR 0.5.23 build status
 
-## This revision (0.5.22)
+## This revision (0.5.23)
 
-- Fix `test_encoder_backlog_is_bounded_for_low_latency`: use a whitespace-tolerant regular expression for `h264PendingFrameLimit = 4`, and assert the timestamp channel uses that constant. The original test failed because it required exactly three spaces although the source declaration was valid Go and used gofmt alignment.
-- Keep the runtime encoder backlog at four frames. No runtime streaming parameters were changed in this CI hotfix.
-- Document the current 72 Hz virtual display / 60 FPS capture cadence, 8 Mbps H.264 target, zero default shader blur, and the required Host/driver/Android A/B metrics for SteamVR Home enabled versus disabled.
-- Android metadata is `versionName 0.5.22`, `versionCode 57`; repository, Host, SteamVR driver and AOA accessory metadata are synchronized to `0.5.22`.
+- Add SteamVR virtual-display timing telemetry for maximum `Present` callback interval, intervals exceeding 1.5 and 3 nominal 72 Hz periods, pending-Present overwrites, actual `WaitForPresent` wake overshoot, missed virtual VSync ticks, and keyed-mutex acquisition failures.
+- Emit the counters in the existing five-second `virtual display` driver diagnostic line. The new counters are observational only. The 72 Hz clock, 60 FPS capture ceiling, pose prediction, D3D11 capture behavior and H.264 encoder configuration are unchanged.
+- Keep the 800x720 per-eye render target, 1600x720 SBS stream and 8 Mbps H.264 target unchanged. A higher-resolution profile needs end-to-end capability negotiation and runtime performance validation.
+- Android metadata is `versionName 0.5.23`, `versionCode 58`; repository, Host, SteamVR driver and AOA accessory metadata are synchronized to `0.5.23`.
+
+## 0.5.23 validation status
+
+- `python3 -m unittest discover -s tools/release -p 'test_*.py'`: passed, 61 tests.
+- `cd windows-host && go test ./...`: passed.
+- `cd windows-host && go test -race ./...`: passed.
+- `cd windows-host && go vet ./...`: passed.
+- `GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build ./cmd/phonevr-host`: passed.
+- SteamVR native driver compilation, Android Gradle packaging, physical headset runtime and compositor frame-timing A/B remain unverified in this environment.
 
 ## Previous revision (0.5.21)
 

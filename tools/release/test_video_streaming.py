@@ -33,6 +33,30 @@ class VideoStreamingIntegrationTests(unittest.TestCase):
         self.assertIn("m_lastScheduledVsyncNs = target", schedule)
         self.assertNotIn("m_vsyncOriginNs = target", schedule)
 
+    def test_virtual_display_reports_compositor_frame_pacing_faults(self):
+        for metric in (
+            "maxPresentIntervalNs",
+            "presentGapsOverOneAndHalfFrames",
+            "presentGapsOverThreeFrames",
+            "pendingPresentOverwrites",
+            "maxWaitOvershootNs",
+            "waitOvershootsOverOneMs",
+            "waitOvershootsOverFiveMs",
+            "missedVirtualVsyncs",
+            "keyedMutexAcquireFailures",
+        ):
+            self.assertIn(metric, DRIVER)
+        self.assertIn("max-Present-gap=", DRIVER)
+        self.assertIn("VSync-overshoot[max=", DRIVER)
+        self.assertIn("pending-overwrite=", DRIVER)
+        present = DRIVER[DRIVER.index("void Present(const vr::PresentInfo_t*") : DRIVER.index("void WaitForPresent() override")]
+        wait = DRIVER[DRIVER.index("void WaitForPresent() override") : DRIVER.index("bool GetTimeSinceLastVsync")]
+        self.assertIn("m_presentGapsOverOneAndHalfFrames", present)
+        self.assertIn("m_pendingPresentOverwrites", present)
+        self.assertIn("m_keyedMutexAcquireFailures", present)
+        self.assertIn("actualWakeNs - schedule.targetNs", wait)
+        self.assertIn("m_waitOvershootsOverFiveMs", wait)
+
     def test_encoder_backlog_is_bounded_for_low_latency(self):
         # Go formatting may align constants with tabs or spaces. Assert the
         # semantic value rather than depending on gofmt's whitespace layout.

@@ -109,6 +109,10 @@ type transportCandidateGroup struct {
 	network     *activeDevice
 }
 
+func videoTransportUsesAOA(mode VideoTransportMode) bool {
+	return mode != VideoTransportNetwork
+}
+
 func normalizeVideoTransportMode(mode string) VideoTransportMode {
 	switch VideoTransportMode(strings.ToLower(strings.TrimSpace(mode))) {
 	case VideoTransportAuto:
@@ -160,6 +164,13 @@ func (s *HostService) SetVideoTransport(mode, preferred string) error {
 	}
 	s.mu.Unlock()
 	if changed {
+		// Wake the AOA discovery loop immediately. Network-only mode must not
+		// enumerate WinUSB interfaces in the background; USB/auto/parallel
+		// modes resume scanning without requiring a Host restart.
+		select {
+		case s.usbScanWake <- struct{}{}:
+		default:
+		}
 		s.addLog(fmt.Sprintf("Video transport mode: %s, preferred: %s", normalizedMode, normalizedPreference))
 	}
 	return nil

@@ -1,4 +1,4 @@
-# PhoneVR Host 0.5.19 bundled SteamVR driver and live SBS video
+# PhoneVR Host 0.5.20 bundled SteamVR driver and live SBS video
 
 Executable version is injected from the repository root `VERSION` file during builds.
 
@@ -119,6 +119,7 @@ Open **SteamVR Driver** from the Host main menu to refresh status, install/repai
 ## Video Transport modes
 
 The Video Transport dialog offers **Automatic failover**, **USB AOA only**, **Network only** and **Network + USB AOA aggregation**. The current mode and automatic-mode preference are saved under the user's PhoneVRStream configuration directory and restored when Host starts again. The initial default remains Network only.
+When **Network only** is selected, the Host pauses USB AOA WinUSB interface enumeration entirely. Switching to USB AOA, Automatic failover, or Network + USB AOA aggregation wakes the scanner again.
 
 Automatic mode sends a frame over one verified route and fails over to the other route when receiver feedback or path writes fail. Aggregation mode stripes distinct PVRV fragments across the network UDP and AOA Bulk routes after each path independently acknowledges a PVRP readiness probe. Android combines fragments by frame ID and byte offset in one bounded out-of-order reassembler before the single MediaCodec decoder. Per-path receive goodput drives the weighted scheduler. Missing fragment indexes are requested over the control channel and retransmitted from a short-lived Host frame cache, preferably over the alternate route. If one route fails or its bounded queue fills, its assigned fragments fall back to the surviving route; the recovered path rejoins after a later probe acknowledgement.
 

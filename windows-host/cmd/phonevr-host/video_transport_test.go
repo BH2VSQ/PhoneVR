@@ -638,3 +638,50 @@ func TestSnapshotCombinesNetworkAndAOAAsOnePhone(t *testing.T) {
 		t.Fatalf("combined transport = %q; want both AOA and LAN", transport)
 	}
 }
+
+func TestVideoTransportModeControlsAOADiscovery(t *testing.T) {
+	cases := []struct {
+		mode VideoTransportMode
+		want bool
+	}{
+		{mode: VideoTransportNetwork, want: false},
+		{mode: VideoTransportUSB, want: true},
+		{mode: VideoTransportAuto, want: true},
+		{mode: VideoTransportParallel, want: true},
+	}
+	for _, test := range cases {
+		t.Run(string(test.mode), func(t *testing.T) {
+			if got := videoTransportUsesAOA(test.mode); got != test.want {
+				t.Fatalf("videoTransportUsesAOA(%q) = %t, want %t", test.mode, got, test.want)
+			}
+		})
+	}
+}
+
+func TestSetVideoTransportWakesAOADiscoveryLoop(t *testing.T) {
+	service := NewHostService(false)
+	if err := service.SetVideoTransport(string(VideoTransportUSB), string(VideoPreferUSB)); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-service.usbScanWake:
+	default:
+		t.Fatal("changing the video transport did not wake the AOA discovery loop")
+	}
+}
+
+func TestHostServiceReportsAOADiscoveryDisabledInNetworkMode(t *testing.T) {
+	service := NewHostService(false)
+	if err := service.SetVideoTransport(string(VideoTransportNetwork), string(VideoPreferNetwork)); err != nil {
+		t.Fatal(err)
+	}
+	if service.usbAOAScanningEnabled() {
+		t.Fatal("network-only mode must keep USB AOA discovery paused")
+	}
+	if err := service.SetVideoTransport(string(VideoTransportAuto), string(VideoPreferNetwork)); err != nil {
+		t.Fatal(err)
+	}
+	if !service.usbAOAScanningEnabled() {
+		t.Fatal("auto mode must resume USB AOA discovery")
+	}
+}

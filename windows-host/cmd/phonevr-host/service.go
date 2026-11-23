@@ -269,6 +269,7 @@ type HostService struct {
 	videoEncoderProbeDone       chan struct{}
 	videoEncoderReady           bool
 	videoEncoderSelected        encoder.Capability
+	videoEncoderCandidates      []encoder.Capability
 	videoEncoderError           string
 	videoBridgeActive           atomic.Bool
 	videoFrameQueue             chan *rawVideoFrame
@@ -304,6 +305,7 @@ type HostService struct {
 	transportPreference         VideoTransportPreference
 	transportConfigPath         string
 	transportConfigMu           sync.Mutex
+	usbScanWake                 chan struct{}
 	activeVideoTransport        string
 	activeVideoDeviceID         string
 	activeVideoSince            time.Time
@@ -328,6 +330,7 @@ func NewHostService(consoleLogs bool) *HostService {
 		devices: make(map[string]activeDevice), connections: make(map[net.Conn]struct{}), usbLinks: make(map[string]*usbmux.Mux),
 		transportMode: transportMode, transportPreference: transportPreference, transportConfigPath: transportConfigPath,
 		transportHealth: make(map[string]transportHealth), consoleLogs: consoleLogs,
+		usbScanWake:         make(chan struct{}, 1),
 		retainedVideoFrames: make(map[retainedVideoFrameKey]retainedVideoFrame),
 		videoNackSeen:       make(map[string]time.Time),
 	}
@@ -479,7 +482,11 @@ func (s *HostService) Start(config HostConfig) error {
 	s.posePackets.Store(0)
 	s.poseLastPacketNs.Store(0)
 
-	s.addLog(fmt.Sprintf("Host started on %s | TCP %d | UDP discovery %d | UDP pose %d | USB AOA scanner enabled", config.ListenAddress, config.ControlPort, config.DiscoveryPort, config.PosePort))
+	scannerState := "enabled"
+	if !s.usbAOAScanningEnabled() {
+		scannerState = "paused (network-only video transport)"
+	}
+	s.addLog(fmt.Sprintf("Host started on %s | TCP %d | UDP discovery %d | UDP pose %d | USB AOA scanner %s", config.ListenAddress, config.ControlPort, config.DiscoveryPort, config.PosePort, scannerState))
 	for _, address := range networkAddresses {
 		s.addLog(fmt.Sprintf("Host interface [%s] %s: %s", address.Kind, address.Name, address.IP))
 	}
@@ -520,9 +527,9 @@ func normalizeHostConfig(config HostConfig) HostConfig {
 	return config
 }
 
-// ProbeVideoEncoders runs a bounded, best-effort FFmpeg encoder inventory.
-// Results are candidates only; actual adapter/session initialization is a
-// required later validation before a streaming profile can be selected.
+// ProbeVideoEncoders runs a bounded FFmpeg inventory and validates every available hardware H.264 backend.
+// Runtime session health is monitored separately because an encoder may pass
+// a synthetic preflight and still fail when fed live SteamVR frames.
 func (s *HostService) ProbeVideoEncoders(ffmpegPath string) {
 	s.mu.Lock()
 	s.videoFFmpegPath = ffmpegPath
@@ -536,9 +543,9 @@ func (s *HostService) ProbeVideoEncoders(ffmpegPath string) {
 	// This probe is deliberately synchronous. main() invokes it before Start(),
 	// so the TCP pairing listener cannot accept a phone before the H.264
 	// hardware-encoder result has been committed to service state.
-	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	candidates, err := encoder.ProbeFFmpeg(ctx, ffmpegPath)
+	ffmpegCandidates, err := encoder.ProbeFFmpeg(ctx, ffmpegPath)
 	if err != nil {
 		s.mu.Lock()
 		s.videoEncoderError = err.Error()
@@ -547,25 +554,29 @@ func (s *HostService) ProbeVideoEncoders(ffmpegPath string) {
 		s.addLog("Video encoder discovery unavailable: " + err.Error())
 		return
 	}
-	for _, candidate := range candidates {
+	for _, candidate := range ffmpegCandidates {
 		s.addLog(fmt.Sprintf("Video encoder candidate (adapter/session unverified): %s | %s | %s", candidate.Name, candidate.Codec, candidate.Backend))
 	}
-	selected, probeErr := encoder.ProbeHardwareH264Encoder(ctx, ffmpegPath, videoWidth, videoHeight, videoFrameRate)
+	validated, probeErr := encoder.ProbeHardwareH264Encoders(ctx, ffmpegPath, videoWidth, videoHeight, videoFrameRate)
 	s.mu.Lock()
-	s.videoEncoderReady = probeErr == nil
+	s.videoEncoderReady = probeErr == nil && len(validated) > 0
+	s.videoEncoderCandidates = append([]encoder.Capability(nil), validated...)
 	if probeErr != nil {
 		s.videoEncoderError = probeErr.Error()
 		s.videoEncoderSelected = encoder.Capability{}
 	} else {
 		s.videoEncoderError = ""
-		s.videoEncoderSelected = selected
+		s.videoEncoderSelected = validated[0]
 	}
 	s.mu.Unlock()
 	if probeErr != nil {
 		s.addLog("Live VR video disabled: " + probeErr.Error())
 		return
 	}
-	s.addLog("Live VR video hardware encoder validated: " + selected.Name + "/" + string(selected.Backend))
+	for index, candidate := range validated {
+		s.addLog(fmt.Sprintf("Live VR hardware H.264 candidate %d validated: %s/%s", index+1, candidate.Name, candidate.Backend))
+	}
+	s.addLog(fmt.Sprintf("Live VR video hardware encoder preflight passed: %d usable H.264 backend(s); primary=%s/%s", len(validated), validated[0].Name, validated[0].Backend))
 }
 
 func (s *HostService) Stop() {
@@ -738,16 +749,64 @@ func (s *HostService) PoseFrame() PoseFrameSnapshot {
 	return PoseFrameSnapshot{LatestPose: latest, PacketsReceived: s.posePackets.Load()}
 }
 
+func (s *HostService) usbAOAScanningEnabled() bool {
+	s.mu.RLock()
+	mode := s.transportMode
+	s.mu.RUnlock()
+	if mode == "" {
+		mode = VideoTransportNetwork
+	}
+	return videoTransportUsesAOA(mode)
+}
+
 func (s *HostService) usbAccessoryLoop(ctx context.Context) {
 	defer s.wg.Done()
 	for ctx.Err() == nil {
-		device, err := aoa.NextAccessoryWithStatus(ctx, s.addLog)
-		if err != nil {
-			if ctx.Err() != nil {
+		if !s.usbAOAScanningEnabled() {
+			select {
+			case <-ctx.Done():
 				return
+			case <-s.usbScanWake:
+				continue
+			}
+		}
+
+		// The AOA package intentionally scans until it finds a device. Give
+		// each scan a child context so changing to network-only mode can cancel
+		// enumeration promptly instead of leaving SetupAPI polling active.
+		scanCtx, cancelScan := context.WithCancel(ctx)
+		scanFinished := make(chan struct{})
+		watcherFinished := make(chan struct{})
+		go func() {
+			defer close(watcherFinished)
+			select {
+			case <-ctx.Done():
+				cancelScan()
+			case <-s.usbScanWake:
+				cancelScan()
+			case <-scanFinished:
+			}
+		}()
+		device, err := aoa.NextAccessoryWithStatus(scanCtx, s.addLog)
+		close(scanFinished)
+		cancelScan()
+		<-watcherFinished
+		if ctx.Err() != nil {
+			return
+		}
+		if err != nil {
+			if errors.Is(err, context.Canceled) {
+				continue
 			}
 			s.addLog("USB AOA scanner error: " + err.Error())
 			time.Sleep(time.Second)
+			continue
+		}
+		if device == nil {
+			continue
+		}
+		if !s.usbAOAScanningEnabled() {
+			_ = device.Close()
 			continue
 		}
 		s.addLog("Android AOA accessory detected: " + device.ID())
@@ -2033,7 +2092,7 @@ func (s *HostService) videoCaptureLoop(ctx context.Context, listener net.Listene
 		if _, enabled := s.currentVideoTarget(); !enabled {
 			_ = conn.Close()
 			if time.Since(lastNoVideoTargetLog) >= 5*time.Second {
-				s.addLog("SteamVR video bridge connection rejected: no paired Android client has negotiated a supported H.264 decoder")
+				s.addLog("SteamVR video bridge connection deferred: no paired Android client currently has a healthy negotiated H.264 transport route")
 				lastNoVideoTargetLog = time.Now()
 			}
 			continue
@@ -2228,6 +2287,26 @@ func (s *HostService) videoEncoderLoop(ctx context.Context) {
 	retryDelay := 5 * time.Second
 	var sessionStartedAt time.Time
 	var lastBackpressureLog time.Time
+	candidateIndex := 0
+	advanceEncoderCandidate := func(failedName, reason string) {
+		s.mu.RLock()
+		candidateCount := len(s.videoEncoderCandidates)
+		var next encoder.Capability
+		if candidateIndex+1 < candidateCount {
+			next = s.videoEncoderCandidates[candidateIndex+1]
+		}
+		s.mu.RUnlock()
+		if next.Name != "" {
+			candidateIndex++
+			s.addLog(fmt.Sprintf("H.264 backend %s failed (%s); switching to next prevalidated hardware encoder %s/%s", failedName, reason, next.Name, next.Backend))
+			retryAfter = time.Time{}
+			return
+		}
+		candidateIndex = 0
+		s.addLog(fmt.Sprintf("H.264 backend %s failed (%s); no alternate prevalidated hardware encoder is available, retrying primary after %s", failedName, reason, retryDelay))
+		retryAfter = time.Now().Add(retryDelay)
+		retryDelay = minDuration(retryDelay*2, 60*time.Second)
+	}
 	var framesInWindow uint64
 	statsStart := time.Now()
 	rawAtWindowStart := s.videoRawFrames.Load()
@@ -2297,14 +2376,22 @@ func (s *HostService) videoEncoderLoop(ctx context.Context) {
 				}
 				s.mu.RLock()
 				ffmpegPath := s.videoFFmpegPath
-				selected := s.videoEncoderSelected
+				candidates := append([]encoder.Capability(nil), s.videoEncoderCandidates...)
+				selectedFallback := s.videoEncoderSelected
 				ready := s.videoEncoderReady
 				s.mu.RUnlock()
-				if !ready || selected.Name == "" {
+				if len(candidates) == 0 && selectedFallback.Name != "" {
+					candidates = []encoder.Capability{selectedFallback}
+				}
+				if !ready || len(candidates) == 0 {
 					s.releaseRawVideoFrame(frame)
 					retryAfter = time.Now().Add(5 * time.Second)
 					continue
 				}
+				if candidateIndex >= len(candidates) {
+					candidateIndex = 0
+				}
+				selected := candidates[candidateIndex]
 				created, createErr := encoder.StartH264EncoderWithCapability(ctx, ffmpegPath, videoWidth, videoHeight, videoFrameRate, selected,
 					func(accessUnit []byte, id uint32, timestamp uint64, key bool) error {
 						s.videoEncodedFrames.Add(1)
@@ -2317,9 +2404,8 @@ func (s *HostService) videoEncoderLoop(ctx context.Context) {
 						return nil
 					}, s.addLog)
 				if createErr != nil {
-					s.addLog(fmt.Sprintf("Persistent H.264 encoder startup failed; retrying after %s: %s", retryDelay, createErr.Error()))
-					retryAfter = time.Now().Add(retryDelay)
-					retryDelay = minDuration(retryDelay*2, 60*time.Second)
+					s.addLog(fmt.Sprintf("Persistent H.264 encoder startup failed for %s/%s: %s", selected.Name, selected.Backend, createErr.Error()))
+					advanceEncoderCandidate(selected.Name+"/"+string(selected.Backend), "startup failed")
 					s.releaseRawVideoFrame(frame)
 					continue
 				}
@@ -2336,13 +2422,14 @@ func (s *HostService) videoEncoderLoop(ctx context.Context) {
 					// has produced no complete H.264 access unit for two seconds, the
 					// process is genuinely stalled and must be recycled with backoff.
 					if session.OutputStalled(encoder.H264OutputStallTimeout) {
-						stallErr := fmt.Sprintf("H.264 encoder stalled without access units for %s (pending=%d, input=%d, stdout=%d bytes, output access units=%d)",
-							encoder.H264OutputStallTimeout, session.PendingFrames(), session.InputFrames(), session.OutputBytes(), session.OutputAccessUnits())
-						s.addLog(stallErr + "; closing this failed session and retrying with backoff")
+						stderr := session.StderrTail()
+						stallErr := fmt.Sprintf("H.264 encoder stalled without access units for %s (pending=%d, input=%d, stdout=%d bytes, output access units=%d, stderr=%q)",
+							encoder.H264OutputStallTimeout, session.PendingFrames(), session.InputFrames(), session.OutputBytes(), session.OutputAccessUnits(), stderr)
+						failedName := session.EncoderName()
+						s.addLog(stallErr + "; closing failed session")
 						session.Close()
 						session = nil
-						retryAfter = time.Now().Add(retryDelay)
-						retryDelay = minDuration(retryDelay*2, 60*time.Second)
+						advanceEncoderCandidate(failedName, "no encoded access units")
 					} else if time.Since(lastBackpressureLog) >= 5*time.Second {
 						lastBackpressureLog = time.Now()
 						s.addLog(fmt.Sprintf("H.264 encoder backpressure: keeping %s alive and dropping raw frames (pending=%d, input=%d, stdout=%d bytes, output access units=%d); no encoder restart",
@@ -2351,14 +2438,15 @@ func (s *HostService) videoEncoderLoop(ctx context.Context) {
 					logPipelineStats(session)
 					continue
 				}
-				s.addLog("Persistent H.264 encoder process failed; closing session and retrying with backoff: " + err.Error())
+				failedName := session.EncoderName()
+				stderr := session.StderrTail()
+				s.addLog(fmt.Sprintf("Persistent H.264 encoder process %s failed: %v; stderr=%q", failedName, err, stderr))
 				session.Close()
 				session = nil
 				if time.Since(sessionStartedAt) > 15*time.Second {
 					retryDelay = 5 * time.Second
 				}
-				retryAfter = time.Now().Add(retryDelay)
-				retryDelay = minDuration(retryDelay*2, 60*time.Second)
+				advanceEncoderCandidate(failedName, err.Error())
 				continue
 			}
 			s.releaseRawVideoFrame(frame)

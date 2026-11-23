@@ -1,3 +1,13 @@
+## 0.5.20 - Network-only transport and H.264 runtime recovery
+
+- Network-only video transport now pauses USB AOA WinUSB device enumeration. Switching to USB, Auto, or Parallel wakes the scanner immediately; switching back to Network cancels the active enumeration loop.
+- Host startup logs whether AOA discovery is enabled or paused, making the selected transport policy visible.
+- H.264 preflight now retains every hardware encoder that passed the full 1600x720@60 test instead of discarding all but the first candidate. Runtime startup, process-exit, and no-output failures advance to the next validated hardware backend before retrying the primary backend.
+- Preserve the bounded FFmpeg stderr tail and include it in process-exit and encoder-stall diagnostics, so QSV/driver errors are not lost when the child process exits.
+- Clarify the SteamVR bridge waiting message: the Host may be waiting for a healthy negotiated video transport route even when Android has already paired.
+- Android versionName/versionCode and all repository, Host, SteamVR driver, and AOA metadata are synchronized to 0.5.20 / 55.
+
+
 ## 0.5.19 - Live optical alignment controls
 
 - Add a vertical image-plane tilt control (±20 degrees) using a perspective transform in the Android post-process shader. This lets the wearer adjust upper/lower image alignment without physically changing the phone position.

@@ -204,3 +204,17 @@ func TestH264OutputStallRequiresBackedUpQueueAndNoRecentAccessUnits(t *testing.T
 		t.Fatal("recently emitted access units must prevent false stall detection")
 	}
 }
+
+func TestH264EncoderStderrTailIsBoundedAndReadable(t *testing.T) {
+	var session H264EncoderSession
+	session.readStderr(strings.NewReader("QSV runtime initialization failed\n"))
+	if got := session.StderrTail(); !strings.Contains(got, "QSV runtime initialization failed") {
+		t.Fatalf("stderr tail = %q, expected QSV diagnostic", got)
+	}
+
+	large := strings.Repeat("x", 9000)
+	session.readStderr(strings.NewReader(large))
+	if got := session.StderrTail(); len(got) > 8192 {
+		t.Fatalf("stderr tail length = %d, want at most 8192", len(got))
+	}
+}

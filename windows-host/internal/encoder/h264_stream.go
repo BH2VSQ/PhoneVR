@@ -130,6 +130,9 @@ type H264EncoderSession struct {
 	outputUnits      atomic.Uint64
 	lastOutputNs     atomic.Int64
 	lastAccessUnitNs atomic.Int64
+	stderrMu         sync.Mutex
+	stderrTail       string
+	stderrDone       chan struct{}
 }
 
 // StartH264Encoder validates the configured resolution, frame rate and BGRA
@@ -234,14 +237,21 @@ func startH264EncoderWithCapability(ctx context.Context, ffmpegPath string, widt
 		_ = stdin.Close()
 		return nil, fmt.Errorf("start FFmpeg H.264 encoder: %w", err)
 	}
-	session := &H264EncoderSession{cmd: cmd, stdin: stdin, timestamps: make(chan uint64, h264PendingFrameLimit), callback: callback, logf: logf, done: make(chan struct{}), selected: selected}
+	session := &H264EncoderSession{
+		cmd: cmd, stdin: stdin, timestamps: make(chan uint64, h264PendingFrameLimit),
+		callback: callback, logf: logf, done: make(chan struct{}), selected: selected,
+		stderrDone: make(chan struct{}),
+	}
 	nowNs := time.Now().UnixNano()
 	session.lastOutputNs.Store(nowNs)
 	session.lastAccessUnitNs.Store(nowNs)
 	if logf != nil {
 		logf(fmt.Sprintf("Video encoder session initialized: %s (%s), %dx%d @ %d FPS", selected.Name, selected.Backend, width, height, fps))
 	}
-	go session.readStderr(stderr)
+	go func() {
+		defer close(session.stderrDone)
+		session.readStderr(stderr)
+	}()
 	go session.readAccessUnits(stdout)
 	return session, nil
 }
@@ -250,22 +260,23 @@ func startH264EncoderWithCapability(ctx context.Context, ffmpegPath string, widt
 // a one-second BGRA stream at the actual target profile and emit an Annex-B
 // access-unit stream. Listing an encoder in `ffmpeg -encoders` is not enough:
 // driver/runtime libraries or full-profile throughput may still be unavailable.
-func ProbeHardwareH264Encoder(ctx context.Context, ffmpegPath string, width, height, fps int) (Capability, error) {
+func ProbeHardwareH264Encoders(ctx context.Context, ffmpegPath string, width, height, fps int) ([]Capability, error) {
 	if width < 16 || height < 16 || fps < 1 || fps > 120 {
-		return Capability{}, errors.New("invalid H.264 encoder probe profile")
+		return nil, errors.New("invalid H.264 encoder probe profile")
 	}
 	if ffmpegPath == "" {
 		resolved, err := exec.LookPath("ffmpeg")
 		if err != nil {
-			return Capability{}, fmt.Errorf("find FFmpeg: %w", err)
+			return nil, fmt.Errorf("find FFmpeg: %w", err)
 		}
 		ffmpegPath = resolved
 	}
 	capabilities, err := ProbeFFmpeg(ctx, ffmpegPath)
 	if err != nil {
-		return Capability{}, err
+		return nil, err
 	}
 	var failures []string
+	var validated []Capability
 	for _, candidate := range capabilities {
 		if candidate.Codec != CodecH264 || !candidate.Hardware {
 			continue
@@ -274,12 +285,26 @@ func ProbeHardwareH264Encoder(ctx context.Context, ffmpegPath string, width, hei
 			failures = append(failures, candidate.Name+": "+err.Error())
 			continue
 		}
-		return candidate, nil
+		validated = append(validated, candidate)
+	}
+	if len(validated) > 0 {
+		return validated, nil
 	}
 	if len(failures) == 0 {
-		return Capability{}, errors.New("FFmpeg exposes no hardware H.264 encoder (NVENC/AMF/QSV); CPU encoding is disabled for live VR streaming")
+		return nil, errors.New("FFmpeg exposes no hardware H.264 encoder (NVENC/AMF/QSV); CPU encoding is disabled for live VR streaming")
 	}
-	return Capability{}, fmt.Errorf("no hardware H.264 encoder could initialize: %s; CPU encoding is disabled for live VR streaming", strings.Join(failures, "; "))
+	return nil, fmt.Errorf("no hardware H.264 encoder could initialize: %s; CPU encoding is disabled for live VR streaming", strings.Join(failures, "; "))
+}
+
+// ProbeHardwareH264Encoder remains as a compatibility helper for callers that
+// only need the preferred validated backend. Host retains the complete list
+// so it can fail over when a driver fails after startup.
+func ProbeHardwareH264Encoder(ctx context.Context, ffmpegPath string, width, height, fps int) (Capability, error) {
+	validated, err := ProbeHardwareH264Encoders(ctx, ffmpegPath, width, height, fps)
+	if err != nil {
+		return Capability{}, err
+	}
+	return validated[0], nil
 }
 
 func testH264Encoder(ctx context.Context, path string, capability Capability, width, height, fps int) error {
@@ -401,6 +426,18 @@ func (s *H264EncoderSession) OutputAccessUnits() uint64 {
 	return s.outputUnits.Load()
 }
 
+// StderrTail returns the most recent FFmpeg diagnostics. Some Windows builds
+// report QSV runtime and driver failures only on stderr, so keep a bounded tail
+// for process-exit and stall diagnostics.
+func (s *H264EncoderSession) StderrTail() string {
+	if s == nil {
+		return ""
+	}
+	s.stderrMu.Lock()
+	defer s.stderrMu.Unlock()
+	return strings.TrimSpace(s.stderrTail)
+}
+
 // OutputStalled reports a real encoder stall only after a meaningful number
 // of frames has been accepted and the pending timestamp queue is backed up.
 // It avoids restarting QSV for ordinary transient backpressure.
@@ -455,10 +492,19 @@ func (s *H264EncoderSession) readStderr(reader io.Reader) {
 	buf := make([]byte, 4096)
 	for {
 		n, err := reader.Read(buf)
-		if n > 0 && s.logf != nil {
-			text := strings.TrimSpace(string(buf[:n]))
-			if text != "" {
-				s.logf("FFmpeg: " + text)
+		if n > 0 {
+			chunk := string(buf[:n])
+			s.stderrMu.Lock()
+			s.stderrTail += chunk
+			if len(s.stderrTail) > 8192 {
+				s.stderrTail = s.stderrTail[len(s.stderrTail)-8192:]
+			}
+			s.stderrMu.Unlock()
+			if s.logf != nil {
+				text := strings.TrimSpace(chunk)
+				if text != "" {
+					s.logf("FFmpeg: " + text)
+				}
 			}
 		}
 		if err != nil {
@@ -507,8 +553,17 @@ func (s *H264EncoderSession) readAccessUnits(reader io.Reader) {
 			}
 			_ = parser.Flush(emit)
 			waitErr := s.cmd.Wait()
+			select {
+			case <-s.stderrDone:
+			case <-time.After(500 * time.Millisecond):
+			}
 			if waitErr != nil && s.logf != nil {
-				s.logf("FFmpeg encoder exited: " + waitErr.Error())
+				detail := s.StderrTail()
+				if detail != "" {
+					s.logf("FFmpeg encoder exited: " + waitErr.Error() + " | stderr tail: " + detail)
+				} else {
+					s.logf("FFmpeg encoder exited: " + waitErr.Error() + " | stderr was empty")
+				}
 			}
 			return
 		}

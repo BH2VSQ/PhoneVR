@@ -12,12 +12,11 @@ class DaydreamControllerBuildContractTests(unittest.TestCase):
         self.assertIn("~PhoneVRDaydreamController() { Deactivate(); }", source)
         self.assertNotIn("~PhoneVRDaydreamController() override", source)
 
-    def test_scroll_view_uses_frame_layout_params(self):
+    def test_controller_panel_scroll_view_uses_frame_layout_params(self):
         source = (ROOT / "android/app/src/main/java/com/vsq/phonvrstream/MainActivity.kt").read_text(encoding="utf-8")
-        self.assertIn(
-            "scroll.addView(controllerCandidateList, FrameLayout.LayoutParams(-1, -2))",
-            source,
-        )
+        self.assertIn("val contentScroll = ScrollView(this)", source)
+        self.assertIn("addView(content, FrameLayout.LayoutParams(-1, -2))", source)
+        self.assertIn("content.addView(controllerCandidateList", source)
         self.assertNotIn("ScrollView.LayoutParams", source)
 
 

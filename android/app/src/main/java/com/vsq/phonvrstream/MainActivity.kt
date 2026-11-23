@@ -486,7 +486,7 @@ class MainActivity : Activity(), SensorEventListener {
             screenFlipButton.text = screenFlipButtonText()
             applyScreenOrientation()
         }
-        panel.addView(screenFlipButton, LinearLayout.LayoutParams(-1, dp(40)).apply { bottomMargin = dp(2) })
+        panel.addView(screenFlipButton, LinearLayout.LayoutParams(-1, dp(40)).apply { bottomMargin = dp(6) })
         panel.addView(makeButton("光学预设") {
             settingsPanel.visibility = View.VISIBLE
             connectionPanel.visibility = View.GONE
@@ -514,13 +514,31 @@ class MainActivity : Activity(), SensorEventListener {
             }
             elevation = dp(18).toFloat()
         }
-        panel.addView(TextView(this).apply {
+
+        // Scroll the complete controller panel content. On short landscape
+        // displays, keeping only the candidate list scrollable can leave the
+        // scan controls and device actions clipped above or below the viewport.
+        val content = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+        }
+        val contentScroll = ScrollView(this).apply {
+            isFillViewport = true
+            isSmoothScrollingEnabled = true
+            isVerticalScrollBarEnabled = true
+            clipToPadding = false
+            overScrollMode = View.OVER_SCROLL_IF_CONTENT_SCROLLS
+            descendantFocusability = ViewGroup.FOCUS_AFTER_DESCENDANTS
+            addView(content, FrameLayout.LayoutParams(-1, -2))
+        }
+        panel.addView(contentScroll, LinearLayout.LayoutParams(-1, 0, 1f))
+
+        content.addView(TextView(this).apply {
             text = "DAYDREAM CONTROLLERS"
             textSize = 13f
             typeface = Typeface.DEFAULT_BOLD
             setTextColor(Color.rgb(91, 206, 250))
         })
-        panel.addView(label("双手柄 BLE 配对 · 左右设备分别连接", secondary = true).apply {
+        content.addView(label("双手柄 BLE 配对 · 左右设备分别连接", secondary = true).apply {
             setPadding(0, dp(3), 0, dp(10))
         })
         controllerLeftStatusText = label("左手柄：未连接", secondary = false).apply {
@@ -528,40 +546,35 @@ class MainActivity : Activity(), SensorEventListener {
             setPadding(dp(8), dp(7), dp(8), dp(7))
             background = controllerStatusBackground()
         }
-        panel.addView(controllerLeftStatusText, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(5) })
+        content.addView(controllerLeftStatusText, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(5) })
         controllerRightStatusText = label("右手柄：未连接", secondary = false).apply {
             textSize = 11f
             setPadding(dp(8), dp(7), dp(8), dp(7))
             background = controllerStatusBackground()
         }
-        panel.addView(controllerRightStatusText, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(8) })
+        content.addView(controllerRightStatusText, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(8) })
         val disconnectRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         disconnectRow.addView(makeButton("断开左手柄") { controllerManager.disconnect(ControllerHand.LEFT) },
             LinearLayout.LayoutParams(0, dp(38), 1f).apply { marginEnd = dp(5) })
         disconnectRow.addView(makeButton("断开右手柄") { controllerManager.disconnect(ControllerHand.RIGHT) },
             LinearLayout.LayoutParams(0, dp(38), 1f).apply { marginStart = dp(5) })
-        panel.addView(disconnectRow, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(9) })
-        panel.addView(makeButton("扫描 Daydream Controller") { requestBluetoothPermissionAndScan() },
+        content.addView(disconnectRow, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(9) })
+        content.addView(makeButton("扫描 Daydream Controller") { requestBluetoothPermissionAndScan() },
             LinearLayout.LayoutParams(-1, dp(42)).apply { bottomMargin = dp(7) })
         controllerScanStatusText = label("等待扫描。请先唤醒手柄。", secondary = true).apply {
             textSize = 10f
             setPadding(0, dp(3), 0, dp(6))
         }
-        panel.addView(controllerScanStatusText)
-        val scroll = ScrollView(this).apply {
-            isFillViewport = true
-            clipToPadding = false
-        }
+        content.addView(controllerScanStatusText)
         controllerCandidateList = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        scroll.addView(controllerCandidateList, FrameLayout.LayoutParams(-1, -2))
-        panel.addView(scroll, LinearLayout.LayoutParams(-1, 0, 1f))
-        panel.addView(label("分配左右手柄：扫描到的设备可分别指定为左手或右手。两个手柄需要同时保持唤醒。", secondary = true).apply {
-            setPadding(0, dp(7), 0, dp(5))
+        content.addView(controllerCandidateList, LinearLayout.LayoutParams(-1, -2))
+        content.addView(label("分配左右手柄：扫描到的设备可分别指定为左手或右手。两个手柄需要同时保持唤醒。", secondary = true).apply {
+            setPadding(0, dp(7), 0, dp(8))
         })
         panel.addView(makeButton("关闭") {
             controllerPanel.visibility = View.GONE
             updateDismissLayer()
-        }, LinearLayout.LayoutParams(-1, dp(40)))
+        }, LinearLayout.LayoutParams(-1, dp(40)).apply { topMargin = dp(8) })
         return panel
     }
 

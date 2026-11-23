@@ -1,3 +1,10 @@
+## 0.5.28 - Android controller menu scrolling and button spacing
+
+- Make the entire Daydream controller pairing panel vertically scrollable, including controller status, scan controls, discovered-device cards and left/right assignment actions. Keep the close button fixed at the bottom so it remains reachable on short landscape displays.
+- Configure the controller panel ScrollView for fill-viewport measurement, smooth vertical scrolling, visible scroll feedback and descendant touch/focus handling. This prevents the discovered-controller list from being the only scrollable region while the rest of the panel is clipped.
+- Normalize the screen-rotation and optical-preset menu button spacing to the same 6 dp bottom gap used by adjacent menu buttons.
+- Synchronize repository, Android, Windows Host, SteamVR driver and AOA metadata to `0.5.28`; Android `versionCode` is `63`.
+
 ## 0.5.27 - Daydream controller build fixes
 
 - Fix the MSVC C3668 error by removing the invalid `override` specifier from the concrete Daydream controller destructor. Keep the destructor cleanup call; the controller instances are owned as their concrete type.

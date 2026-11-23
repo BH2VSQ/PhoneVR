@@ -241,6 +241,7 @@ const (
 	idTransport      = 109
 	idProfile        = 200
 	idApply          = 201
+	idLiveApply      = 204
 	idDialogCenter   = 202
 	idClose          = 203
 	idPresetList     = 300
@@ -1265,6 +1266,11 @@ func (app *nativeUI) createDialogControls(d *nativeDialog) {
 			{1009, app.text("模糊度", "Blur"), d.settings.Blur},
 			{1010, app.text("锐化", "Sharpness"), d.settings.Sharpness},
 			{1011, "FOV (deg)", d.settings.FOVDegrees},
+			{1012, app.text("左眼水平偏移", "Left eye horizontal offset"), d.settings.LeftEyeOffsetX},
+			{1013, app.text("左眼垂直偏移", "Left eye vertical offset"), d.settings.LeftEyeOffsetY},
+			{1014, app.text("右眼水平偏移", "Right eye horizontal offset"), d.settings.RightEyeOffsetX},
+			{1015, app.text("右眼垂直偏移", "Right eye vertical offset"), d.settings.RightEyeOffsetY},
+			{1016, app.text("画面上下倾斜 (deg)", "Vertical image tilt (deg)"), d.settings.VerticalTiltDegrees},
 		}
 		for index, field := range fields {
 			addLabel(viewport, index+1, field.label)
@@ -1272,6 +1278,7 @@ func (app *nativeUI) createDialogControls(d *nativeDialog) {
 		}
 		d.status = app.createControl(d.hwnd, "STATIC", "", wsChild|wsVisible, 0, 0, 10, 10, 0)
 		addButton(idApply, app.text("保存预设到手机", "Save Preset to Phone"))
+		addButton(idLiveApply, app.text("实时应用位置", "Apply Position Live"))
 		addButton(idPresetApply, app.text("保存并应用", "Save & Apply"))
 		addButton(idClose, app.text("关闭", "Close"))
 
@@ -1415,7 +1422,7 @@ func (app *nativeUI) layoutDialog(d *nativeDialog) {
 		viewportHeight := maxInt(96, footerTop-viewportTop-10)
 		move(d.viewport, 16, viewportTop, w-32, viewportHeight)
 
-		fieldIDs := []int{1001, 1002, 1003, 1004, 1005, 1006, 1007, 1008, 1009, 1010, 1011}
+		fieldIDs := []int{1001, 1002, 1003, 1004, 1005, 1006, 1007, 1008, 1009, 1010, 1011, 1012, 1013, 1014, 1015, 1016}
 		columns := 2
 		if w < 760 {
 			columns = 1
@@ -1441,8 +1448,10 @@ func (app *nativeUI) layoutDialog(d *nativeDialog) {
 		app.updateDialogScroll(d)
 		move(d.status, margin, h-78, maxInt(140, w-2*margin-420), 24)
 		buttonWidth := 170
+		buttonWidth = 150
 		move(d.controls[idApply], margin, h-46, buttonWidth, 38)
-		move(d.controls[idPresetApply], margin+buttonWidth+10, h-46, buttonWidth, 38)
+		move(d.controls[idLiveApply], margin+buttonWidth+8, h-46, buttonWidth, 38)
+		move(d.controls[idPresetApply], margin+(buttonWidth+8)*2, h-46, buttonWidth, 38)
 		move(d.controls[idClose], w-margin-116, h-46, 116, 38)
 
 	case "presets":
@@ -1739,6 +1748,19 @@ func (app *nativeUI) handleDialogCommand(d *nativeDialog, id int) {
 					app.refreshPresetList(window)
 				}
 			}
+		case idLiveApply:
+			settings, err := app.readSettingsDialog(d)
+			if err != nil {
+				setNativeText(d.status, err.Error())
+				return
+			}
+			if err := app.service.SendPhoneDisplaySettings(settings); err != nil {
+				setNativeText(d.status, app.text("实时应用失败：", "Live apply failed: ")+err.Error())
+				return
+			}
+			d.settings = settings
+			app.currentSettings = settings
+			setNativeText(d.status, app.text("位置参数已实时发送到手机", "Position settings sent to phone"))
 		case idClose:
 			pDestroyWindow.Call(d.hwnd)
 		}
@@ -2049,7 +2071,7 @@ func (app *nativeUI) readSettingsDialog(d *nativeDialog) (PhoneDisplaySettings, 
 	fields := []struct {
 		id     int
 		target *float32
-	}{{1001, &s.IPDMm}, {1002, &s.LensSeparationMm}, {1003, &s.ScreenToLensDistanceMm}, {1004, &s.TrayToLensCenterMm}, {1005, &s.LensCenterX}, {1006, &s.LensCenterY}, {1007, &s.DistortionK1}, {1008, &s.DistortionK2}, {1009, &s.Blur}, {1010, &s.Sharpness}, {1011, &s.FOVDegrees}}
+	}{{1001, &s.IPDMm}, {1002, &s.LensSeparationMm}, {1003, &s.ScreenToLensDistanceMm}, {1004, &s.TrayToLensCenterMm}, {1005, &s.LensCenterX}, {1006, &s.LensCenterY}, {1007, &s.DistortionK1}, {1008, &s.DistortionK2}, {1009, &s.Blur}, {1010, &s.Sharpness}, {1011, &s.FOVDegrees}, {1012, &s.LeftEyeOffsetX}, {1013, &s.LeftEyeOffsetY}, {1014, &s.RightEyeOffsetX}, {1015, &s.RightEyeOffsetY}, {1016, &s.VerticalTiltDegrees}}
 	for _, field := range fields {
 		raw := strings.TrimSpace(getNativeText(d.controls[field.id]))
 		value, err := strconv.ParseFloat(raw, 32)

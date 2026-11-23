@@ -1,3 +1,13 @@
+## 0.5.19 - Live optical alignment controls
+
+- Add a vertical image-plane tilt control (±20 degrees) using a perspective transform in the Android post-process shader. This lets the wearer adjust upper/lower image alignment without physically changing the phone position.
+- Expand each physical eye's horizontal and vertical source-image translation range from ±0.08 to ±0.20 normalized eye-image units.
+- Persist the vertical tilt in the Android settings store and optical presets, and include it in the Host/Android display-settings JSON contract.
+- Extend the Windows Host optical preset editor with left/right eye horizontal and vertical offsets plus vertical tilt. Add **Apply Position Live** to send edited values directly to the connected phone while the headset is worn; **Save & Apply** remains available for persistent preset updates.
+- Add normalization and serialization regression tests for expanded offsets and vertical tilt.
+- Synchronize repository, Android, Windows Host, SteamVR driver and AOA accessory metadata to `0.5.19`; Android `versionCode` is `54`.
+- Network streaming remains on the existing UDP transport in this revision. The current source already has fragment NACK repair, whole-access-unit retention and receiver reassembly diagnostics. Further transport changes require paired Host/Android logs to distinguish Wi-Fi packet loss from encoder, decoder, or control-channel stalls.
+
 ## 0.5.18 - Stereo eye routing and headset calibration tools
 
 - Separate the physical display eye from the SBS source eye in the Android post-process shader. The new persistent **Swap Eyes** setting exchanges only the source halves while preserving each physical eye's lens center and calibration offsets.

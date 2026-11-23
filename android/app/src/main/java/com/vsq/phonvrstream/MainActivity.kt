@@ -861,10 +861,11 @@ class MainActivity : Activity(), SensorEventListener {
         addEyeOffsetSlider(list, "左眼垂直", settings.leftEyeOffsetY) { value -> settings.copy(leftEyeOffsetY = value) }
         addEyeOffsetSlider(list, "右眼水平", settings.rightEyeOffsetX) { value -> settings.copy(rightEyeOffsetX = value) }
         addEyeOffsetSlider(list, "右眼垂直", settings.rightEyeOffsetY) { value -> settings.copy(rightEyeOffsetY = value) }
+        addTiltSlider(list, "画面上下倾斜", settings.verticalTiltDegrees) { value -> settings.copy(verticalTiltDegrees = value) }
         list.addView(makeButton("重置左右眼偏移") {
             settings = settings.copy(
                 leftEyeOffsetX = 0f, leftEyeOffsetY = 0f,
-                rightEyeOffsetX = 0f, rightEyeOffsetY = 0f,
+                rightEyeOffsetX = 0f, rightEyeOffsetY = 0f, verticalTiltDegrees = 0f,
             ).normalized()
             persistActiveOpticalSettings(publish = true)
             updateRendererSettings()
@@ -976,6 +977,42 @@ class MainActivity : Activity(), SensorEventListener {
             override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
                 val value = (progress - 100) / 100f * DisplaySettings.MAX_EYE_OFFSET
                 valueLabel.text = formatEyeOffset(value)
+                settings = update(value).normalized()
+                persistActiveOpticalSettings(publish = false)
+                updateRendererSettings()
+            }
+            override fun onStartTrackingTouch(seekBar: SeekBar?) = Unit
+            override fun onStopTrackingTouch(seekBar: SeekBar?) {
+                persistActiveOpticalSettings(publish = true)
+            }
+        })
+        block.addView(seek)
+        parent.addView(block)
+    }
+
+    private fun addTiltSlider(
+        parent: LinearLayout,
+        title: String,
+        initialValue: Float,
+        update: (Float) -> DisplaySettings,
+    ) {
+        val block = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(0, dp(4), 0, dp(2)) }
+        val header = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        header.addView(label(title), LinearLayout.LayoutParams(0, -2, 1f))
+        val valueLabel = label(String.format(java.util.Locale.US, "%+.1f°", initialValue)).apply {
+            typeface = Typeface.MONOSPACE; setTextColor(Color.rgb(130, 195, 255))
+        }
+        header.addView(valueLabel)
+        block.addView(header)
+        val seek = SeekBar(this).apply {
+            max = 200
+            progress = (100f + initialValue.coerceIn(-DisplaySettings.MAX_VERTICAL_TILT_DEGREES, DisplaySettings.MAX_VERTICAL_TILT_DEGREES) /
+                DisplaySettings.MAX_VERTICAL_TILT_DEGREES * 100f).toInt().coerceIn(0, 200)
+        }
+        seek.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
+                val value = (progress - 100) / 100f * DisplaySettings.MAX_VERTICAL_TILT_DEGREES
+                valueLabel.text = String.format(java.util.Locale.US, "%+.1f°", value)
                 settings = update(value).normalized()
                 persistActiveOpticalSettings(publish = false)
                 updateRendererSettings()

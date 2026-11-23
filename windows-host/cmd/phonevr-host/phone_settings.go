@@ -31,6 +31,7 @@ type PhoneDisplaySettings struct {
 	LeftEyeOffsetY          float32 `json:"leftEyeOffsetY"`
 	RightEyeOffsetX         float32 `json:"rightEyeOffsetX"`
 	RightEyeOffsetY         float32 `json:"rightEyeOffsetY"`
+	VerticalTiltDegrees     float32 `json:"verticalTiltDegrees"`
 }
 
 func DefaultPhoneDisplaySettings() PhoneDisplaySettings {
@@ -62,10 +63,11 @@ func (s PhoneDisplaySettings) Normalized() PhoneDisplaySettings {
 	s.Blur = clampFloat32(s.Blur, 0, 1)
 	s.Sharpness = clampFloat32(s.Sharpness, 0, 1)
 	s.FOVDegrees = clampFloat32(s.FOVDegrees, 60, 115)
-	s.LeftEyeOffsetX = clampFloat32(s.LeftEyeOffsetX, -.08, .08)
-	s.LeftEyeOffsetY = clampFloat32(s.LeftEyeOffsetY, -.08, .08)
-	s.RightEyeOffsetX = clampFloat32(s.RightEyeOffsetX, -.08, .08)
-	s.RightEyeOffsetY = clampFloat32(s.RightEyeOffsetY, -.08, .08)
+	s.LeftEyeOffsetX = clampFloat32(s.LeftEyeOffsetX, -.20, .20)
+	s.LeftEyeOffsetY = clampFloat32(s.LeftEyeOffsetY, -.20, .20)
+	s.RightEyeOffsetX = clampFloat32(s.RightEyeOffsetX, -.20, .20)
+	s.RightEyeOffsetY = clampFloat32(s.RightEyeOffsetY, -.20, .20)
+	s.VerticalTiltDegrees = clampFloat32(s.VerticalTiltDegrees, -20, 20)
 	// The Daydream preset button seeds the published starting values in the UI.
 	// Keep subsequent manual calibration edits when the profile remains selected.
 	return s

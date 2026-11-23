@@ -26,6 +26,7 @@ class SettingsStore(context: Context) {
         leftEyeOffsetY = prefs.getFloat(KEY_LEFT_EYE_OFFSET_Y, 0f),
         rightEyeOffsetX = prefs.getFloat(KEY_RIGHT_EYE_OFFSET_X, 0f),
         rightEyeOffsetY = prefs.getFloat(KEY_RIGHT_EYE_OFFSET_Y, 0f),
+        verticalTiltDegrees = prefs.getFloat(KEY_VERTICAL_TILT_DEGREES, 0f),
     ).normalized()
 
     fun loadOpticalPresets(legacySettings: DisplaySettings = load()): List<OpticalPreset> {
@@ -108,6 +109,7 @@ class SettingsStore(context: Context) {
             .putFloat(KEY_LEFT_EYE_OFFSET_Y, value.leftEyeOffsetY)
             .putFloat(KEY_RIGHT_EYE_OFFSET_X, value.rightEyeOffsetX)
             .putFloat(KEY_RIGHT_EYE_OFFSET_Y, value.rightEyeOffsetY)
+            .putFloat(KEY_VERTICAL_TILT_DEGREES, value.verticalTiltDegrees)
             .apply()
     }
 
@@ -133,5 +135,6 @@ class SettingsStore(context: Context) {
         private const val KEY_LEFT_EYE_OFFSET_Y = "left_eye_offset_y"
         private const val KEY_RIGHT_EYE_OFFSET_X = "right_eye_offset_x"
         private const val KEY_RIGHT_EYE_OFFSET_Y = "right_eye_offset_y"
+        private const val KEY_VERTICAL_TILT_DEGREES = "vertical_tilt_degrees"
     }
 }

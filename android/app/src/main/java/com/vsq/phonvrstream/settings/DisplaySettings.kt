@@ -29,6 +29,8 @@ data class DisplaySettings(
     val leftEyeOffsetY: Float = 0.0f,
     val rightEyeOffsetX: Float = 0.0f,
     val rightEyeOffsetY: Float = 0.0f,
+    /** Vertical perspective tilt of the displayed image plane, in degrees. */
+    val verticalTiltDegrees: Float = 0.0f,
 ) {
     fun normalized(): DisplaySettings = copy(
         ipdMm = ipdMm.coerceIn(MIN_IPD_MM, MAX_IPD_MM),
@@ -51,6 +53,7 @@ data class DisplaySettings(
         leftEyeOffsetY = leftEyeOffsetY.coerceIn(-MAX_EYE_OFFSET, MAX_EYE_OFFSET),
         rightEyeOffsetX = rightEyeOffsetX.coerceIn(-MAX_EYE_OFFSET, MAX_EYE_OFFSET),
         rightEyeOffsetY = rightEyeOffsetY.coerceIn(-MAX_EYE_OFFSET, MAX_EYE_OFFSET),
+        verticalTiltDegrees = verticalTiltDegrees.coerceIn(-MAX_VERTICAL_TILT_DEGREES, MAX_VERTICAL_TILT_DEGREES),
     )
 
     fun withDaydreamView2017Profile(): DisplaySettings = copy(
@@ -89,6 +92,7 @@ data class DisplaySettings(
         .put("leftEyeOffsetY", leftEyeOffsetY.toDouble())
         .put("rightEyeOffsetX", rightEyeOffsetX.toDouble())
         .put("rightEyeOffsetY", rightEyeOffsetY.toDouble())
+        .put("verticalTiltDegrees", verticalTiltDegrees.toDouble())
 
     /** Parses remote settings while preserving local defaults for omitted fields. */
     companion object {
@@ -108,7 +112,8 @@ data class DisplaySettings(
         const val MAX_TRAY_TO_LENS_CENTER_MM = 60.0f
         const val MIN_DISTORTION_K2 = -0.20f
         const val MAX_DISTORTION_K2 = 0.80f
-        const val MAX_EYE_OFFSET = 0.08f
+        const val MAX_EYE_OFFSET = 0.20f
+        const val MAX_VERTICAL_TILT_DEGREES = 20.0f
 
         fun fromJson(json: JSONObject, fallback: DisplaySettings = DisplaySettings()): DisplaySettings = DisplaySettings(
             viewerProfileId = json.optString("viewerProfileId", fallback.viewerProfileId),
@@ -129,6 +134,7 @@ data class DisplaySettings(
             leftEyeOffsetY = json.optDouble("leftEyeOffsetY", fallback.leftEyeOffsetY.toDouble()).toFloat(),
             rightEyeOffsetX = json.optDouble("rightEyeOffsetX", fallback.rightEyeOffsetX.toDouble()).toFloat(),
             rightEyeOffsetY = json.optDouble("rightEyeOffsetY", fallback.rightEyeOffsetY.toDouble()).toFloat(),
+            verticalTiltDegrees = json.optDouble("verticalTiltDegrees", fallback.verticalTiltDegrees.toDouble()).toFloat(),
         ).normalized()
     }
 

@@ -1425,7 +1425,7 @@ class NetworkClient(
         private const val MAX_VIDEO_REORDER_GRACE_MS = 250
         const val DISCOVERY_PORT = 48100
         private const val PROTOCOL_VERSION = 1
-        private const val CLIENT_VERSION = "PhoneVRStream-0.5.18"
+        private const val CLIENT_VERSION = "PhoneVRStream-0.5.19"
         private const val DISCOVERY_REQUEST = "PHONEVR_DISCOVER_V1"
         private const val DISCOVERY_RESPONSE_PREFIX = "PHONEVR_HOST_V1 "
         private const val DISCOVERY_WINDOW_MS = 1800L

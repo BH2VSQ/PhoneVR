@@ -63,7 +63,7 @@ class StereoRenderer : GLSurfaceView.Renderer {
     private data class PostLocations(
         val position: Int, val eyeSign: Int, val lensCenter: Int, val distortion: Int,
         val blur: Int, val sharpness: Int, val sourceTexel: Int, val aspect: Int,
-        val sceneTexture: Int, val swapEyes: Int, val eyeOffset: Int,
+        val sceneTexture: Int, val swapEyes: Int, val eyeOffset: Int, val verticalTilt: Int,
     )
     private data class CalibrationLocations(
         val position: Int, val eyeSign: Int, val mode: Int,
@@ -198,6 +198,7 @@ class StereoRenderer : GLSurfaceView.Renderer {
             sceneTexture = GLES30.glGetUniformLocation(postProgram, "uSceneTexture"),
             swapEyes = GLES30.glGetUniformLocation(postProgram, "uSwapEyes"),
             eyeOffset = GLES30.glGetUniformLocation(postProgram, "uEyeOffset"),
+            verticalTilt = GLES30.glGetUniformLocation(postProgram, "uVerticalTiltRadians"),
         )
     }
 
@@ -311,6 +312,7 @@ class StereoRenderer : GLSurfaceView.Renderer {
         GLES30.glUniform1f(post.blur, if (applyLensProcessing) settings.blur else 0f)
         GLES30.glUniform1f(post.sharpness, if (applyLensProcessing) settings.sharpness else 0f)
         GLES30.glUniform1f(post.swapEyes, if (settings.swapEyes) 1f else 0f)
+        GLES30.glUniform1f(post.verticalTilt, Math.toRadians(settings.verticalTiltDegrees.toDouble()).toFloat())
 
         GLES30.glViewport(0, 0, halfWidth, height)
         GLES30.glUniform1f(post.eyeSign, -1f)
@@ -611,6 +613,7 @@ class StereoRenderer : GLSurfaceView.Renderer {
             uniform float uAspect;
             uniform float uSwapEyes;
             uniform vec2 uEyeOffset;
+            uniform float uVerticalTiltRadians;
             uniform sampler2D uSceneTexture;
 
             vec3 sampleScene(vec2 uv, float eyeMin, float eyeMax) {
@@ -630,6 +633,13 @@ class StereoRenderer : GLSurfaceView.Renderer {
                 // X therefore subtracts from the sample coordinate, while the
                 // GL texture Y axis is bottom-up and uses the opposite sign.
                 vec2 warpedUv = uLensCenter + delta * radialScale + vec2(-uEyeOffset.x, uEyeOffset.y);
+                // Pitch the image plane around its horizontal axis. This creates
+                // a controlled vertical keystone so the upper/lower edge can be
+                // aligned with the headset optics while the user remains wearing it.
+                float tiltSin = sin(uVerticalTiltRadians);
+                float tiltCos = cos(uVerticalTiltRadians);
+                float tiltDenominator = max(0.25, tiltCos - (warpedUv.y - 0.5) * tiltSin);
+                warpedUv.y = 0.5 + (warpedUv.y - 0.5) * tiltCos / tiltDenominator;
                 if (warpedUv.x < 0.0 || warpedUv.x > 1.0 || warpedUv.y < 0.0 || warpedUv.y > 1.0) {
                     outColor = vec4(0.0, 0.0, 0.0, 1.0);
                     return;

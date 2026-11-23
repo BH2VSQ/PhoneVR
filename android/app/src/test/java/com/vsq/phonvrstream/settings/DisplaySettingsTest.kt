@@ -80,6 +80,7 @@ class DisplaySettingsTest {
             leftEyeOffsetY = 0.012f,
             rightEyeOffsetX = 0.04f,
             rightEyeOffsetY = -0.018f,
+            verticalTiltDegrees = 7.5f,
         )
         val restored = DisplaySettings.fromJson(original.toJson())
         assertEquals(original, restored)
@@ -89,19 +90,22 @@ class DisplaySettingsTest {
             leftEyeOffsetY = 1f,
             rightEyeOffsetX = 0.5f,
             rightEyeOffsetY = -0.5f,
+            verticalTiltDegrees = 99f,
         ).normalized()
         assertEquals(-DisplaySettings.MAX_EYE_OFFSET, bounded.leftEyeOffsetX)
         assertEquals(DisplaySettings.MAX_EYE_OFFSET, bounded.leftEyeOffsetY)
         assertEquals(DisplaySettings.MAX_EYE_OFFSET, bounded.rightEyeOffsetX)
         assertEquals(-DisplaySettings.MAX_EYE_OFFSET, bounded.rightEyeOffsetY)
+        assertEquals(DisplaySettings.MAX_VERTICAL_TILT_DEGREES, bounded.verticalTiltDegrees)
     }
 
     @Test
     fun olderRemoteSettingsPreserveFallbackStereoMapping() {
-        val fallback = DisplaySettings(swapEyes = true, leftEyeOffsetX = 0.02f)
+        val fallback = DisplaySettings(swapEyes = true, leftEyeOffsetX = 0.02f, verticalTiltDegrees = -4.5f)
         val restored = DisplaySettings.fromJson(org.json.JSONObject().put("ipdMm", 65.0), fallback)
         assertEquals(true, restored.swapEyes)
         assertEquals(0.02f, restored.leftEyeOffsetX, 0.0001f)
+        assertEquals(-4.5f, restored.verticalTiltDegrees, 0.0001f)
     }
 
     @Test

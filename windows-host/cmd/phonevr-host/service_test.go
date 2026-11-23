@@ -855,8 +855,8 @@ func TestHostRetriesOpticalPresetRequestWithoutDroppingControlSession(t *testing
 }
 
 func TestPhoneDisplaySettingsNormalizationClampsValues(t *testing.T) {
-	settings := PhoneDisplaySettings{IPDMm: 100, Blur: -1, Sharpness: 4, FOVDegrees: 10}.Normalized()
-	if settings.IPDMm != 75 || settings.Blur != 0 || settings.Sharpness != 1 || settings.FOVDegrees != 60 {
+	settings := PhoneDisplaySettings{IPDMm: 100, Blur: -1, Sharpness: 4, FOVDegrees: 10, LeftEyeOffsetX: 0.5, VerticalTiltDegrees: 35}.Normalized()
+	if settings.IPDMm != 75 || settings.Blur != 0 || settings.Sharpness != 1 || settings.FOVDegrees != 60 || settings.LeftEyeOffsetX != 0.20 || settings.VerticalTiltDegrees != 20 {
 		t.Fatalf("settings normalization did not clamp values: %+v", settings)
 	}
 }

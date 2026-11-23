@@ -1,4 +1,4 @@
-# PhoneVR stereo eye routing and headset calibration (0.5.18)
+# PhoneVR stereo eye routing and headset calibration (0.5.19)
 
 ## Purpose
 
@@ -29,9 +29,15 @@ Four controls adjust the source image independently for each physical display ey
 - Left eye horizontal / vertical
 - Right eye horizontal / vertical
 
-Positive values move the displayed source image right/down. The range is ±0.08 normalized units of one eye image. These are image-sampling translations, not changes to the viewer lens spacing or the user's IPD. Offsets are stored in the active optical preset and are included in display-settings JSON so the Windows Host can retain them while editing other optical parameters.
+Positive values move the displayed source image right/down. The range is ±0.20 normalized units of one eye image in 0.5.19 (expanded from ±0.08). These are image-sampling translations, not changes to the viewer lens spacing or the user's IPD. Offsets are stored in the active optical preset and are included in display-settings JSON. The Windows Host optical preset editor exposes all four values and provides **Apply Position Live**, allowing adjustments while the headset is worn without saving the preset after every change.
 
 Start with all offsets at zero. First confirm the L/R labels and single-eye routing. Then use **双眼同图** to compare the center crosshair and rings. Adjust only the eye that visibly needs correction, and use small changes. The **重置左右眼偏移** action returns all four values to zero.
+
+## Vertical image tilt (0.5.19)
+
+The **画面上下倾斜** control applies a vertical perspective transform around the horizontal image axis. It can compensate for the image plane appearing too high or low across the field of view while preserving independent left/right translation. The supported range is -20 to +20 degrees. Begin near zero and adjust in small increments; large values can compress one edge, move content outside the eye viewport, or cause discomfort. The value is persisted with the active optical preset and is also available in the Windows Host editor.
+
+In the Windows Host optical preset editor, edit the four per-eye offsets and vertical tilt, then select **Apply Position Live** to send the current fields to the connected phone immediately. Use **Save & Apply** when the settings should also be saved as a persistent optical preset.
 
 ## Recommended test order
 

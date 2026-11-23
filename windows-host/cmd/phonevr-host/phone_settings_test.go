@@ -42,8 +42,8 @@ func TestPhoneDisplaySettingsNormalizeStereoEyeMappingAndOffsets(t *testing.T) {
 	if !settings.SwapEyes {
 		t.Fatal("eye swap flag was lost")
 	}
-	if settings.LeftEyeOffsetX != -0.08 || settings.LeftEyeOffsetY != 0.025 ||
-		settings.RightEyeOffsetX != 0.06 || settings.RightEyeOffsetY != 0.08 {
+	if settings.LeftEyeOffsetX != -0.12 || settings.LeftEyeOffsetY != 0.025 ||
+		settings.RightEyeOffsetX != 0.06 || settings.RightEyeOffsetY != 0.15 {
 		t.Fatalf("unexpected normalized per-eye offsets: %+v", settings)
 	}
 	if settings.DistortionK2 != 0.67 {
@@ -58,6 +58,7 @@ func TestPhoneDisplaySettingsStereoFieldsRoundTripJSON(t *testing.T) {
 	original.LeftEyeOffsetY = 0.012
 	original.RightEyeOffsetX = 0.04
 	original.RightEyeOffsetY = -0.018
+	original.VerticalTiltDegrees = -6.5
 
 	encoded, err := json.Marshal(original)
 	if err != nil {

@@ -141,13 +141,13 @@ func TestVideoTransportConfigPersistsAndReloads(t *testing.T) {
 	}
 }
 
-func TestParallelVideoTransportMirrorsIdenticalFragmentsToUDPAndUSB(t *testing.T) {
+func TestParallelVideoTransportStripesDistinctFragmentsAcrossUDPAndUSB(t *testing.T) {
 	udpReceiver, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer udpReceiver.Close()
-	if err := udpReceiver.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+	if err := udpReceiver.SetReadDeadline(time.Now().Add(180 * time.Millisecond)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -158,10 +158,10 @@ func TestParallelVideoTransportMirrorsIdenticalFragmentsToUDPAndUSB(t *testing.T
 	defer udpSender.Close()
 	service := NewHostService(false)
 	service.videoUDP = udpSender
-	service.videoUSBQueue = make(chan usbMirrorWork, videoUSBQueueDepth)
+	service.videoUSBQueue = make(chan usbVideoWork, videoUSBQueueDepth)
 	workerCtx, stopWorker := context.WithCancel(context.Background())
 	service.wg.Add(1)
-	go service.videoUSBMirrorSendLoop(workerCtx, service.videoUSBQueue)
+	go service.videoUSBWorkSendLoop(workerCtx, service.videoUSBQueue)
 	t.Cleanup(func() {
 		stopWorker()
 		service.wg.Wait()
@@ -180,32 +180,53 @@ func TestParallelVideoTransportMirrorsIdenticalFragmentsToUDPAndUSB(t *testing.T
 		Transport: "parallel", DeviceID: "phone-parallel-test",
 	}
 	if err := service.sendVideoFragmentsParallel(fragments, target); err != nil {
-		t.Fatalf("mirror video fragments: %v", err)
+		t.Fatalf("stripe video fragments: %v", err)
 	}
 
 	udpPackets := make([][]byte, 0, len(fragments))
-	for range fragments {
+	for {
 		buffer := make([]byte, videoprotocol.MaxDatagramSize)
 		n, _, err := udpReceiver.ReadFromUDP(buffer)
 		if err != nil {
-			t.Fatalf("read mirrored UDP fragment: %v", err)
+			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+				break
+			}
+			t.Fatalf("read striped UDP fragment: %v", err)
 		}
 		udpPackets = append(udpPackets, append([]byte(nil), buffer[:n]...))
 	}
-	expectedUSBBytes := 0
+	if len(udpPackets) == 0 || len(udpPackets) >= len(fragments) {
+		t.Fatalf("UDP fragment count = %d of %d; expected a split across both paths", len(udpPackets), len(fragments))
+	}
+
+	udpOffsets := make(map[uint32][]byte, len(udpPackets))
+	for _, packet := range udpPackets {
+		decoded, err := videoprotocol.Decode(packet)
+		if err != nil {
+			t.Fatalf("decode UDP PVRV fragment: %v", err)
+		}
+		udpOffsets[decoded.FragmentOffset] = packet
+	}
+	usbExpectedBytes := 0
 	for _, fragment := range fragments {
-		expectedUSBBytes += usbmux.HeaderSize + len(fragment)
+		decoded, _ := videoprotocol.Decode(fragment)
+		if _, sentOnUDP := udpOffsets[decoded.FragmentOffset]; !sentOnUDP {
+			usbExpectedBytes += usbmux.HeaderSize + len(fragment)
+		}
 	}
 	deadline := time.Now().Add(2 * time.Second)
-	for len(stream.Bytes()) < expectedUSBBytes && time.Now().Before(deadline) {
+	for len(stream.Bytes()) < usbExpectedBytes && time.Now().Before(deadline) {
 		time.Sleep(5 * time.Millisecond)
 	}
 	usbData := stream.Bytes()
-	if len(usbData) != expectedUSBBytes {
-		t.Fatalf("USB mirrored wire bytes = %d, want %d", len(usbData), expectedUSBBytes)
+	if len(usbData) != usbExpectedBytes {
+		t.Fatalf("USB striped wire bytes = %d, want %d", len(usbData), usbExpectedBytes)
 	}
 	usbReader := bytes.NewReader(usbData)
-	usbPackets := make([][]byte, 0, len(fragments))
+	seen := make(map[uint32]string, len(fragments))
+	for offset := range udpOffsets {
+		seen[offset] = "network"
+	}
 	for {
 		packet, err := usbmux.ReadFrame(usbReader)
 		if errors.Is(err, io.EOF) {
@@ -217,16 +238,25 @@ func TestParallelVideoTransportMirrorsIdenticalFragmentsToUDPAndUSB(t *testing.T
 		if packet.Channel != usbmux.ChannelVideo {
 			t.Fatalf("USB channel = %d, want video channel", packet.Channel)
 		}
-		usbPackets = append(usbPackets, packet.Payload)
+		decoded, err := videoprotocol.Decode(packet.Payload)
+		if err != nil {
+			t.Fatalf("decode USB PVRV fragment: %v", err)
+		}
+		if _, duplicate := seen[decoded.FragmentOffset]; duplicate {
+			t.Fatalf("fragment offset %d was duplicated across transport paths", decoded.FragmentOffset)
+		}
+		seen[decoded.FragmentOffset] = "usb"
 	}
-	if len(udpPackets) != len(fragments) || len(usbPackets) != len(fragments) {
-		t.Fatalf("fragment counts: expected=%d UDP=%d USB=%d", len(fragments), len(udpPackets), len(usbPackets))
+	if len(seen) != len(fragments) {
+		t.Fatalf("combined paths delivered %d unique fragments, want %d", len(seen), len(fragments))
 	}
-	for i, fragment := range fragments {
-		if !bytes.Equal(udpPackets[i], fragment) || !bytes.Equal(usbPackets[i], fragment) {
-			t.Fatalf("fragment %d differs between source, UDP and USB copies", i)
+	for _, fragment := range fragments {
+		decoded, _ := videoprotocol.Decode(fragment)
+		if _, ok := seen[decoded.FragmentOffset]; !ok {
+			t.Fatalf("fragment at offset %d is missing from both paths", decoded.FragmentOffset)
 		}
 	}
+
 }
 
 func TestParallelVideoTransportKeepsUDPWhenUSBQueueIsFull(t *testing.T) {
@@ -235,7 +265,7 @@ func TestParallelVideoTransportKeepsUDPWhenUSBQueueIsFull(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer udpReceiver.Close()
-	if err := udpReceiver.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+	if err := udpReceiver.SetReadDeadline(time.Now().Add(200 * time.Millisecond)); err != nil {
 		t.Fatal(err)
 	}
 	udpSender, err := net.ListenUDP("udp", nil)
@@ -246,29 +276,156 @@ func TestParallelVideoTransportKeepsUDPWhenUSBQueueIsFull(t *testing.T) {
 
 	service := NewHostService(false)
 	service.videoUDP = udpSender
-	service.videoUSBQueue = make(chan usbMirrorWork, 1)
-	service.videoUSBQueue <- usbMirrorWork{} // occupy the only queue slot
-	fragment := []byte("PVRV-test-fragment")
+	service.videoUSBQueue = make(chan usbVideoWork, 1)
+	service.videoUSBQueue <- usbVideoWork{} // occupy the only queue slot
+	frame, err := videoprotocol.FragmentFrame(bytes.Repeat([]byte{0x41}, 2600), 55, 1234, false)
+	if err != nil {
+		t.Fatal(err)
+	}
 	target := videoTarget{
 		USB: &usbmux.Mux{}, UDP: udpReceiver.LocalAddr().(*net.UDPAddr),
 		Transport: "parallel", DeviceID: "phone-queue-full-test",
 	}
-	if err := service.sendVideoFragmentsParallel([][]byte{fragment}, target); err != nil {
+	if err := service.sendVideoFragmentsParallel(frame, target); err != nil {
 		t.Fatalf("USB queue congestion should not fail a successful UDP delivery: %v", err)
 	}
-	buffer := make([]byte, 128)
-	n, _, err := udpReceiver.ReadFromUDP(buffer)
-	if err != nil {
-		t.Fatalf("read surviving UDP copy: %v", err)
+	seen := make(map[uint32]struct{}, len(frame))
+	for {
+		buffer := make([]byte, videoprotocol.MaxDatagramSize)
+		n, _, err := udpReceiver.ReadFromUDP(buffer)
+		if err != nil {
+			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+				break
+			}
+			t.Fatalf("read surviving UDP fallback: %v", err)
+		}
+		packet, err := videoprotocol.Decode(buffer[:n])
+		if err != nil {
+			t.Fatalf("UDP fallback packet is invalid: %v", err)
+		}
+		seen[packet.FragmentOffset] = struct{}{}
 	}
-	if !bytes.Equal(buffer[:n], fragment) {
-		t.Fatalf("UDP packet = %q, want %q", buffer[:n], fragment)
+	if len(seen) != len(frame) {
+		t.Fatalf("UDP fallback recovered %d unique fragments, want %d", len(seen), len(frame))
 	}
 	service.mu.RLock()
 	health := service.transportHealth["phone-queue-full-test|usb"]
 	service.mu.RUnlock()
 	if health.UnhealthyUntil.IsZero() {
-		t.Fatal("USB route should be marked unhealthy when its mirror queue is full")
+		t.Fatal("USB route should be marked unhealthy when its video queue is full")
+	}
+}
+
+func TestVideoNackRetransmitsMissingNetworkFragmentOverUSB(t *testing.T) {
+	udpSender, err := net.ListenUDP("udp", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer udpSender.Close()
+	service := NewHostService(false)
+	service.videoUDP = udpSender
+	service.videoUSBQueue = make(chan usbVideoWork, videoUSBQueueDepth)
+	workerCtx, stopWorker := context.WithCancel(context.Background())
+	service.wg.Add(1)
+	go service.videoUSBWorkSendLoop(workerCtx, service.videoUSBQueue)
+	t.Cleanup(func() {
+		stopWorker()
+		service.wg.Wait()
+	})
+
+	stream := newVideoMuxTestStream()
+	usb := usbmux.New(stream)
+	defer usb.Close()
+	frameBytes := bytes.Repeat([]byte{0x65, 0x11, 0x22, 0x33}, 900)
+	fragments, err := videoprotocol.FragmentFrame(frameBytes, 771, 99887766, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := videoTarget{
+		USB: usb, UDP: &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 48104},
+		Transport: "parallel", DeviceID: "phone-nack-test",
+	}
+	service.retainStripedVideoFrame(fragments, repeatVideoPath("network", len(fragments)), target)
+	service.retransmitMissingVideoFragments("phone-nack-test", 771, []int{1, 1, -1, len(fragments) + 1})
+
+	expectedBytes := usbmux.HeaderSize + len(fragments[1])
+	deadline := time.Now().Add(time.Second)
+	for len(stream.Bytes()) < expectedBytes && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	reader := bytes.NewReader(stream.Bytes())
+	packet, err := usbmux.ReadFrame(reader)
+	if err != nil {
+		t.Fatalf("read repaired USB mux packet: %v", err)
+	}
+	if packet.Channel != usbmux.ChannelVideo || !bytes.Equal(packet.Payload, fragments[1]) {
+		t.Fatalf("repaired USB packet differs from missing fragment: channel=%d bytes=%d", packet.Channel, len(packet.Payload))
+	}
+	if service.videoRetransmittedFragments.Load() != 1 {
+		t.Fatalf("retransmitted fragment count = %d, want 1", service.videoRetransmittedFragments.Load())
+	}
+}
+
+func TestParallelStripeWeightsFollowMeasuredPathCapacity(t *testing.T) {
+	service := NewHostService(false)
+	service.setVideoTransportAssignedShares("phone-rate", 1000, 1000)
+	service.updateVideoTransportFeedbackWithRate("phone-rate", "network", -1, -1, false, 20_000_000)
+	service.updateVideoTransportFeedbackWithRate("phone-rate", "usb", -1, -1, false, 1_000_000)
+	if share := service.videoStripeUSBSharePermille("phone-rate"); share != 50 {
+		t.Fatalf("USB share = %d permille, want a 5%% floor for a 1:20 capacity ratio", share)
+	}
+	fragments := make([][]byte, 40)
+	for index := range fragments {
+		fragments[index] = []byte{byte(index)}
+	}
+	network, usb, assignments := service.stripeVideoFragments("phone-rate-test", fragments, 250)
+	if len(network) != 30 || len(usb) != 10 {
+		t.Fatalf("weighted stripe counts network=%d USB=%d; want 30/10", len(network), len(usb))
+	}
+	if len(assignments) != len(fragments) {
+		t.Fatalf("assignment count = %d, want %d", len(assignments), len(fragments))
+	}
+}
+
+func TestStripeCreditIsPerDeviceAndSingleFragmentUsesNetwork(t *testing.T) {
+	service := NewHostService(false)
+	one := [][]byte{{0x01}}
+	network, usb, assignments := service.stripeVideoFragments("phone-a", one, 750)
+	if len(network) != 1 || len(usb) != 0 || assignments[0] != "network" {
+		t.Fatalf("single fragment assignment network=%d USB=%d paths=%v; want network only", len(network), len(usb), assignments)
+	}
+	service.stripeVideoFragments("phone-b", [][]byte{{1}, {2}}, 750)
+	if got := service.videoStripeCredit["phone-a"]; got != 0 {
+		t.Fatalf("phone-a credit changed when phone-b streamed: %d", got)
+	}
+	if got := service.videoStripeCredit["phone-b"]; got == 0 {
+		t.Fatal("phone-b should have independent stripe credit")
+	}
+}
+
+func TestStripeKeepsNetworkMarkerAndBoundsCreditAtHighUSBShare(t *testing.T) {
+	service := NewHostService(false)
+	for frame := 0; frame < 100; frame++ {
+		network, usb, _ := service.stripeVideoFragments("phone-high-usb", [][]byte{{1}, {2}}, 950)
+		if len(network) != 1 || len(usb) != 1 {
+			t.Fatalf("frame %d got network=%d USB=%d; every two-fragment frame needs one packet on each path", frame, len(network), len(usb))
+		}
+		if credit := service.videoStripeCredit["phone-high-usb"]; credit < 0 || credit >= 1000 {
+			t.Fatalf("stripe credit escaped [0,999] after frame %d: %d", frame, credit)
+		}
+	}
+}
+
+func TestRetainedVideoFramesAreScopedByDeviceAndFrameID(t *testing.T) {
+	service := NewHostService(false)
+	fragments, err := videoprotocol.FragmentFrame(bytes.Repeat([]byte{0x41}, 2600), 91, 1234, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service.retainStripedVideoFrame(fragments, repeatVideoPath("network", len(fragments)), videoTarget{DeviceID: "phone-a"})
+	service.retainStripedVideoFrame(fragments, repeatVideoPath("usb", len(fragments)), videoTarget{DeviceID: "phone-b"})
+	if got := len(service.retainedVideoFrames); got != 2 {
+		t.Fatalf("retained frame entries = %d, want 2 for two devices with the same frame ID", got)
 	}
 }
 

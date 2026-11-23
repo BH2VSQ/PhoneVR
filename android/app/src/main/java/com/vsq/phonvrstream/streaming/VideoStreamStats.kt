@@ -7,6 +7,8 @@ data class VideoStreamStats(
     val decodeFps: Double = 0.0,
     val displayFps: Double = 0.0,
     val fragmentsPerSecond: Int = 0,
+    val networkReceiveBytesPerSecond: Long = 0L,
+    val usbReceiveBytesPerSecond: Long = 0L,
     val decoderQueueDepth: Int = 0,
     val reassemblyInFlight: Int = 0,
     val expiredAssemblies: Long = 0,

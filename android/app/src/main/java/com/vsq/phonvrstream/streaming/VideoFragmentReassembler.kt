@@ -5,7 +5,7 @@ import java.nio.ByteOrder
 import java.util.LinkedHashMap
 import kotlin.math.min
 
-/** One complete Annex-B H.264 access unit reconstructed from PVRV UDP fragments. */
+/** One complete Annex-B H.264 access unit reconstructed from PVRV fragments. */
 data class CompletedVideoFrame(
     val frameId: Long,
     val timestampNs: Long,
@@ -13,17 +13,22 @@ data class CompletedVideoFrame(
     val bytes: ByteArray,
 )
 
+data class MissingVideoFragments(
+    val frameId: Long,
+    val fragmentIndexes: List<Int>,
+)
+
 /**
- * Bounded, out-of-order tolerant fragment reassembly.
- *
- * It deliberately returns only complete frames. A late or incomplete frame is
- * discarded rather than queued behind newer video, because stale VR imagery is
- * worse than a dropped frame.
+ * Bounded, out-of-order tolerant fragment reassembly for the aggregated UDP/AOA
+ * video paths. Frames may complete out of order because the two transports have
+ * different latency. A short reorder window keeps H.264 access units in encoder
+ * order while NACK feedback gives the slower path time to deliver missing parts.
  */
 class VideoFragmentReassembler(
-    private val maxInFlightFrames: Int = 3,
+    private val maxInFlightFrames: Int = 8,
     private val maxFrameBytes: Int = 4 * 1024 * 1024,
-    private val frameTimeoutNs: Long = 250_000_000L,
+    private val frameTimeoutNs: Long = 350_000_000L,
+    private val reorderGraceNs: Long = 120_000_000L,
 ) {
     private data class Assembly(
         val frameId: Long,
@@ -32,14 +37,21 @@ class VideoFragmentReassembler(
         val keyFrame: Boolean,
         val data: ByteArray,
         val received: BooleanArray,
+        val createdNs: Long,
         var receivedBytes: Int = 0,
-        var sawStart: Boolean = false,
-        var sawEnd: Boolean = false,
         var lastUpdateNs: Long,
+        var lastNackNs: Long = 0L,
+        var nackCount: Int = 0,
+    )
+
+    private data class CompletedEntry(
+        val frame: CompletedVideoFrame,
+        val completedNs: Long,
     )
 
     private val pending = LinkedHashMap<Long, Assembly>()
-    private var latestCompletedFrameId: Long? = null
+    private val completed = LinkedHashMap<Long, CompletedEntry>()
+    private var latestDeliveredFrameId: Long? = null
     private var expiredAssemblyCount = 0L
 
     @Synchronized
@@ -53,44 +65,50 @@ class VideoFragmentReassembler(
     }
 
     @Synchronized
-    fun accept(datagram: ByteArray, length: Int = datagram.size, nowNs: Long = System.nanoTime()): CompletedVideoFrame? {
+    fun accept(
+        datagram: ByteArray,
+        length: Int = datagram.size,
+        nowNs: Long = System.nanoTime(),
+    ): List<CompletedVideoFrame> {
         expire(nowNs)
-        if (length < HEADER_SIZE || length > MAX_DATAGRAM_SIZE || length > datagram.size) return null
+        if (length < HEADER_SIZE || length > MAX_DATAGRAM_SIZE || length > datagram.size) return emptyList()
         if (datagram[0] != 'P'.code.toByte() || datagram[1] != 'V'.code.toByte() ||
-            datagram[2] != 'R'.code.toByte() || datagram[3] != 'V'.code.toByte()) return null
-        if (datagram[4].toInt() and 0xff != 1) return null
+            datagram[2] != 'R'.code.toByte() || datagram[3] != 'V'.code.toByte()) return emptyList()
+        if (datagram[4].toInt() and 0xff != 1) return emptyList()
         val flags = datagram[5].toInt() and 0xff
-        if (flags and KNOWN_FLAGS.inv() != 0) return null
+        if (flags and KNOWN_FLAGS.inv() != 0) return emptyList()
 
         val header = ByteBuffer.wrap(datagram, 6, HEADER_SIZE - 6).order(ByteOrder.BIG_ENDIAN)
-        if (header.short.toInt() and 0xffff != HEADER_SIZE) return null
+        if (header.short.toInt() and 0xffff != HEADER_SIZE) return emptyList()
         val frameId = header.int.toLong() and 0xffff_ffffL
         val timestampNs = header.long
         val frameSize = header.int
         val offset = header.int
         val payloadLength = header.short.toInt() and 0xffff
         val reserved = header.short.toInt() and 0xffff
-        if (reserved != 0 || payloadLength <= 0 || payloadLength != length - HEADER_SIZE) return null
-        if (frameSize <= 0 || frameSize > maxFrameBytes || offset < 0 || offset >= frameSize) return null
-        if (offset % MAX_PAYLOAD_SIZE != 0) return null
+        if (reserved != 0 || payloadLength <= 0 || payloadLength != length - HEADER_SIZE) return emptyList()
+        if (frameSize <= 0 || frameSize > maxFrameBytes || offset < 0 || offset >= frameSize) return emptyList()
+        if (offset % MAX_PAYLOAD_SIZE != 0) return emptyList()
         val fragmentIndex = offset / MAX_PAYLOAD_SIZE
         val fragmentCount = (frameSize + MAX_PAYLOAD_SIZE - 1) / MAX_PAYLOAD_SIZE
-        if (fragmentIndex !in 0 until fragmentCount) return null
+        if (fragmentIndex !in 0 until fragmentCount) return emptyList()
         val expectedPayload = min(MAX_PAYLOAD_SIZE, frameSize - offset)
-        if (payloadLength != expectedPayload) return null
+        if (payloadLength != expectedPayload) return emptyList()
         val start = flags and FLAG_FRAME_START != 0
         val end = flags and FLAG_FRAME_END != 0
         val keyFrame = flags and FLAG_KEY_FRAME != 0
-        if (start != (offset == 0) || end != (offset + payloadLength == frameSize)) return null
+        if (start != (offset == 0) || end != (offset + payloadLength == frameSize)) return emptyList()
 
-        val latest = latestCompletedFrameId
-        if (latest != null && !isNewer(frameId, latest)) return null
+        val latest = latestDeliveredFrameId
+        if (latest != null && !isNewer(frameId, latest)) return emptyList()
+        if (completed.containsKey(frameId)) return emptyList()
 
         var assembly = pending[frameId]
         if (assembly == null) {
             if (pending.size >= maxInFlightFrames) {
-                val oldest = pending.keys.firstOrNull() ?: return null
-                pending.remove(oldest)
+                val oldest = pending.values.minByOrNull { it.createdNs } ?: return emptyList()
+                pending.remove(oldest.frameId)
+                expiredAssemblyCount++
             }
             assembly = Assembly(
                 frameId = frameId,
@@ -99,54 +117,130 @@ class VideoFragmentReassembler(
                 keyFrame = keyFrame,
                 data = ByteArray(frameSize),
                 received = BooleanArray(fragmentCount),
+                createdNs = nowNs,
                 lastUpdateNs = nowNs,
             )
             pending[frameId] = assembly
         } else if (assembly.timestampNs != timestampNs || assembly.frameSize != frameSize || assembly.keyFrame != keyFrame) {
             pending.remove(frameId)
-            return null
+            expiredAssemblyCount++
+            return emptyList()
         }
 
-        if (assembly.received[fragmentIndex]) return null
+        if (assembly.received[fragmentIndex]) return emptyList()
         System.arraycopy(datagram, HEADER_SIZE, assembly.data, offset, payloadLength)
         assembly.received[fragmentIndex] = true
         assembly.receivedBytes += payloadLength
-        assembly.sawStart = assembly.sawStart || start
-        assembly.sawEnd = assembly.sawEnd || end
         assembly.lastUpdateNs = nowNs
 
-        if (!assembly.sawStart || !assembly.sawEnd || assembly.receivedBytes != assembly.frameSize) return null
-        if (assembly.received.any { !it }) return null
+        if (assembly.receivedBytes != assembly.frameSize || assembly.received.any { !it }) return emptyList()
 
         pending.remove(frameId)
-        val previous = latestCompletedFrameId
-        if (previous != null && !isNewer(frameId, previous)) return null
-        latestCompletedFrameId = frameId
-        // Once a newer frame completes, all older in-flight assemblies are stale.
-        pending.keys.toList().filterNot { isNewer(it, frameId) }.forEach(pending::remove)
-        return CompletedVideoFrame(frameId, timestampNs, keyFrame, assembly.data)
+        completed[frameId] = CompletedEntry(
+            CompletedVideoFrame(frameId, timestampNs, keyFrame, assembly.data), nowNs,
+        )
+        return drainCompleted(nowNs)
+    }
+
+    /** Return complete frames in frame-ID order when any older frame has arrived or timed out. */
+    @Synchronized
+    fun drainCompleted(
+        nowNs: Long = System.nanoTime(),
+        maxFrames: Int = MAX_COMPLETED_FRAMES_PER_DRAIN,
+    ): List<CompletedVideoFrame> {
+        val ready = ArrayList<CompletedVideoFrame>()
+        val limit = maxFrames.coerceAtLeast(1)
+        while (completed.isNotEmpty() && ready.size < limit) {
+            val latest = latestDeliveredFrameId
+            val candidate = if (latest == null) {
+                val oldestCompleteID = oldestFrameId(completed.keys)
+                oldestCompleteID?.let(completed::get)
+            } else {
+                completed.values
+                    .filter { isNewer(it.frame.frameId, latest) }
+                    .minByOrNull { frameDistance(it.frame.frameId, latest) }
+            } ?: break
+
+            val expectedFrameId = latest?.let { (it + 1L) and 0xffff_ffffL }
+            val sequenceGap = expectedFrameId != null && candidate.frame.frameId != expectedFrameId
+            val olderInFlight = pending.values.filter { isNewer(candidate.frame.frameId, it.frameId) }
+            // A whole access unit can be assigned to a slower route only when
+            // it has one datagram. Hold later frames briefly even if no packet
+            // for that older frame has reached this receiver yet.
+            if ((olderInFlight.isNotEmpty() || sequenceGap) &&
+                nowNs - candidate.completedNs < reorderGraceNs) break
+            if (olderInFlight.isNotEmpty()) {
+                olderInFlight.forEach {
+                    pending.remove(it.frameId)
+                    expiredAssemblyCount++
+                }
+            }
+
+            completed.remove(candidate.frame.frameId)
+            val previous = latestDeliveredFrameId
+            if (previous != null && !isNewer(candidate.frame.frameId, previous)) continue
+            latestDeliveredFrameId = candidate.frame.frameId
+            ready += candidate.frame
+
+            // Completed pictures older than the frame just emitted are stale.
+            val delivered = candidate.frame.frameId
+            completed.keys.toList().filterNot { isNewer(it, delivered) }.forEach(completed::remove)
+            pending.values.filter { !isNewer(it.frameId, delivered) }.forEach {
+                pending.remove(it.frameId)
+                expiredAssemblyCount++
+            }
+        }
+        return ready
+    }
+
+    /** Missing fragment reports are rate-limited to two rounds per access unit. */
+    @Synchronized
+    fun takeMissingFragmentRequests(nowNs: Long = System.nanoTime()): List<MissingVideoFragments> {
+        val requests = ArrayList<MissingVideoFragments>()
+        for (assembly in pending.values) {
+            if (assembly.nackCount >= MAX_NACK_ROUNDS) continue
+            val reference = maxOf(assembly.lastUpdateNs, assembly.lastNackNs)
+            if (nowNs - reference < NACK_DELAY_NS) continue
+            val missing = assembly.received.indices.filter { !assembly.received[it] }.take(MAX_NACK_FRAGMENTS)
+            if (missing.isEmpty()) continue
+            assembly.lastNackNs = nowNs
+            assembly.nackCount++
+            requests += MissingVideoFragments(assembly.frameId, missing)
+        }
+        return requests
     }
 
     @Synchronized
     fun expire(nowNs: Long = System.nanoTime()) {
-        val iterator = pending.entries.iterator()
-        while (iterator.hasNext()) {
-            if (nowNs - iterator.next().value.lastUpdateNs > frameTimeoutNs) {
-                iterator.remove()
-                expiredAssemblyCount++
-            }
+        val expired = pending.values.filter { nowNs - it.createdNs > frameTimeoutNs }
+        expired.forEach {
+            pending.remove(it.frameId)
+            expiredAssemblyCount++
         }
     }
 
     @Synchronized
     fun clear() {
         pending.clear()
-        latestCompletedFrameId = null
+        completed.clear()
+        latestDeliveredFrameId = null
         expiredAssemblyCount = 0L
     }
 
+    private fun oldestFrameId(frameIds: Collection<Long>): Long? {
+        var oldest: Long? = null
+        for (candidate in frameIds) {
+            val current = oldest
+            if (current == null || isNewer(current, candidate)) oldest = candidate
+        }
+        return oldest
+    }
+
+    private fun frameDistance(candidate: Long, reference: Long): Long =
+        (candidate - reference) and 0xffff_ffffL
+
     private fun isNewer(candidate: Long, reference: Long): Boolean {
-        val delta = (candidate - reference) and 0xffff_ffffL
+        val delta = frameDistance(candidate, reference)
         return delta != 0L && delta < 0x8000_0000L
     }
 
@@ -158,5 +252,9 @@ class VideoFragmentReassembler(
         const val FLAG_FRAME_END = 2
         const val FLAG_KEY_FRAME = 4
         private const val KNOWN_FLAGS = FLAG_FRAME_START or FLAG_FRAME_END or FLAG_KEY_FRAME
+        private const val NACK_DELAY_NS = 30_000_000L
+        private const val MAX_NACK_ROUNDS = 2
+        private const val MAX_NACK_FRAGMENTS = 256
+        private const val MAX_COMPLETED_FRAMES_PER_DRAIN = 2
     }
 }

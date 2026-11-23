@@ -34,6 +34,7 @@ class VideoStreamReceiver(
     private val transportLabel: String = "UDP",
     private val additionalAllowedAddresses: Set<String> = emptySet(),
     private val onPathProbe: (String) -> Unit = {},
+    private val onFrameNack: (Long, List<Int>) -> Unit = { _, _ -> },
     private val onStatus: (String) -> Unit = {},
     private val onStats: (VideoStreamStats) -> Unit = {},
 ) {
@@ -50,6 +51,8 @@ class VideoStreamReceiver(
     private val receivedWindow = AtomicLong(0)
     private val decodedWindow = AtomicLong(0)
     private val fragmentsWindow = AtomicLong(0)
+    private val networkBytesWindow = AtomicLong(0)
+    private val usbBytesWindow = AtomicLong(0)
     private val lastDatagramNs = AtomicLong(0)
     private val lastCompleteFrameNs = AtomicLong(0)
     private val lastDecodedFrameNs = AtomicLong(0)
@@ -72,7 +75,7 @@ class VideoStreamReceiver(
         try {
             udp.reuseAddress = true
             udp.receiveBufferSize = REQUESTED_RECEIVE_BUFFER_BYTES
-            udp.soTimeout = 100
+            udp.soTimeout = 20
             udp.bind(InetSocketAddress(port))
         } catch (error: Exception) {
             running.set(false)
@@ -119,13 +122,48 @@ class VideoStreamReceiver(
         val datagram = DatagramPacket(buffer, buffer.size)
         var previousFrameId: Long? = null
         var windowStartNs = System.nanoTime()
+        fun processCompletedFrames(frames: List<CompletedVideoFrame>) {
+            for (frame in frames) {
+                previousFrameId?.let { previous ->
+                    val delta = (frame.frameId - previous) and 0xffff_ffffL
+                    if (delta > 1L && delta < 0x8000_0000L) {
+                        needsKeyFrame.set(true)
+                        Log.w(TAG, "H.264 frame sequence gap: previous=$previous current=${frame.frameId} missing=${delta - 1}; waiting for IDR")
+                    }
+                }
+                previousFrameId = frame.frameId
+                lastCompleteFrameNs.set(System.nanoTime())
+                framesReceived.incrementAndGet()
+                receivedWindow.incrementAndGet()
+                if (!pendingFrames.offer(frame)) {
+                    // Dropping a reference AU can invalidate following P-frames.
+                    // Signal the decoder to resume only at the next IDR.
+                    pendingFrames.poll()
+                    pendingFrames.offer(frame)
+                    queueDrops.incrementAndGet()
+                    needsKeyFrame.set(true)
+                }
+                if (frameArrivalReported.compareAndSet(false, true)) {
+                    onStatus("已收到完整 H.264 帧，等待解码输出")
+                }
+            }
+        }
+        fun dispatchMissingFragmentRequests(nowNs: Long) {
+            reassembler.takeMissingFragmentRequests(nowNs).forEach { request ->
+                runCatching { onFrameNack(request.frameId, request.fragmentIndexes) }
+                    .onFailure { Log.w(TAG, "Video fragment NACK could not be queued for frame ${request.frameId}", it) }
+            }
+        }
         while (running.get()) {
             datagram.length = buffer.size
             try {
                 udp.receive(datagram)
             } catch (_: java.net.SocketTimeoutException) {
-                reassembler.expire()
-                windowStartNs = publishStatsIfDue(windowStartNs, System.nanoTime())
+                val now = System.nanoTime()
+                dispatchMissingFragmentRequests(now)
+                reassembler.expire(now)
+                processCompletedFrames(reassembler.drainCompleted(now))
+                windowStartNs = publishStatsIfDue(windowStartNs, now)
                 continue
             } catch (_: SocketException) {
                 if (running.get()) Log.w(TAG, "Video UDP socket closed unexpectedly")
@@ -144,6 +182,11 @@ class VideoStreamReceiver(
                 continue
             }
             lastSourceAddress.set(sourceAddress)
+            if (sourceAddress == "127.0.0.1" || sourceAddress == "::1") {
+                usbBytesWindow.addAndGet(datagram.length.toLong())
+            } else {
+                networkBytesWindow.addAndGet(datagram.length.toLong())
+            }
 
             val now = System.nanoTime()
             val previousDatagramNs = lastDatagramNs.getAndSet(now)
@@ -158,31 +201,8 @@ class VideoStreamReceiver(
             }
             fragmentsReceived.incrementAndGet()
             fragmentsWindow.incrementAndGet()
-            val frame = reassembler.accept(datagram.data, datagram.length, now)
-            if (frame != null) {
-                previousFrameId?.let { previous ->
-                    val delta = (frame.frameId - previous) and 0xffff_ffffL
-                    if (delta > 1L && delta < 0x8000_0000L) {
-                        needsKeyFrame.set(true)
-                        Log.w(TAG, "H.264 frame sequence gap: previous=$previous current=${frame.frameId} missing=${delta - 1}; waiting for IDR")
-                    }
-                }
-                previousFrameId = frame.frameId
-                lastCompleteFrameNs.set(now)
-                framesReceived.incrementAndGet()
-                receivedWindow.incrementAndGet()
-                if (!pendingFrames.offer(frame)) {
-                    // Dropping a reference AU can invalidate following P-frames.
-                    // Signal the decoder to resume only at the next IDR.
-                    pendingFrames.poll()
-                    pendingFrames.offer(frame)
-                    queueDrops.incrementAndGet()
-                    needsKeyFrame.set(true)
-                }
-                if (frameArrivalReported.compareAndSet(false, true)) {
-                    onStatus("已收到完整 H.264 帧，等待解码输出")
-                }
-            }
+            processCompletedFrames(reassembler.accept(datagram.data, datagram.length, now))
+            dispatchMissingFragmentRequests(now)
             windowStartNs = publishStatsIfDue(windowStartNs, now)
         }
     }
@@ -198,6 +218,8 @@ class VideoStreamReceiver(
         val receiveCount = receivedWindow.getAndSet(0)
         val decodeCount = decodedWindowCounter.getAndSet(0)
         val fragmentCount = fragmentsWindow.getAndSet(0)
+        val networkBytes = networkBytesWindow.getAndSet(0)
+        val usbBytes = usbBytesWindow.getAndSet(0)
         val expiredNow = reassembler.takeExpiredAssemblyCount()
         if (expiredNow > 0L) expiredAssemblies.addAndGet(expiredNow)
         val lastDecoded = lastDecodedFrameNs.get()
@@ -220,6 +242,8 @@ class VideoStreamReceiver(
                 receiveFps = receiveCount / seconds,
                 decodeFps = decodeCount / seconds,
                 fragmentsPerSecond = (fragmentCount / seconds).toInt(),
+                networkReceiveBytesPerSecond = (networkBytes / seconds).toLong(),
+                usbReceiveBytesPerSecond = (usbBytes / seconds).toLong(),
                 decoderQueueDepth = pendingFrames.size,
                 reassemblyInFlight = reassembler.inFlightCount(),
                 expiredAssemblies = expiredAssemblies.get(),

@@ -28,13 +28,17 @@ const (
 )
 
 type VideoTransportSnapshot struct {
-	Mode             VideoTransportMode       `json:"mode"`
-	Preferred        VideoTransportPreference `json:"preferred"`
-	Active           string                   `json:"active"`
-	USBAvailable     bool                     `json:"usbAvailable"`
-	NetworkAvailable bool                     `json:"networkAvailable"`
-	LastSwitchAt     string                   `json:"lastSwitchAt,omitempty"`
-	LastSwitchReason string                   `json:"lastSwitchReason,omitempty"`
+	Mode                    VideoTransportMode       `json:"mode"`
+	Preferred               VideoTransportPreference `json:"preferred"`
+	Active                  string                   `json:"active"`
+	USBAvailable            bool                     `json:"usbAvailable"`
+	NetworkAvailable        bool                     `json:"networkAvailable"`
+	NetworkRXBytesPerSecond uint64                   `json:"networkRxBytesPerSecond"`
+	USBRXBytesPerSecond     uint64                   `json:"usbRxBytesPerSecond"`
+	NetworkSharePercent     int                      `json:"networkSharePercent"`
+	USBSharePercent         int                      `json:"usbSharePercent"`
+	LastSwitchAt            string                   `json:"lastSwitchAt,omitempty"`
+	LastSwitchReason        string                   `json:"lastSwitchReason,omitempty"`
 }
 
 const videoPathProbePayload = "PVRP\x01"
@@ -87,12 +91,15 @@ func saveVideoTransportConfigTo(path string, mode VideoTransportMode, preferred 
 }
 
 type transportHealth struct {
-	ProbeAt          time.Time
-	FeedbackAt       time.Time
-	LastPacketAgeMS  int64
-	LastDecodedAgeMS int64
-	UnhealthyUntil   time.Time
-	LastError        string
+	ProbeAt                         time.Time
+	FeedbackAt                      time.Time
+	LastPacketAgeMS                 int64
+	LastDecodedAgeMS                int64
+	UnhealthyUntil                  time.Time
+	LastError                       string
+	ReceiveBytesPerSecond           uint64
+	AssignedSharePermille           int
+	EstimatedCapacityBytesPerSecond float64
 }
 
 type transportCandidateGroup struct {
@@ -177,6 +184,17 @@ func (s *HostService) videoTransportSnapshotLocked() VideoTransportSnapshot {
 		Mode: mode, Preferred: preferred, Active: s.activeVideoTransport,
 		USBAvailable: usbAvailable, NetworkAvailable: networkAvailable,
 		LastSwitchReason: s.lastTransportSwitchReason,
+	}
+	if group := s.transportCandidatesLocked()[s.activeVideoDeviceID]; group != nil {
+		network := s.transportHealth[s.activeVideoDeviceID+"|network"]
+		usb := s.transportHealth[s.activeVideoDeviceID+"|usb"]
+		result.NetworkRXBytesPerSecond = network.ReceiveBytesPerSecond
+		result.USBRXBytesPerSecond = usb.ReceiveBytesPerSecond
+		if s.activeVideoTransport == "parallel" {
+			usbShare := s.videoStripeUSBSharePermilleLocked(s.activeVideoDeviceID)
+			result.USBSharePercent = usbShare / 10
+			result.NetworkSharePercent = 100 - result.USBSharePercent
+		}
 	}
 	if !s.lastTransportSwitchAt.IsZero() {
 		result.LastSwitchAt = s.lastTransportSwitchAt.Format(time.RFC3339Nano)
@@ -264,7 +282,7 @@ func (s *HostService) transportCandidateHealthyLocked(deviceID, transport string
 
 func (s *HostService) expireSilentActiveTransportLocked(now time.Time) {
 	if s.activeVideoTransport == "parallel" {
-		// Mirrored mode validates each path independently through the one-second
+		// Striped mode validates each path independently through the one-second
 		// PVRP probes. The receiver's latest-source field can only name one of
 		// the two interleaved copies, so it is not a suitable aggregate watchdog.
 		return
@@ -426,6 +444,10 @@ func (s *HostService) markVideoTransportFailure(target videoTarget, err error) {
 }
 
 func (s *HostService) updateVideoTransportFeedback(deviceID, transport string, packetAgeMS, decodedAgeMS int64, probe bool) {
+	s.updateVideoTransportFeedbackWithRate(deviceID, transport, packetAgeMS, decodedAgeMS, probe, 0)
+}
+
+func (s *HostService) updateVideoTransportFeedbackWithRate(deviceID, transport string, packetAgeMS, decodedAgeMS int64, probe bool, receiveBytesPerSecond uint64) {
 	transport = strings.ToLower(strings.TrimSpace(transport))
 	if transport != "usb" && transport != "network" {
 		return
@@ -453,8 +475,68 @@ func (s *HostService) updateVideoTransportFeedback(deviceID, transport string, p
 				health.UnhealthyUntil = time.Time{}
 			}
 		}
+		health.ReceiveBytesPerSecond = receiveBytesPerSecond
+		if health.AssignedSharePermille > 0 {
+			capacitySample := float64(receiveBytesPerSecond) * 1000 / float64(health.AssignedSharePermille)
+			if health.EstimatedCapacityBytesPerSecond <= 0 {
+				health.EstimatedCapacityBytesPerSecond = capacitySample
+			} else {
+				health.EstimatedCapacityBytesPerSecond = health.EstimatedCapacityBytesPerSecond*0.65 + capacitySample*0.35
+			}
+		}
 		s.transportHealth[key] = health
 	}
+	s.mu.Unlock()
+}
+
+func (s *HostService) videoStripeUSBSharePermilleLocked(deviceID string) int {
+	usb := s.transportHealth[deviceID+"|usb"].EstimatedCapacityBytesPerSecond
+	network := s.transportHealth[deviceID+"|network"].EstimatedCapacityBytesPerSecond
+	if usb <= 0 || network <= 0 {
+		return 500
+	}
+	share := int(usb / (usb + network) * 1000)
+	// Keep a small minimum share for both healthy paths, while allowing a
+	// much slower route to stay below 25% instead of filling its USB queue.
+	if share < 50 {
+		share = 50
+	}
+	if share > 950 {
+		share = 950
+	}
+	return share
+}
+
+func (s *HostService) videoStripeUSBSharePermille(deviceID string) int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.videoStripeUSBSharePermilleLocked(deviceID)
+}
+
+func (s *HostService) setVideoTransportAssignedShares(deviceID string, networkBytes, usbBytes int) {
+	total := networkBytes + usbBytes
+	if total <= 0 {
+		return
+	}
+	s.mu.Lock()
+	networkKey := deviceID + "|network"
+	usbKey := deviceID + "|usb"
+	network := s.transportHealth[networkKey]
+	usb := s.transportHealth[usbKey]
+	networkShare := networkBytes * 1000 / total
+	usbShare := usbBytes * 1000 / total
+	if network.AssignedSharePermille == 0 {
+		network.AssignedSharePermille = networkShare
+	} else {
+		network.AssignedSharePermille = (network.AssignedSharePermille*85 + networkShare*15) / 100
+	}
+	if usb.AssignedSharePermille == 0 {
+		usb.AssignedSharePermille = usbShare
+	} else {
+		usb.AssignedSharePermille = (usb.AssignedSharePermille*85 + usbShare*15) / 100
+	}
+	s.transportHealth[networkKey] = network
+	s.transportHealth[usbKey] = usb
 	s.mu.Unlock()
 }
 
@@ -502,11 +584,11 @@ func (s *HostService) probeStandbyVideoPaths() {
 		if target.USB != nil {
 			// Keep even standby-path probes off the video sender goroutine. A
 			// stalled WinUSB transfer must never pause the active UDP route.
-			work := usbMirrorWork{
+			work := usbVideoWork{
 				link: target.USB, deviceID: target.DeviceID,
 				fragments: [][]byte{[]byte(videoPathProbePayload)}, isProbe: true,
 			}
-			if err := s.enqueueUSBMirrorWork(work); err != nil {
+			if err := s.enqueueUSBVideoWork(work); err != nil {
 				s.markVideoTransportFailure(target, err)
 			}
 			continue

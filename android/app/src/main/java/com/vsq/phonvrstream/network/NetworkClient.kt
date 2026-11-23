@@ -174,6 +174,7 @@ class NetworkClient(
                         // Network UDP and AOA Bulk loopback packets share this receiver.
                         additionalAllowedAddresses = setOf("127.0.0.1"),
                         onPathProbe = { transport -> sendVideoPathProbeFeedback(config.generation, transport) },
+                        onFrameNack = { frameId, missing -> sendVideoFrameNack(config.generation, frameId, missing) },
                         onStatus = { status -> updateVideoStatus(config.generation, status) },
                         onStats = { stats -> updateVideoStats(config.generation, stats) },
                     )
@@ -229,15 +230,10 @@ class NetworkClient(
             stats.copy(displayFps = displayFps)
         }
         latestVideoStats = combined
-        val source = stats.lastSourceAddress
-        val transport = when (source) {
-            "127.0.0.1", "::1" -> "usb"
-            null, "" -> ""
-            else -> "network"
-        }
-        if (transport.isNotEmpty()) {
-            sendVideoTransportFeedback(transport, stats.lastPacketAgeMs, stats.lastDecodedAgeMs, probe = false)
-        }
+        // Both routes feed the same socket. Report per-source receive goodput so
+        // Host can estimate each path's capacity and weight future fragments.
+        sendVideoTransportFeedback("network", -1L, -1L, probe = false, receiveBytesPerSecond = stats.networkReceiveBytesPerSecond)
+        sendVideoTransportFeedback("usb", -1L, -1L, probe = false, receiveBytesPerSecond = stats.usbReceiveBytesPerSecond)
         mainHandler.post { videoStatsListener(combined) }
     }
 
@@ -246,7 +242,13 @@ class NetworkClient(
         sendVideoTransportFeedback(transport, -1L, latestVideoStats.lastDecodedAgeMs, probe = true)
     }
 
-    private fun sendVideoTransportFeedback(transport: String, packetAgeMs: Long, decodedAgeMs: Long, probe: Boolean) {
+    private fun sendVideoTransportFeedback(
+        transport: String,
+        packetAgeMs: Long,
+        decodedAgeMs: Long,
+        probe: Boolean,
+        receiveBytesPerSecond: Long = 0L,
+    ) {
         if (transport != "usb" && transport != "network") return
         val feedback = JSONObject()
             .put("type", "video_feedback")
@@ -254,6 +256,7 @@ class NetworkClient(
             .put("lastPacketAgeMs", packetAgeMs)
             .put("lastDecodedAgeMs", decodedAgeMs)
             .put("videoProbe", probe)
+            .put("videoRxBytesPerSecond", receiveBytesPerSecond.coerceAtLeast(0L))
         val writer = activeControlWriter
         val generation = activeControlGeneration
         if (writer != null && isSessionActive(generation)) {
@@ -270,6 +273,27 @@ class NetworkClient(
                     }
                 }
             }
+        }
+    }
+
+    private fun sendVideoFrameNack(generation: Long, frameId: Long, missingFragments: List<Int>) {
+        if (!isVideoSessionActive(generation) || missingFragments.isEmpty() || missingFragments.size > 256) return
+        val indexes = JSONArray()
+        missingFragments.forEach { index -> if (index >= 0) indexes.put(index) }
+        if (indexes.length() == 0) return
+        val message = JSONObject()
+            .put("type", "video_nack")
+            .put("frameId", frameId and 0xffff_ffffL)
+            .put("missingFragments", indexes)
+        val writer = activeControlWriter
+        val activeGeneration = activeControlGeneration
+        if (writer != null && isSessionActive(activeGeneration)) {
+            queueControlMessage(writer, activeGeneration, message, "视频缺片反馈失败")
+        }
+        val auxWriter = auxiliaryUsbWriter
+        val auxGeneration = auxiliaryUsbWriterGeneration
+        if (auxWriter != null && isUsbVideoBackupActive(auxGeneration)) {
+            queueControlMessage(auxWriter, auxGeneration, message, "USB 视频缺片反馈失败")
         }
     }
 
@@ -1395,7 +1419,7 @@ class NetworkClient(
         const val DEFAULT_VIDEO_FPS = 60
         const val DISCOVERY_PORT = 48100
         private const val PROTOCOL_VERSION = 1
-        private const val CLIENT_VERSION = "PhoneVRStream-0.5.15"
+        private const val CLIENT_VERSION = "PhoneVRStream-0.5.16"
         private const val DISCOVERY_REQUEST = "PHONEVR_DISCOVER_V1"
         private const val DISCOVERY_RESPONSE_PREFIX = "PHONEVR_HOST_V1 "
         private const val DISCOVERY_WINDOW_MS = 1800L

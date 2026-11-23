@@ -1,38 +1,32 @@
-# PhoneVR 0.5.15 build status
+# PhoneVR 0.5.16 build status
 
 ## This revision
 
-- Android AOA auxiliary-session startup is idempotent. Repeated startup or USB accessory attach callbacks no longer increment the active connection generation or interrupt a pending permission prompt. The worker Future is stored and cancelled on disconnect, interrupting permission waits and accessory-enumeration sleeps so stale attempts do not block a subsequent connect.
-- Android resolves the currently enumerated `UsbAccessory` after permission is granted, checks permission on the current instance, and retries descriptor opening across brief re-enumeration windows. Permission results, accessory identity and open failures are logged.
-- Windows Host persists the selected video transport mode and preferred route in `%APPDATA%/PhoneVRStream/video-transport.json` on Windows. First-run default remains `network` / `network`.
-- Added `parallel` transport mode. The Host mirrors every PVRV frame fragment to the network UDP path and AOA Bulk path when each path has a recent PVRP acknowledgement. Each route is independently marked unhealthy on write failure or stale probe state; a recovered path rejoins after another probe acknowledgement.
-- The Android receiver accepts the mirrored datagrams from both source addresses and the existing frame/fragment deduplication ensures only one complete access unit enters the decoder. There is still one decoder and one render queue.
-- USB mirror writes run on a dedicated worker behind a bounded four-access-unit queue. UDP delivery does not wait for WinUSB Bulk OUT; when the USB queue is full, the redundant USB copy is skipped and the successful network copy continues. All USB video mirror writes and AOA readiness probes use this same independent worker, including standby probes in automatic and network-only modes.
-- Android displays the current connection transport state in the connection page and quick menu. Host mode dialog and dashboard report both routes and their current readiness.
-- Host fragment counters now count all fragments sent, regardless of whether they were carried by UDP, AOA, or both.
+- Implement true cross-link fragment aggregation. Each encoded H.264 access unit is split at the existing PVRV fragment boundaries and distinct fragments are scheduled across UDP and AOA Bulk. The Android client accepts both sources into one frame-ID/offset reassembler and still uses one MediaCodec decoder. A single-datagram access unit stays on the network route because it cannot be split safely.
+- Add per-device weighted scheduling credit. Host estimates each route's usable capacity from Android-reported receive goodput and the measured fraction of bytes assigned to that route. The adaptive split is bounded to keep both routes participating when both are healthy; a multi-fragment access unit retains a network fragment so a delayed AOA batch cannot hide the entire access unit.
+- Add bounded out-of-order frame handling on Android. The reassembler keeps incomplete frames while later frames arrive, holds sequence gaps briefly, and emits completed access units in frame-ID order. This covers the case where an entire previous single-datagram frame is delayed on another route.
+- Add fragment-level loss repair. Android sends `video_nack` control messages containing a frame ID and missing fragment indexes. Host retains a bounded cache of up to 16 encoded access units / 16 MiB for 700 ms and retransmits missing fragments preferentially over the alternate route. The receiver requests missing fragments in up to two rounds.
+- Scope retained frame caches and striping credit by persistent Android device ID to prevent two connected devices with the same frame sequence from interfering.
+- Preserve the 0.5.15 AOA connection-task idempotence, cancellation and accessory-open retry work. Fix the `IOException` import reported by the supplied Android CI log. Android metadata is `versionName 0.5.16`, `versionCode 51`; repository, Host, AOA accessory descriptor and SteamVR driver metadata are synchronized to `0.5.16`.
 
 ## Validation status
 
-- `cd windows-host && go test ./...`: passed, including parallel target selection, per-route probe gating, persistent settings reload, an integration-style test comparing UDP fragments with USB multiplex payloads, and a queue-saturation test proving a successful UDP copy continues when the USB mirror queue is full.
-- `cd windows-host && go test -race ./...`: passed, including the asynchronous USB mirror worker integration test.
+- `cd windows-host && go test ./...`: passed, including distinct fragment striping, merged fragment coverage, queue congestion fallback, fragment NACK retransmission, per-device scheduling state and per-device frame retention.
+- `cd windows-host && go test -race ./...`: passed.
 - `cd windows-host && go vet ./...`: passed.
 - `cd windows-host && GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build ./...`: passed.
-- `cd windows-host && GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go test -c ./cmd/phonevr-host -o /tmp/phonevr-host-windows.test.exe`: passed.
-- `python3 -m unittest discover -s tools/release -p 'test_*.py'`: passed, 59 tests.
-- Android Gradle wrapper bootstrap generated the project-owned wrapper JAR successfully, but Gradle 9.6.1 download failed because this runtime cannot resolve `services.gradle.org`. No Android SDK is configured here. Android Kotlin compilation, unit tests and APK packaging are therefore not verified in this environment.
-- Windows GUI runtime and physical USB AOA reconnect / parallel streaming have not been verified on actual hardware.
+- `kotlinc` compilation of `VideoFragmentReassembler.kt` plus the repository `VideoFragmentReassemblerTest.kt`: passed, 5/5 tests executed.
+- The supplied GitHub Actions log identified the missing `java.io.IOException` import in `UsbAccessorySession.kt`; the import is now present. Full Gradle compilation, Android unit tests and APK packaging were not run in this environment because Android SDK / Gradle distribution components are unavailable here.
+- Physical Android/Windows AOA + Wi-Fi throughput, packet loss, late NACK repair and headset latency still require target-device validation.
 
 ## Target-device validation
 
-1. Install the matching PhoneVR 0.5.15 Windows Host and Android build. Start with Host **Video Transport → Network + USB AOA parallel**. Confirm both links show ready before both are used for video.
-2. Check Android status in the connection page and quick menu. With LAN and AOA connected, it should show both network and USB AOA online.
-3. Confirm the Host reports **NETWORK + USB AOA mirrored**. Confirm Android displays the expected stream rate and no duplicate decoded frames. Host sends the same PVRV fragment bytes over both routes; Android accepts the first copy and ignores duplicates.
-4. Disconnect AOA while leaving LAN online. Confirm UDP continues carrying the stream and the Host marks USB as recovering. Reconnect AOA and confirm it rejoins only after the Android loopback receiver acknowledges a fresh PVRP probe.
-5. Repeat with LAN video interrupted while AOA remains connected. Confirm the AOA path continues carrying the video. Restore LAN and confirm it rejoins after its next probe acknowledgement.
-6. Restart Host and verify the previously selected transport mode and preference are restored. Select **Automatic failover**, **USB AOA only** and **Network only** separately to confirm their existing behavior remains unchanged.
-7. Repeat the startup / disconnect / reconnect sequence several times while collecting Android Logcat filtered to `PhoneVRAOA` and Host transport logs. Check that duplicate AOA start events no longer launch parallel permission requests, and that accessory-open failures report the retry result.
-
-**Bandwidth note:** parallel mode is a redundant mirror. It improves the chance that each frame fragment reaches Android over at least one path, but it does not add USB and Wi-Fi throughput together. Aggregated striping would require a different fragment scheduling and loss-repair design.
+1. Install matching PhoneVR 0.5.16 Android and Windows Host builds. Connect LAN and AOA, select **Network + USB AOA aggregation**, and confirm both routes report fresh probe acknowledgements.
+2. Run a high-motion SteamVR scene. Confirm Android's Network RX and USB AOA RX counters both increase, Host shows a non-zero share for both links, and the sum of received bytes rises above either single-link result where both links have spare capacity.
+3. Disconnect AOA while streaming. Confirm fragments continue over UDP, USB queue errors do not stall network delivery, and USB rejoins only after a fresh PVRP acknowledgement. Repeat by interrupting the network route while AOA remains available.
+4. Introduce loss or temporary delay on one route. Confirm Android sends `video_nack`, Host reports retransmitted fragments, the missing fragment arrives through the alternate path, and the decoder avoids unnecessary IDR recovery when repair completes in time.
+5. Compare Network only, USB AOA only and aggregation at the same encoder resolution, frame rate and bitrate. Record each path's receive goodput, completed FPS, decode FPS, reassembly expiry count, queue drops and motion-to-photon latency.
+6. Repeat reconnect and mode changes, then restart Host and confirm the selected transport mode persists.
 
 ---
 

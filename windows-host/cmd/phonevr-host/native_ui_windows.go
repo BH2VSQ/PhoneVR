@@ -1327,7 +1327,7 @@ func (app *nativeUI) createDialogControls(d *nativeDialog) {
 			app.text("自动切换（双链路备用）", "Automatic failover (dual-path standby)"),
 			app.text("仅 USB AOA", "USB AOA only"),
 			app.text("仅网络", "Network only"),
-			app.text("网络 + USB AOA 并行", "Network + USB AOA parallel"),
+			app.text("网络 + USB AOA 聚合", "Network + USB AOA aggregation"),
 		} {
 			app.addComboItem(d.controls[idTransportMode], item)
 		}
@@ -2432,7 +2432,7 @@ func (app *nativeUI) transportDialogStatusText(status VideoTransportSnapshot) st
 	case VideoTransportNetwork:
 		modeText = app.text("仅网络", "Network only")
 	case VideoTransportParallel:
-		modeText = app.text("网络 + USB AOA 并行", "Network + USB AOA parallel")
+		modeText = app.text("网络 + USB AOA 聚合", "Network + USB AOA aggregation")
 	}
 	activeText := app.text("未选择", "Not selected")
 	switch status.Active {
@@ -2442,11 +2442,11 @@ func (app *nativeUI) transportDialogStatusText(status VideoTransportSnapshot) st
 		activeText = app.text("网络串流", "Network streaming")
 	case "parallel":
 		if status.USBAvailable && status.NetworkAvailable {
-			activeText = app.text("网络 + USB AOA 双路发送", "Network + USB AOA mirrored")
+			activeText = app.text("网络 + USB AOA 分片聚合", "Network + USB AOA fragment aggregation")
 		} else if status.USBAvailable {
-			activeText = app.text("USB AOA（并行模式，网络路径待恢复）", "USB AOA (parallel mode, network recovering)")
+			activeText = app.text("USB AOA（聚合模式，网络路径待恢复）", "USB AOA (aggregation mode, network recovering)")
 		} else if status.NetworkAvailable {
-			activeText = app.text("网络（并行模式，USB 路径待恢复）", "Network (parallel mode, USB recovering)")
+			activeText = app.text("网络（聚合模式，USB 路径待恢复）", "Network (aggregation mode, USB recovering)")
 		} else {
 			activeText = app.text("等待双路探测", "Waiting for both path probes")
 		}
@@ -2464,6 +2464,12 @@ func (app *nativeUI) transportDialogStatusText(status VideoTransportSnapshot) st
 		app.text("当前视频链路：", "Active video path: ") + activeText,
 		"USB AOA: " + usbState + "    " + app.text("网络：", "Network: ") + networkState,
 	}
+	if status.Mode == VideoTransportParallel {
+		lines = append(lines,
+			fmt.Sprintf("Network RX: %s/s  |  %d%%", formatVideoByteRate(status.NetworkRXBytesPerSecond), status.NetworkSharePercent),
+			fmt.Sprintf("USB AOA RX: %s/s  |  %d%%", formatVideoByteRate(status.USBRXBytesPerSecond), status.USBSharePercent),
+		)
+	}
 	if status.LastSwitchReason != "" {
 		lines = append(lines, app.text("最近切换原因：", "Last switch reason: ")+status.LastSwitchReason)
 	}
@@ -2471,6 +2477,18 @@ func (app *nativeUI) transportDialogStatusText(status VideoTransportSnapshot) st
 		lines = append(lines, app.text("最近切换时间：", "Last switch: ")+status.LastSwitchAt)
 	}
 	return strings.Join(lines, "\r\n")
+}
+
+func formatVideoByteRate(bytesPerSecond uint64) string {
+	const (
+		kib = 1024.0
+		mib = 1024.0 * 1024.0
+	)
+	value := float64(bytesPerSecond)
+	if value >= mib {
+		return fmt.Sprintf("%.2f MiB", value/mib)
+	}
+	return fmt.Sprintf("%.1f KiB", value/kib)
 }
 
 func (app *nativeUI) toggleLanguage() {

@@ -1,4 +1,4 @@
-# PhoneVR Host 0.5.15 bundled SteamVR driver and live SBS video
+# PhoneVR Host 0.5.16 bundled SteamVR driver and live SBS video
 
 Executable version is injected from the repository root `VERSION` file during builds.
 
@@ -118,9 +118,9 @@ Open **SteamVR Driver** from the Host main menu to refresh status, install/repai
 
 ## Video Transport modes
 
-The Video Transport dialog offers **Automatic failover**, **USB AOA only**, **Network only** and **Network + USB AOA parallel**. The current mode and automatic-mode preference are saved under the user's PhoneVRStream configuration directory and restored when Host starts again. The initial default remains Network only.
+The Video Transport dialog offers **Automatic failover**, **USB AOA only**, **Network only** and **Network + USB AOA aggregation**. The current mode and automatic-mode preference are saved under the user's PhoneVRStream configuration directory and restored when Host starts again. The initial default remains Network only.
 
-Automatic mode sends a frame over one verified route and fails over to the other route when receiver feedback or path writes fail. Parallel mode mirrors the same PVRV fragments over each route after that route independently acknowledges a PVRP readiness probe. Android combines both copies in one fragment reassembler and deduplicates by frame ID and fragment index before decoding. If one route fails, the other continues; the failed route rejoins after its receive path responds to a later probe. This is redundant delivery and does not aggregate Wi-Fi and USB bandwidth.
+Automatic mode sends a frame over one verified route and fails over to the other route when receiver feedback or path writes fail. Aggregation mode stripes distinct PVRV fragments across the network UDP and AOA Bulk routes after each path independently acknowledges a PVRP readiness probe. Android combines fragments by frame ID and byte offset in one bounded out-of-order reassembler before the single MediaCodec decoder. Per-path receive goodput drives the weighted scheduler. Missing fragment indexes are requested over the control channel and retransmitted from a short-lived Host frame cache, preferably over the alternate route. If one route fails or its bounded queue fills, its assigned fragments fall back to the surviving route; the recovered path rejoins after a later probe acknowledgement.
 
 ## Live stereo video stream
 

@@ -316,7 +316,7 @@ func (app *nativeUI) videoTransportSummaryText(status VideoTransportSnapshot) st
 	case VideoTransportNetwork:
 		mode = "NETWORK ONLY"
 	case VideoTransportParallel:
-		mode = "NETWORK + USB MIRROR"
+		mode = "NETWORK + USB AGGREGATION"
 	}
 	active := app.text("等待链路", "WAITING")
 	backup := ""
@@ -332,7 +332,7 @@ func (app *nativeUI) videoTransportSummaryText(status VideoTransportSnapshot) st
 			backup = " + USB READY"
 		}
 	case "parallel":
-		active = "NETWORK + USB"
+			active = "NETWORK + USB AGGREGATED"
 		if !status.USBAvailable {
 			active = "NETWORK ONLY (USB RECOVERING)"
 		} else if !status.NetworkAvailable {

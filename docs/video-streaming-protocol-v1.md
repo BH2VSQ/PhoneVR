@@ -105,3 +105,28 @@ performance.
 ## USB/RNDIS network path
 
 The H.264 packet format and port assignment do not change for wired mode. Android discovers the Host using IPv4 directed broadcasts bound to each active interface address, including the USB tether interface. The Host replies to the source endpoint; Android then connects its control TCP socket and sends pose UDP to the Host address returned by discovery. The Host sends video UDP to the peer IP from the established control TCP connection. Thus USB tethering carries the same `PVRV` H.264 datagrams as Wi-Fi; there is no ADB or USB bulk-transfer protocol.
+
+
+## Cross-link fragment aggregation and repair (PhoneVR 0.5.16)
+
+The aggregation mode keeps the PVRV v1 datagram header and payload format unchanged. Host divides each encoded access unit at the existing 1200-byte PVRV payload boundaries and schedules different fragment indexes over the paired network UDP and AOA Bulk paths. Android forwards AOA fragments to the same loopback UDP receiver used by the network path. Source address distinguishes the path for statistics; frame ID, byte offset and payload size identify the fragment for reassembly. Duplicate fragments are ignored.
+
+The Host maintains a weighted per-device byte scheduler. Android periodically reports the receive goodput observed independently for the network and USB loopback sources. Host divides each measured receive rate by the recent assigned byte share to estimate path capacity, smooths the estimates and adjusts future fragment allocation. For two healthy routes the target share is bounded between 5% and 95% for each path. A one-datagram access unit remains on network because splitting it is impossible; multi-datagram access units keep at least one network fragment to expose frame progress even when AOA is slower.
+
+Android's reassembler supports fragments arriving out of order across routes. It holds up to eight incomplete access units, validates frame metadata and byte offsets, and queues complete access units until older frame IDs complete or the reorder grace period expires. This prevents a later frame from being delivered immediately when an entire earlier frame is temporarily delayed on the other route. The reorder grace is 120 ms; incomplete access units expire after 350 ms.
+
+When an access unit remains incomplete for 30 ms, Android sends a control message over the active control connection and, when available, the auxiliary AOA control channel:
+
+```json
+{
+  "type": "video_nack",
+  "frameId": 1234,
+  "missingFragments": [1, 3, 4]
+}
+```
+
+`frameId` is the wrapping 32-bit PVRV frame identifier. `missingFragments` contains zero-based indexes, calculated from `fragmentOffset / 1200`. Android sends at most two NACK rounds per access unit. Host retains up to 16 access units and 16 MiB of original PVRV datagrams for 700 ms. Each NACKed fragment is preferentially retransmitted over the route opposite its original assignment. If that route is unavailable, Host uses the surviving route. Retransmission uses the original PVRV datagram bytes, so the receiver's existing duplicate and boundary checks remain authoritative.
+
+The host USB worker remains asynchronous and bounded to four queued access units. If the USB queue is full before an access unit is accepted, those USB-assigned fragments fall back to UDP. If an asynchronous AOA write fails, the worker attempts the same fragment batch over UDP. Network sends do not wait for Bulk OUT completion.
+
+This extension adds application-level fragment striping and repair; it does not bond the physical interfaces at the IP layer or change the PVRU AOA multiplex framing. Actual aggregate throughput depends on both paths' measured capacity, queueing delay, device USB controller, Wi-Fi congestion and retransmission rate.

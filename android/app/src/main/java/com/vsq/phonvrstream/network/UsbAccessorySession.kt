@@ -11,6 +11,7 @@ import android.os.Build
 import android.os.ParcelFileDescriptor
 import android.util.Log
 import java.io.Closeable
+import java.io.IOException
 import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.io.InputStream

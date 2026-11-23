@@ -477,6 +477,7 @@ class MainActivity : Activity(), SensorEventListener {
             append("视频：${stats.state}")
             append("\n接收 ${stats.receiveFps.toInt()} / 解码 ${stats.decodeFps.toInt()} / 显示 ${stats.displayFps.toInt()} FPS")
             append("\n分片 ${stats.fragmentsPerSecond}/s · 组帧 ${stats.reassemblyInFlight} · 解码队列 ${stats.decoderQueueDepth}")
+            append("\n网络 ${(stats.networkReceiveBytesPerSecond / 1024.0).toInt()} KiB/s · USB AOA ${(stats.usbReceiveBytesPerSecond / 1024.0).toInt()} KiB/s")
             append("\n丢帧 ${stats.queueDrops + stats.decoderDrops} · 超时组帧 ${stats.expiredAssemblies} · 恢复 ${stats.decoderRecoveries}")
         }
     }

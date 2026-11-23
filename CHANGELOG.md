@@ -1,3 +1,14 @@
+## 0.5.16 - Cross-link video fragment aggregation and repair
+
+- Replace full-fragment duplication in parallel video mode with weighted fragment striping across the independently probe-verified network UDP and USB AOA Bulk routes. Each distinct PVRV fragment is sent on one route under normal operation; one-datagram access units remain on network.
+- Estimate per-route capacity from Android-reported receive goodput and measured assigned-byte shares. Keep scheduler credit scoped to each persistent device ID. Preserve a network fragment in multi-fragment access units so the receiver can recognize frame progress while AOA is delayed.
+- Extend Android reassembly with a bounded frame-order window for differing path latency, plus a 120 ms grace for sequence gaps where an entire prior frame has not arrived yet.
+- Add control-channel `video_nack` reports and Host access-unit retention. Missing PVRV fragments are retransmitted over the alternate route from a bounded 16-frame / 16 MiB cache with a 700 ms lifetime.
+- Scope retained frame cache entries by both device ID and frame ID, avoiding collisions when multiple Android clients use overlapping frame counters.
+- Fix the Android CI compile error in `UsbAccessorySession.kt` by importing `java.io.IOException`.
+- Update Android to `versionName 0.5.16`, `versionCode 51`, and synchronize repository, Host, AOA descriptor and SteamVR driver version metadata.
+- Go tests, race tests, vet and Windows amd64 cross-build pass. Standalone Kotlin reassembler compilation passes. Full Android Gradle build and target-device performance tests remain pending.
+
 ## 0.5.15 - Persistent transport modes, AOA reconnect stability and mirrored video
 
 - Make the Android AOA video-backup connection start idempotent. Duplicate startup and USB-accessory attach notifications no longer invalidate an in-progress permission request or queue another overlapping connection worker. Store the worker Future and cancel it on disconnect so an obsolete permission wait cannot block the next AOA reconnect.

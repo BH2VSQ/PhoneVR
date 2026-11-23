@@ -1,13 +1,20 @@
-# PhoneVR 0.5.21 build status
+# PhoneVR 0.5.22 build status
 
-## This revision (0.5.21)
+## This revision (0.5.22)
+
+- Fix `test_encoder_backlog_is_bounded_for_low_latency`: use a whitespace-tolerant regular expression for `h264PendingFrameLimit = 4`, and assert the timestamp channel uses that constant. The original test failed because it required exactly three spaces although the source declaration was valid Go and used gofmt alignment.
+- Keep the runtime encoder backlog at four frames. No runtime streaming parameters were changed in this CI hotfix.
+- Document the current 72 Hz virtual display / 60 FPS capture cadence, 8 Mbps H.264 target, zero default shader blur, and the required Host/driver/Android A/B metrics for SteamVR Home enabled versus disabled.
+- Android metadata is `versionName 0.5.22`, `versionCode 57`; repository, Host, SteamVR driver and AOA accessory metadata are synchronized to `0.5.22`.
+
+## Previous revision (0.5.21)
 
 - Separate active/standby video-route reachability from media freshness. The Host probes every selected UDP/AOA path and keeps a reachable route available while the H.264 encoder is temporarily idle.
 - Fix Android `video_feedback`: report actual packet/decode age for the latest network or USB media source instead of always sending `-1`.
 - Increase H.264 startup no-output timeout to 8 seconds and steady-state stall timeout to 5 seconds. Only recycle a backed-up encoder when both the completed-access-unit stream and FFmpeg stdout have stopped progressing.
 - Cap QSV retry backoff at 8 seconds and reset it after a sustained output run. Log each rejected hardware H.264 candidate and the first/recovered path-probe acknowledgement.
 - Add Host regression tests for active-route probes, preserving active Network paths during a media pause, and FFmpeg stdout progress preventing false stall detection.
-- Android metadata is `versionName 0.5.21`, `versionCode 56`; repository, Host, SteamVR driver and AOA accessory metadata are synchronized to `0.5.21`.
+- Android metadata was `versionName 0.5.21`, `versionCode 56`; repository, Host, SteamVR driver and AOA accessory metadata were synchronized to `0.5.21`.
 
 ## 0.5.21 validation status
 

@@ -34,7 +34,10 @@ class VideoStreamingIntegrationTests(unittest.TestCase):
         self.assertNotIn("m_vsyncOriginNs = target", schedule)
 
     def test_encoder_backlog_is_bounded_for_low_latency(self):
-        self.assertIn("h264PendingFrameLimit   = 4", ENCODER)
+        # Go formatting may align constants with tabs or spaces. Assert the
+        # semantic value rather than depending on gofmt's whitespace layout.
+        self.assertRegex(ENCODER, r"(?m)^\s*h264PendingFrameLimit\s*=\s*4\b")
+        self.assertIn("make(chan uint64, h264PendingFrameLimit)", ENCODER)
         self.assertIn('"-async_depth", "2"', ENCODER)
 
     def test_host_uses_loopback_capture_and_android_udp(self):

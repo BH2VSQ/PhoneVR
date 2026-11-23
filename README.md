@@ -1,6 +1,6 @@
 # PhoneVRStream
 
-Repository revision: **0.5.21**. Windows Host: **0.5.21**. Android client: **0.5.21**. Control protocol: **v1**; video packet protocol: **v1**.
+Repository revision: **0.5.22**. Windows Host: **0.5.22**. Android client: **0.5.22**. Control protocol: **v1**; video packet protocol: **v1**.
 
 PhoneVRStream is a multi-component project for using an Android phone as a PC VR streaming HMD. Both applications live in one repository and use independent build/test pipelines.
 
@@ -22,7 +22,7 @@ PhoneVRStream/
 └── dist/                       # Local build output (git-ignored)
 ```
 
-## Windows Host 0.5.21 bundled SteamVR driver
+## Windows Host 0.5.22 bundled SteamVR driver
 
 The virtual display timing is fixed at 72 Hz in this revision. The adjustable refresh-rate menu and its configuration file have been removed; this avoids presenting refresh-rate choices before the PC compositor and phone rendering path have been profiled end to end.
 
@@ -49,7 +49,7 @@ The normal `PhoneVRHost.exe` is built with the Windows GUI subsystem and opens t
 
 All helper processes launched by the GUI Host use `CREATE_NO_WINDOW`, including Steam registry discovery, SteamVR driver registration and FFmpeg inventory/preflight/streaming. Their captured output remains available in the Host log. See `docs/2026-11-22-silent-host-child-processes.md`.
 
-## Android client 0.5.21
+## Android client 0.5.22
 
 - Landscape immersive display with OpenGL ES 3.0 stereo rendering.
 - Locally stored optical preset selector with Daydream View v1.0 (2016), Daydream View v2.0 (2017) and Generic Cardboard built-in presets.
@@ -66,7 +66,7 @@ All helper processes launched by the GUI Host use `CREATE_NO_WINDOW`, including 
 - The AOA reader uses 16 KiB raw reads before parsing PVRU headers. The stream decoder reassembles frames split across reads or coalesced by the USB stack; it does not issue 16-byte reads directly to the accessory file descriptor. Android raw-read sizes and PVRU CRC32 values are logged for diagnosis.
 
 
-## SteamVR driver 0.5.21
+## SteamVR driver 0.5.22
 
 The PhoneVR Host contains its own Windows x64 OpenVR driver inside the Host executable. The normal build compiles `steamvr-driver/`, embeds the resulting manifest, DLL and resources into both Host executables, and no longer asks users to download or select a ZIP. On startup, the Host checks whether SteamVR is installed and whether the user has disabled automatic deployment. When enabled, it copies the embedded driver into a content-versioned directory under `%LOCALAPPDATA%\PhoneVR\SteamVRDriver` and registers it with SteamVR's own `vrpathreg.exe`.
 

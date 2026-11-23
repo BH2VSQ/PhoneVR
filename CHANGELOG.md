@@ -1,3 +1,11 @@
+## 0.5.22 - Release-test portability fix
+
+- Fix the low-latency encoder backlog regression test to match the Go constant semantically, independent of whether `gofmt` aligns the declaration with tabs or spaces.
+- Assert both the four-frame pending timestamp limit and its use by the encoder timestamp channel.
+- Synchronize repository, Android, Windows Host, SteamVR driver and AOA metadata to `0.5.22`; Android `versionCode` is `57`.
+- Document the confirmed 72 Hz compositor / 60 FPS capture cadence, fixed 8 Mbps H.264 budget, zero default shader blur, and the stage-by-stage A/B measurements needed to isolate the SteamVR Home performance difference.
+- No video bitrate, capture FPS, compositor timing, or decoder scheduling changes are included in this CI hotfix. Those require stage-by-stage runtime measurements to avoid worsening the current frame pacing.
+
 ## 0.5.21 - Network path health and H.264 stall recovery
 
 - Separate video-path reachability from media-frame freshness. Host now validates the active and standby UDP/AOA routes using receiver-acknowledged PVRP probes; a temporary encoder pause or empty media queue no longer marks an otherwise reachable Wi-Fi route unhealthy.

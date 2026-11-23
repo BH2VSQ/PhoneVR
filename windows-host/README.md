@@ -1,4 +1,4 @@
-# PhoneVR Host 0.5.21 bundled SteamVR driver and live SBS video
+# PhoneVR Host 0.5.22 bundled SteamVR driver and live SBS video
 
 Executable version is injected from the repository root `VERSION` file during builds.
 

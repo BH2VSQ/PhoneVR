@@ -35,6 +35,11 @@ class AndroidControllerMenuLayoutTests(unittest.TestCase):
         self.assertIn("isSmoothScrollingEnabled = true", panel)
         self.assertIn("isVerticalScrollBarEnabled = true", panel)
         self.assertIn("menuScroll.addView(", panel)
+        self.assertIn(
+            "FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)",
+            panel,
+        )
+        self.assertNotIn("ScrollView.LayoutParams", panel)
         self.assertIn("panel.addView(menuScroll, LinearLayout.LayoutParams(-1, -2))", panel)
         self.assertIn('menuContent.addView(makeButton("Daydream 手柄配对")', panel)
         self.assertNotIn('panel.addView(makeButton("Daydream 手柄配对")', panel)

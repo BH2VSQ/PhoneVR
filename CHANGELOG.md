@@ -1,3 +1,8 @@
+## 0.5.30 - Automated release
+
+- Android versionName and versionCode bumped by the manual release workflow.
+- Windows Host version metadata updated from the repository VERSION file.
+
 ## 0.5.29 - First-level menu scrolling fix
 
 - Put the complete first-level menu opened by the top `⋮` button into one vertically scrollable viewport, including connection state, pose/video status and all menu actions. This addresses clipped actions on short landscape screens where the first-level menu previously had no scrolling container.

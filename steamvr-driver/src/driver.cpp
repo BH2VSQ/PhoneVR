@@ -2150,7 +2150,7 @@ public:
         if (!host->TrackedDeviceAdded("PHONEVR-DAYDREAM-RIGHT", vr::TrackedDeviceClass_Controller, m_rightController)) {
             Cleanup(); return vr::VRInitError_Driver_Unknown;
         }
-        if (vr::VRDriverLog()) vr::VRDriverLog()->Log("PhoneVR 0.5.29 DisplayRedirect and dual Daydream controller devices registered");
+        if (vr::VRDriverLog()) vr::VRDriverLog()->Log("PhoneVR 0.5.30 DisplayRedirect and dual Daydream controller devices registered");
         return vr::VRInitError_None;
     }
     void Cleanup() override {

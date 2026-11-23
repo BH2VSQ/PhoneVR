@@ -453,7 +453,7 @@ class MainActivity : Activity(), SensorEventListener {
         }
         menuScroll.addView(
             menuContent,
-            ScrollView.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT),
+            FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT),
         )
         panel.addView(menuScroll, LinearLayout.LayoutParams(-1, -2))
 

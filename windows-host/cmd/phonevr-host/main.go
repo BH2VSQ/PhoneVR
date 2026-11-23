@@ -8,7 +8,7 @@ import (
 	"syscall"
 )
 
-var appVersion = "0.5.29"
+var appVersion = "0.5.30"
 
 func main() {
 	listenAddress := flag.String("listen", "0.0.0.0", "IPv4 address to bind")

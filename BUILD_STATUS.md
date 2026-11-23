@@ -1,21 +1,22 @@
-# PhoneVR 0.5.29 build status
+# PhoneVR 0.5.30 build status
 
-## This revision (0.5.29)
+## This revision (0.5.30)
 
+- Fix Android compilation of the first-level menu ScrollView child by using `FrameLayout.LayoutParams`, the valid layout-parameter type for a ScrollView direct child. Add a regression assertion that rejects `ScrollView.LayoutParams`.
 - Fix the first-level menu opened by the top `⋮` button. The connection/status block and every menu action now live inside one vertical `ScrollView`, so the full menu remains reachable on short landscape screens and with enlarged display scaling.
 - Give the first-level menu ScrollView an explicit maximum height based on the available display height. Its own height remains content-driven below that limit, preserving the compact appearance when all actions fit.
 - Enable smooth vertical scrolling, scrollbar feedback, overscroll behavior and descendant focus handling. Existing menu actions and 6 dp button spacing remain unchanged.
 - Keep the Daydream controller pairing panel's independent full-panel scrolling from 0.5.28.
-- Product metadata synchronized to 0.5.29; Android versionCode is 64.
+- Android metadata is `versionName 0.5.30`, `versionCode 65`; repository, Host, SteamVR driver and AOA accessory metadata are synchronized to `0.5.30`.
 
-## 0.5.29 validation status
+## 0.5.30 validation status
 
 - `python3 -m unittest discover -s tools/release -p 'test_*.py'`: passed, 67 tests.
 - `cd windows-host && go test ./...`: passed.
 - `cd windows-host && go test -race ./...`: passed.
 - `cd windows-host && go vet ./...`: passed.
 - `GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build ./cmd/phonevr-host`: passed.
-- Android Gradle build: not run because no Android SDK Platform 36 or Build Tools 36.0.0 are installed in this environment. CI must confirm APK compilation.
+- Android Gradle build: not run in this container because no Android SDK Platform 36, Build Tools 36.0.0 or SDK installation is available. The reported 0.5.29 Kotlin error is corrected and guarded by the release regression test; CI should run `:app:testDebugUnitTest :app:assembleDebug :app:assembleRelease`.
 - SteamVR MSVC driver build: not run; no native driver source was changed in this revision.
 - Physical Android main-menu scrolling remains to be verified on the target handset.
 

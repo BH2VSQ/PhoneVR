@@ -46,6 +46,18 @@ data class OpticalPreset(
 
         fun defaults(): List<OpticalPreset> = listOf(
             OpticalPreset(
+                id = "builtin-daydream-2016",
+                name = "Daydream View 2016",
+                builtin = true,
+                settings = DisplaySettings(
+                    ipdMm = 63f,
+                    lensCenterX = .5f,
+                    lensCenterY = .5f,
+                    blur = 0f,
+                    sharpness = .15f,
+                ).withDaydreamView2016Profile(),
+            ),
+            OpticalPreset(
                 id = "builtin-daydream-2017",
                 name = "Daydream View 2017",
                 builtin = true,

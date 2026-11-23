@@ -1,3 +1,13 @@
+## 0.5.17 - Network video recovery and Daydream View 2016 preset
+
+- Fix Android full-access-unit NACK filtering. Preserve the `-2` sentinel so Host can retransmit a wholly missing H.264 access unit; filter invalid negative indexes and remove duplicate requests.
+- Retain successfully sent access units in Network Only and USB Only modes as well as aggregation mode, enabling bounded partial-fragment and whole-frame repair.
+- Reduce Android frame reorder grace for single-path streaming to 60 ms. Host advertises 120 ms for parallel UDP/AOA aggregation.
+- Trigger NACK feedback after a shorter delay to allow retransmissions to arrive inside the single-path reorder window.
+- Add the built-in **Daydream View 2016** optical preset and preserve its reported distortion coefficients (`k1=0.01`, `k2=0.67`) during settings normalization. Geometry and FOV retain the adjustable baseline instead of copying the separately reported 2017 model measurements.
+- Synchronize repository, Android, Windows Host, AOA descriptor and SteamVR driver versions to `0.5.17`; Android `versionCode` is `52`.
+- Add tests for whole-frame NACK sentinel preservation, single-path reorder timing, Host reorder-window negotiation and Daydream View 2016 defaults.
+
 ## 0.5.16 - Cross-link video fragment aggregation and repair
 
 - Replace full-fragment duplication in parallel video mode with weighted fragment striping across the independently probe-verified network UDP and USB AOA Bulk routes. Each distinct PVRV fragment is sent on one route under normal operation; one-datagram access units remain on network.

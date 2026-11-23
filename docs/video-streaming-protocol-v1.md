@@ -130,3 +130,9 @@ When an access unit remains incomplete for 30 ms, Android sends a control messag
 The host USB worker remains asynchronous and bounded to four queued access units. If the USB queue is full before an access unit is accepted, those USB-assigned fragments fall back to UDP. If an asynchronous AOA write fails, the worker attempts the same fragment batch over UDP. Network sends do not wait for Bulk OUT completion.
 
 This extension adds application-level fragment striping and repair; it does not bond the physical interfaces at the IP layer or change the PVRU AOA multiplex framing. Actual aggregate throughput depends on both paths' measured capacity, queueing delay, device USB controller, Wi-Fi congestion and retransmission rate.
+
+## Network recovery tuning (PhoneVR 0.5.17)
+
+- The Host retains successfully transmitted access units for both single-path and parallel modes. Android reports missing PVRV fragments by frame ID and fragment index. Fragment index `-2` requests the complete access unit when the receiver has seen a later frame but no datagram from the missing frame.
+- The Host returns the retained access unit through the currently available path. In parallel mode, ordinary missing fragments are preferentially repaired through the alternate path.
+- The `welcome` message includes `videoReorderGraceMs`. Single-path modes use 60 ms; parallel mode uses 120 ms to accommodate cross-path latency differences. Android begins NACK feedback after 10 ms and allows at most two repair rounds.

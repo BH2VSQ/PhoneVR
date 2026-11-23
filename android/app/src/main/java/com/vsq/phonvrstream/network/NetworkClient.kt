@@ -97,7 +97,7 @@ class NetworkClient(
     @Volatile private var usbVideoForwardPort: Int = -1
     @Volatile private var activeControlWriter: BufferedWriter? = null
     @Volatile private var activeControlGeneration: Long = -1L
-    private data class VideoSessionConfig(val host: String, val port: Int, val width: Int, val height: Int, val fps: Int, val decoderName: String, val generation: Long, val transport: String)
+    private data class VideoSessionConfig(val host: String, val port: Int, val width: Int, val height: Int, val fps: Int, val decoderName: String, val generation: Long, val transport: String, val reorderGraceMs: Int)
     private val videoLifecycleExecutor = Executors.newSingleThreadExecutor()
     private val videoSessionGeneration = AtomicLong(0L)
     private val videoLock = Any()
@@ -139,6 +139,8 @@ class NetworkClient(
             decoderName = welcome.optString("videoDecoderName", "").trim(),
             generation = videoSessionGeneration.incrementAndGet(),
             transport = if (useUsb) "usb" else "udp",
+            reorderGraceMs = welcome.optInt("videoReorderGraceMs", DEFAULT_VIDEO_REORDER_GRACE_MS)
+                .coerceIn(MIN_VIDEO_REORDER_GRACE_MS, MAX_VIDEO_REORDER_GRACE_MS),
         )
         if (config.width <= 0 || config.height <= 0 || config.fps !in 1..120 ||
             (config.transport == "udp" && config.port !in 1..65535) || config.decoderName.isBlank()) {
@@ -171,6 +173,7 @@ class NetworkClient(
                     val receiver = VideoStreamReceiver(
                         config.host, config.port, config.width, config.height, config.fps, config.decoderName, surface,
                         transportLabel = if (config.transport == "usb") "USB Bulk" else "UDP",
+                        reorderGraceNs = config.reorderGraceMs * 1_000_000L,
                         // Network UDP and AOA Bulk loopback packets share this receiver.
                         additionalAllowedAddresses = setOf("127.0.0.1"),
                         onPathProbe = { transport -> sendVideoPathProbeFeedback(config.generation, transport) },
@@ -279,7 +282,7 @@ class NetworkClient(
     private fun sendVideoFrameNack(generation: Long, frameId: Long, missingFragments: List<Int>) {
         if (!isVideoSessionActive(generation) || missingFragments.isEmpty() || missingFragments.size > 256) return
         val indexes = JSONArray()
-        missingFragments.forEach { index -> if (index >= 0) indexes.put(index) }
+        filterVideoNackIndexes(missingFragments).forEach { indexes.put(it) }
         if (indexes.length() == 0) return
         val message = JSONObject()
             .put("type", "video_nack")
@@ -1417,9 +1420,12 @@ class NetworkClient(
         const val DEFAULT_VIDEO_WIDTH = 1600
         const val DEFAULT_VIDEO_HEIGHT = 720
         const val DEFAULT_VIDEO_FPS = 60
+        private const val DEFAULT_VIDEO_REORDER_GRACE_MS = 60
+        private const val MIN_VIDEO_REORDER_GRACE_MS = 30
+        private const val MAX_VIDEO_REORDER_GRACE_MS = 250
         const val DISCOVERY_PORT = 48100
         private const val PROTOCOL_VERSION = 1
-        private const val CLIENT_VERSION = "PhoneVRStream-0.5.16"
+        private const val CLIENT_VERSION = "PhoneVRStream-0.5.17"
         private const val DISCOVERY_REQUEST = "PHONEVR_DISCOVER_V1"
         private const val DISCOVERY_RESPONSE_PREFIX = "PHONEVR_HOST_V1 "
         private const val DISCOVERY_WINDOW_MS = 1800L

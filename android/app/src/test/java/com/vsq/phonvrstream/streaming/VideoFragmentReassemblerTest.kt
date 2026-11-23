@@ -30,10 +30,10 @@ class VideoFragmentReassemblerTest {
         val first = receiver.takeMissingFragmentRequests(nowNs = 80_000_000L).single()
         assertEquals(8L, first.frameId)
         assertEquals(listOf(1, 3), first.fragmentIndexes)
-        assertTrue(receiver.takeMissingFragmentRequests(nowNs = 100_000_000L).isEmpty())
-        val second = receiver.takeMissingFragmentRequests(nowNs = 160_000_000L).single()
+        assertTrue(receiver.takeMissingFragmentRequests(nowNs = 89_000_000L).isEmpty())
+        val second = receiver.takeMissingFragmentRequests(nowNs = 100_000_000L).single()
         assertEquals(listOf(1, 3), second.fragmentIndexes)
-        assertTrue(receiver.takeMissingFragmentRequests(nowNs = 240_000_000L).isEmpty())
+        assertTrue(receiver.takeMissingFragmentRequests(nowNs = 120_000_000L).isEmpty())
     }
 
     @Test fun completesAndDeliversFramesInFrameIdOrderAcrossDifferentPathLatency() {
@@ -72,6 +72,37 @@ class VideoFragmentReassemblerTest {
         assertTrue(receiver.drainCompleted(nowNs = 80_000_000L).isEmpty())
         assertEquals(listOf(301L), receiver.drainCompleted(nowNs = 130_000_000L).map { it.frameId })
         assertTrue(receiver.accept(previous, nowNs = 140_000_000L).isEmpty())
+    }
+
+    @Test fun networkOnlyReorderWindowCanReleaseAtSixtyMilliseconds() {
+        val receiver = VideoFragmentReassembler(reorderGraceNs = 60_000_000L)
+        val baseline = fragment(ByteArray(80) { 2 }, 398, key = false).single()
+        val current = fragment(ByteArray(120) { 4 }, 400, key = false).single()
+        assertEquals(listOf(398L), receiver.accept(baseline, nowNs = 1_000_000L).map { it.frameId })
+        assertTrue(receiver.accept(current, nowNs = 2_000_000L).isEmpty())
+        assertTrue(receiver.drainCompleted(nowNs = 61_000_000L).isEmpty())
+        assertEquals(listOf(400L), receiver.drainCompleted(nowNs = 63_000_000L).map { it.frameId })
+    }
+
+    @Test fun requestsAndRepairsACompletelyMissingFrame() {
+        val receiver = VideoFragmentReassembler(reorderGraceNs = 120_000_000L)
+        val baseline = fragment(ByteArray(80) { 2 }, 299, key = false).single()
+        val missing = fragment(ByteArray(100) { 3 }, 300, key = false).single()
+        val current = fragment(ByteArray(120) { 4 }, 301, key = false).single()
+
+        assertEquals(listOf(299L), receiver.accept(baseline, nowNs = 1_000_000L).map { it.frameId })
+        assertTrue(receiver.accept(current, nowNs = 2_000_000L).isEmpty())
+
+        val firstNack = receiver.takeMissingFragmentRequests(nowNs = 40_000_000L).single()
+        assertEquals(300L, firstNack.frameId)
+        assertEquals(listOf(VideoFragmentReassembler.WHOLE_FRAME_FRAGMENT_INDEX), firstNack.fragmentIndexes)
+        val secondNack = receiver.takeMissingFragmentRequests(nowNs = 80_000_000L).single()
+        assertEquals(firstNack, secondNack)
+        assertTrue(receiver.takeMissingFragmentRequests(nowNs = 120_000_000L).isEmpty())
+
+        // The Host's full-frame repair arrives before the reorder deadline.
+        val repaired = receiver.accept(missing, nowNs = 90_000_000L)
+        assertEquals(listOf(300L, 301L), repaired.map { it.frameId })
     }
 
     @Test fun expiresOldIncompleteFrameAfterNackGraceAndReleasesNewerCompleteFrame() {

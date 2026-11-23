@@ -145,22 +145,23 @@ type discoveryMessage struct {
 }
 
 type welcomeMessage struct {
-	Type             string   `json:"type"`
-	Protocol         int      `json:"protocol"`
-	SessionID        string   `json:"sessionId"`
-	ServerName       string   `json:"serverName"`
-	PosePort         int      `json:"posePort"`
-	Capabilities     []string `json:"capabilities"`
-	VideoEnabled     bool     `json:"videoEnabled"`
-	VideoPort        int      `json:"videoPort,omitempty"`
-	VideoCodec       string   `json:"videoCodec,omitempty"`
-	VideoMimeType    string   `json:"videoMimeType,omitempty"`
-	VideoTransport   string   `json:"videoTransport,omitempty"`
-	VideoWidth       int      `json:"videoWidth,omitempty"`
-	VideoHeight      int      `json:"videoHeight,omitempty"`
-	VideoFPS         int      `json:"videoFps,omitempty"`
-	VideoDecoderName string   `json:"videoDecoderName,omitempty"`
-	VideoReason      string   `json:"videoReason,omitempty"`
+	Type                string   `json:"type"`
+	Protocol            int      `json:"protocol"`
+	SessionID           string   `json:"sessionId"`
+	ServerName          string   `json:"serverName"`
+	PosePort            int      `json:"posePort"`
+	Capabilities        []string `json:"capabilities"`
+	VideoEnabled        bool     `json:"videoEnabled"`
+	VideoPort           int      `json:"videoPort,omitempty"`
+	VideoCodec          string   `json:"videoCodec,omitempty"`
+	VideoMimeType       string   `json:"videoMimeType,omitempty"`
+	VideoTransport      string   `json:"videoTransport,omitempty"`
+	VideoWidth          int      `json:"videoWidth,omitempty"`
+	VideoHeight         int      `json:"videoHeight,omitempty"`
+	VideoFPS            int      `json:"videoFps,omitempty"`
+	VideoReorderGraceMS int      `json:"videoReorderGraceMs,omitempty"`
+	VideoDecoderName    string   `json:"videoDecoderName,omitempty"`
+	VideoReason         string   `json:"videoReason,omitempty"`
 }
 
 type controlMessage struct {
@@ -1259,6 +1260,7 @@ func (s *HostService) handleControlConnection(ctx context.Context, conn net.Conn
 		welcome.VideoWidth = videoWidth
 		welcome.VideoHeight = videoHeight
 		welcome.VideoFPS = videoFrameRate
+		welcome.VideoReorderGraceMS = s.videoReorderGraceMilliseconds()
 		welcome.VideoDecoderName = selectedAndroidDecoder
 		if usbLink != nil {
 			welcome.Capabilities = append(welcome.Capabilities, "sbs-h264-usb-v1")
@@ -1567,12 +1569,19 @@ func (s *HostService) sendEncodedVideoFrame(frame []byte, frameID uint32, timest
 			s.markVideoTransportFailure(target, err)
 			return fmt.Errorf("USB AOA Bulk OUT: %w", err)
 		}
+		// Keep the access unit for NACK repair in every transport mode. Until
+		// 0.5.17 only striped mode retained frames, so a single-path USB client
+		// could request missing fragments that the Host no longer had available.
+		s.retainVideoFrameForSinglePath(fragments, "usb", target)
 		return nil
 	}
 	if err := s.sendVideoFragmentsUDP(fragments, target.UDP); err != nil {
 		s.markVideoTransportFailure(target, err)
 		return fmt.Errorf("Android UDP video send: %w", err)
 	}
+	// Network-only mode must support the same receiver-driven fragment repair
+	// as aggregation mode. Cache only successfully transmitted access units.
+	s.retainVideoFrameForSinglePath(fragments, "network", target)
 	return nil
 }
 
@@ -1725,6 +1734,13 @@ func repeatVideoPath(path string, count int) []string {
 	return paths
 }
 
+func (s *HostService) retainVideoFrameForSinglePath(fragments [][]byte, path string, target videoTarget) {
+	if len(fragments) == 0 || (path != "network" && path != "usb") {
+		return
+	}
+	s.retainStripedVideoFrame(fragments, repeatVideoPath(path, len(fragments)), target)
+}
+
 func (s *HostService) retainStripedVideoFrame(fragments [][]byte, paths []string, target videoTarget) {
 	if len(fragments) == 0 || len(fragments) != len(paths) {
 		return
@@ -1794,6 +1810,45 @@ func (s *HostService) retransmitMissingVideoFragments(deviceID string, frameID u
 	target, available := s.currentVideoTarget()
 	if !available || target.DeviceID != deviceID {
 		target = frame.target
+	}
+	// A -2 fragment index means the receiver observed a frame-ID gap but no
+	// datagram for that frame arrived. Resend the complete retained access unit
+	// over the currently faster route so a wholly lost UDP frame can be repaired
+	// before the receiver abandons its reorder window and waits for the next IDR.
+	requestWholeFrame := false
+	for _, index := range indexes {
+		if index == -2 {
+			requestWholeFrame = true
+			break
+		}
+	}
+	if requestWholeFrame {
+		parts := append([][]byte(nil), frame.fragments...)
+		preferUSB := target.USB != nil && (target.UDP == nil || s.videoStripeUSBSharePermille(deviceID) >= 500)
+		if preferUSB {
+			if err := s.enqueueUSBFragments(target, parts, target.UDP, parts); err == nil {
+				s.videoRetransmittedFragments.Add(uint64(len(parts)))
+				return
+			} else if target.UDP == nil {
+				return
+			}
+		}
+		if target.UDP != nil {
+			if err := s.sendVideoFragmentsUDP(parts, target.UDP); err == nil {
+				s.videoRetransmittedFragments.Add(uint64(len(parts)))
+				return
+			} else {
+				route := target
+				route.Transport = "network"
+				s.markVideoTransportFailure(route, err)
+			}
+		}
+		if target.USB != nil {
+			if err := s.enqueueUSBFragments(target, parts, nil, nil); err == nil {
+				s.videoRetransmittedFragments.Add(uint64(len(parts)))
+			}
+		}
+		return
 	}
 	var networkParts, usbParts [][]byte
 	seen := make(map[int]struct{}, len(indexes))

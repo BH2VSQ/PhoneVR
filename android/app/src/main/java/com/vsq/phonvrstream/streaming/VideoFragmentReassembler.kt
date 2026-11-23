@@ -49,8 +49,14 @@ class VideoFragmentReassembler(
         val completedNs: Long,
     )
 
+    private data class WholeFrameNackState(
+        var lastSentNs: Long = 0L,
+        var rounds: Int = 0,
+    )
+
     private val pending = LinkedHashMap<Long, Assembly>()
     private val completed = LinkedHashMap<Long, CompletedEntry>()
+    private val wholeFrameNacks = LinkedHashMap<Long, WholeFrameNackState>()
     private var latestDeliveredFrameId: Long? = null
     private var expiredAssemblyCount = 0L
 
@@ -102,6 +108,9 @@ class VideoFragmentReassembler(
         val latest = latestDeliveredFrameId
         if (latest != null && !isNewer(frameId, latest)) return emptyList()
         if (completed.containsKey(frameId)) return emptyList()
+        // A previously absent frame can arrive as a full-frame NACK repair.
+        // Once any packet arrives, partial-fragment NACKs take over.
+        wholeFrameNacks.remove(frameId)
 
         var assembly = pending[frameId]
         if (assembly == null) {
@@ -181,6 +190,9 @@ class VideoFragmentReassembler(
             if (previous != null && !isNewer(candidate.frame.frameId, previous)) continue
             latestDeliveredFrameId = candidate.frame.frameId
             ready += candidate.frame
+            wholeFrameNacks.keys.toList()
+                .filterNot { isNewer(it, candidate.frame.frameId) }
+                .forEach(wholeFrameNacks::remove)
 
             // Completed pictures older than the frame just emitted are stale.
             val delivered = candidate.frame.frameId
@@ -193,7 +205,7 @@ class VideoFragmentReassembler(
         return ready
     }
 
-    /** Missing fragment reports are rate-limited to two rounds per access unit. */
+    /** Missing fragment and wholly missing frame reports are rate-limited. */
     @Synchronized
     fun takeMissingFragmentRequests(nowNs: Long = System.nanoTime()): List<MissingVideoFragments> {
         val requests = ArrayList<MissingVideoFragments>()
@@ -206,6 +218,36 @@ class VideoFragmentReassembler(
             assembly.lastNackNs = nowNs
             assembly.nackCount++
             requests += MissingVideoFragments(assembly.frameId, missing)
+        }
+
+        // A complete access unit can be entirely absent from UDP, leaving no
+        // partial Assembly from which to derive missing fragment indexes. If a
+        // later frame is complete, request the next absent frame ID. Fragment
+        // index -2 is the protocol sentinel for retransmitting the entire AU.
+        val latest = latestDeliveredFrameId
+        if (latest != null && completed.isNotEmpty()) {
+            val candidate = completed.values.minByOrNull {
+                frameDistance(it.frame.frameId, latest)
+            }
+            if (candidate != null) {
+                val targetFrameId = candidate.frame.frameId
+                var missingFrameId = (latest + 1L) and 0xffff_ffffL
+                var scanned = 0
+                while (missingFrameId != targetFrameId && scanned < MAX_WHOLE_FRAME_NACKS_PER_DRAIN) {
+                    if (!pending.containsKey(missingFrameId) && !completed.containsKey(missingFrameId)) {
+                        val state = wholeFrameNacks.getOrPut(missingFrameId) { WholeFrameNackState() }
+                        val firstRequestReady = nowNs - candidate.completedNs >= NACK_DELAY_NS
+                        val retryReady = state.lastSentNs == 0L || nowNs - state.lastSentNs >= NACK_DELAY_NS
+                        if (state.rounds < MAX_NACK_ROUNDS && firstRequestReady && retryReady) {
+                            state.lastSentNs = nowNs
+                            state.rounds++
+                            requests += MissingVideoFragments(missingFrameId, listOf(WHOLE_FRAME_FRAGMENT_INDEX))
+                        }
+                    }
+                    missingFrameId = (missingFrameId + 1L) and 0xffff_ffffL
+                    scanned++
+                }
+            }
         }
         return requests
     }
@@ -223,6 +265,7 @@ class VideoFragmentReassembler(
     fun clear() {
         pending.clear()
         completed.clear()
+        wholeFrameNacks.clear()
         latestDeliveredFrameId = null
         expiredAssemblyCount = 0L
     }
@@ -252,9 +295,11 @@ class VideoFragmentReassembler(
         const val FLAG_FRAME_END = 2
         const val FLAG_KEY_FRAME = 4
         private const val KNOWN_FLAGS = FLAG_FRAME_START or FLAG_FRAME_END or FLAG_KEY_FRAME
-        private const val NACK_DELAY_NS = 30_000_000L
+        private const val NACK_DELAY_NS = 10_000_000L
         private const val MAX_NACK_ROUNDS = 2
         private const val MAX_NACK_FRAGMENTS = 256
+        private const val MAX_WHOLE_FRAME_NACKS_PER_DRAIN = 4
         private const val MAX_COMPLETED_FRAMES_PER_DRAIN = 2
+        const val WHOLE_FRAME_FRAGMENT_INDEX = -2
     }
 }

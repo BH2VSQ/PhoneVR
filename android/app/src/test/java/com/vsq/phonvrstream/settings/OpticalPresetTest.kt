@@ -7,11 +7,15 @@ import org.junit.Test
 
 class OpticalPresetTest {
     @Test
-    fun defaultsContainBuiltInDaydreamAndCardboardPresets() {
+    fun defaultsContainBothDaydreamGenerationsAndCardboardPresets() {
         val presets = OpticalPreset.defaults()
-        assertEquals(listOf("builtin-daydream-2017", "builtin-cardboard"), presets.map { it.id })
+        assertEquals(
+            listOf("builtin-daydream-2016", "builtin-daydream-2017", "builtin-cardboard"),
+            presets.map { it.id },
+        )
         assertTrue(presets.all { it.builtin })
-        assertEquals(0.4331f, presets.first().settings.distortionK1, 0.0001f)
+        assertEquals(0.01f, presets.first().settings.distortionK1, 0.0001f)
+        assertEquals(0.67f, presets.first().settings.distortionK2, 0.0001f)
     }
 
     @Test
@@ -31,6 +35,6 @@ class OpticalPresetTest {
         val values = JSONArray().put(valid).put(valid).put(org.json.JSONObject().put("id", "broken"))
         val actual = OpticalPreset.listFromJson(values)
         assertEquals(1, actual.size)
-        assertEquals("builtin-daydream-2017", actual.single().id)
+        assertEquals("builtin-daydream-2016", actual.single().id)
     }
 }

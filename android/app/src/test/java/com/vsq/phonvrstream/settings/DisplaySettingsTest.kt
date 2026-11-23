@@ -35,6 +35,18 @@ class DisplaySettingsTest {
     }
 
     @Test
+    fun daydreamView2016ProfilePreservesItsPublishedDistortionCoefficients() {
+        val value = DisplaySettings().withDaydreamView2016Profile()
+
+        assertEquals(DisplaySettings.PROFILE_DAYDREAM_VIEW_2016, value.viewerProfileId)
+        assertEquals(0.01f, value.distortionK1, 0.0001f)
+        assertEquals(0.67f, value.distortionK2, 0.0001f)
+        assertEquals(DisplaySettings().lensSeparationMm, value.lensSeparationMm, 0.0001f)
+        assertEquals(DisplaySettings().screenToLensDistanceMm, value.screenToLensDistanceMm, 0.0001f)
+        assertEquals(DisplaySettings().fovDegrees, value.fovDegrees, 0.0001f)
+    }
+
+    @Test
     fun physicalViewerGeometryIsPersistableAndNormalized() {
         val value = DisplaySettings(
             screenToLensDistanceMm = 12f,

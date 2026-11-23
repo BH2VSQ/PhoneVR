@@ -304,6 +304,18 @@ func (s *HostService) expireSilentActiveTransportLocked(now time.Time) {
 	s.lastTransportSwitchReason = health.LastError
 }
 
+// videoReorderGraceMilliseconds keeps the single-path receiver responsive while
+// allowing extra latency for fragments intentionally split over UDP and AOA.
+func (s *HostService) videoReorderGraceMilliseconds() int {
+	s.mu.RLock()
+	mode := s.transportMode
+	s.mu.RUnlock()
+	if mode == VideoTransportParallel {
+		return 120
+	}
+	return 60
+}
+
 func (s *HostService) currentVideoTarget() (videoTarget, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

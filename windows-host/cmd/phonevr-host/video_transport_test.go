@@ -387,6 +387,63 @@ func TestParallelStripeWeightsFollowMeasuredPathCapacity(t *testing.T) {
 	}
 }
 
+func TestNetworkOnlyFrameCanBeRetransmittedAfterNACK(t *testing.T) {
+	listener, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	if err := listener.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+
+	sender, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4zero, Port: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sender.Close()
+	service := NewHostService(false)
+	service.videoUDP = sender
+	frameData := bytes.Repeat([]byte{0x41, 0x42, 0x43, 0x44}, 900)
+	fragments, err := videoprotocol.FragmentFrame(frameData, 912, 445566, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := videoTarget{
+		Transport: "network",
+		DeviceID:  "phone-network-only",
+		UDP:       listener.LocalAddr().(*net.UDPAddr),
+	}
+	service.retainVideoFrameForSinglePath(fragments, "network", target)
+	service.retransmitMissingVideoFragments(target.DeviceID, 912, []int{-2})
+
+	for index, expected := range fragments {
+		buffer := make([]byte, videoprotocol.MaxDatagramSize)
+		n, _, readErr := listener.ReadFromUDP(buffer)
+		if readErr != nil {
+			t.Fatalf("read whole-frame repair fragment %d/%d: %v", index+1, len(fragments), readErr)
+		}
+		if !bytes.Equal(buffer[:n], expected) {
+			t.Fatalf("repaired fragment %d differs from retained PVRV packet", index)
+		}
+	}
+	if got := service.videoRetransmittedFragments.Load(); got != uint64(len(fragments)) {
+		t.Fatalf("retransmitted fragment counter = %d, want %d", got, len(fragments))
+	}
+}
+
+func TestVideoReorderGraceMatchesSelectedTransportMode(t *testing.T) {
+	service := NewHostService(false)
+	service.transportMode = VideoTransportNetwork
+	if got := service.videoReorderGraceMilliseconds(); got != 60 {
+		t.Fatalf("network reorder grace = %dms, want 60ms", got)
+	}
+	service.transportMode = VideoTransportParallel
+	if got := service.videoReorderGraceMilliseconds(); got != 120 {
+		t.Fatalf("parallel reorder grace = %dms, want 120ms", got)
+	}
+}
+
 func TestStripeCreditIsPerDeviceAndSingleFragmentUsesNetwork(t *testing.T) {
 	service := NewHostService(false)
 	one := [][]byte{{0x01}}

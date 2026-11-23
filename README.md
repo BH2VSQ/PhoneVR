@@ -1,6 +1,6 @@
 # PhoneVRStream
 
-Repository revision: **0.5.16**. Windows Host: **0.5.16**. Android client: **0.5.16**. Control protocol: **v1**; video packet protocol: **v1**.
+Repository revision: **0.5.17**. Windows Host: **0.5.17**. Android client: **0.5.17**. Control protocol: **v1**; video packet protocol: **v1**.
 
 PhoneVRStream is a multi-component project for using an Android phone as a PC VR streaming HMD. Both applications live in one repository and use independent build/test pipelines.
 
@@ -22,7 +22,7 @@ PhoneVRStream/
 └── dist/                       # Local build output (git-ignored)
 ```
 
-## Windows Host 0.5.16 bundled SteamVR driver
+## Windows Host 0.5.17 bundled SteamVR driver
 
 The virtual display timing is fixed at 72 Hz in this revision. The adjustable refresh-rate menu and its configuration file have been removed; this avoids presenting refresh-rate choices before the PC compositor and phone rendering path have been profiled end to end.
 
@@ -49,10 +49,10 @@ The normal `PhoneVRHost.exe` is built with the Windows GUI subsystem and opens t
 
 All helper processes launched by the GUI Host use `CREATE_NO_WINDOW`, including Steam registry discovery, SteamVR driver registration and FFmpeg inventory/preflight/streaming. Their captured output remains available in the Host log. See `docs/2026-11-22-silent-host-child-processes.md`.
 
-## Android client 0.5.16
+## Android client 0.5.17
 
 - Landscape immersive display with OpenGL ES 3.0 stereo rendering.
-- Locally stored optical preset selector with Daydream View v2.0 (2017) and Generic Cardboard built-in presets.
+- Locally stored optical preset selector with Daydream View v1.0 (2016), Daydream View v2.0 (2017) and Generic Cardboard built-in presets.
 - Existing manual display settings are migrated into an Android-local optical preset during the first upgrade; parameter editing is performed in the Windows Host preset editor.
 - IMU sensor processing on a dedicated HandlerThread, quaternion-continuous pose transmission over UDP at up to 200 Hz on LAN or over the native AOA Bulk channel on USB, TCP-style pairing/control framing and heartbeat, battery reporting and bounded auto-reconnect.
 - Automatic LAN discovery across active IPv4 interfaces and connection to the remembered Host. A separate **USB AOA 直连** action uses Android Open Accessory mode and a full-duplex Bulk stream, with no USB tethering, RNDIS or ADB data channel.
@@ -65,7 +65,7 @@ All helper processes launched by the GUI Host use `CREATE_NO_WINDOW`, including 
 - The AOA reader uses 16 KiB raw reads before parsing PVRU headers. The stream decoder reassembles frames split across reads or coalesced by the USB stack; it does not issue 16-byte reads directly to the accessory file descriptor. Android raw-read sizes and PVRU CRC32 values are logged for diagnosis.
 
 
-## SteamVR driver 0.5.16
+## SteamVR driver 0.5.17
 
 The PhoneVR Host contains its own Windows x64 OpenVR driver inside the Host executable. The normal build compiles `steamvr-driver/`, embeds the resulting manifest, DLL and resources into both Host executables, and no longer asks users to download or select a ZIP. On startup, the Host checks whether SteamVR is installed and whether the user has disabled automatic deployment. When enabled, it copies the embedded driver into a content-versioned directory under `%LOCALAPPDATA%\PhoneVR\SteamVRDriver` and registers it with SteamVR's own `vrpathreg.exe`.
 
@@ -101,7 +101,7 @@ The real-time video path captures the final SteamVR SBS backbuffer at up to 60 F
 - Live video is enabled only after both PC hardware encoder initialization and Android hardware decoder profile validation succeed. If either is unavailable, pose/control remain available and video is disabled rather than falling back to CPU software encoding.
 - Daydream Controller Bluetooth pairing and SteamVR controller forwarding are not implemented yet.
 - The live H.264 stream requires PC-side NVENC/AMF/QSV and a compatible hardware MediaCodec decoder. The current coded profile is 1600×720 SBS at up to 60 FPS; bitrate adaptation and end-to-end Wi-Fi tuning remain future work.
-- Daydream View 2017 support currently means optical profile/calibration compatibility with the physical viewer. It does not implement the discontinued Google Daydream Home/VR Services platform integration.
+- Daydream View 2016 and 2017 support currently means optical profile/calibration compatibility with the physical viewer. It does not implement the discontinued Google Daydream Home/VR Services platform integration.
 
 ## Build
 

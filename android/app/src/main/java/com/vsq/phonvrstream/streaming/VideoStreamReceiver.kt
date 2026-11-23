@@ -32,6 +32,7 @@ class VideoStreamReceiver(
     private val decoderName: String,
     private val outputSurface: Surface,
     private val transportLabel: String = "UDP",
+    reorderGraceNs: Long = 60_000_000L,
     private val additionalAllowedAddresses: Set<String> = emptySet(),
     private val onPathProbe: (String) -> Unit = {},
     private val onFrameNack: (Long, List<Int>) -> Unit = { _, _ -> },
@@ -60,7 +61,7 @@ class VideoStreamReceiver(
     private val frameArrivalReported = AtomicBoolean(false)
     private val decodedFrameReported = AtomicBoolean(false)
     private val pendingFrames = ArrayBlockingQueue<CompletedVideoFrame>(2)
-    private val reassembler = VideoFragmentReassembler()
+    private val reassembler = VideoFragmentReassembler(reorderGraceNs = reorderGraceNs)
     @Volatile private var socket: DatagramSocket? = null
     @Volatile private var boundLocalPort: Int = -1
     val localPort: Int get() = boundLocalPort

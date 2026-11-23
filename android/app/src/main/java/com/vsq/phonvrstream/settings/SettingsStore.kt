@@ -46,7 +46,16 @@ class SettingsStore(context: Context) {
         }
         return try {
             val parsed = OpticalPreset.listFromJson(JSONArray(raw))
-            parsed.ifEmpty { OpticalPreset.defaults().also(::saveOpticalPresets) }
+            if (parsed.isEmpty()) {
+                OpticalPreset.defaults().also(::saveOpticalPresets)
+            } else {
+                // Add newly introduced built-ins to existing installations
+                // without overwriting locally edited presets or user entries.
+                val knownIds = parsed.mapTo(mutableSetOf()) { it.id }
+                val merged = OpticalPreset.defaults().filterNot { it.id in knownIds } + parsed
+                if (merged.size != parsed.size) saveOpticalPresets(merged)
+                merged
+            }
         } catch (_: Exception) {
             OpticalPreset.defaults().also(::saveOpticalPresets)
         }

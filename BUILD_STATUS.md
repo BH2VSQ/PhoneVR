@@ -1,3 +1,33 @@
+# PhoneVR 0.5.17 build status
+
+## This revision
+
+- Restore full-frame UDP recovery. Android preserves the `-2` NACK sentinel when constructing control messages; Host can retransmit a complete access unit when an entire frame is missing. Invalid negative indexes are filtered and duplicate indexes are removed.
+- Retain successfully transmitted access units in the bounded Host cache in Network Only and USB Only modes. The same cache serves partial-fragment and whole-frame recovery.
+- Reduce single-path frame reorder grace to 60 ms. Host communicates the selected receive reorder window in `welcome`; parallel UDP/AOA mode retains 120 ms for cross-link latency differences.
+- Start NACK feedback after 10 ms, leaving time for repair rounds inside the single-path reorder window.
+- Add Daydream View v1.0 (2016) as a built-in Android optical preset. The reported profile coefficients `k1=0.01`, `k2=0.67` are preserved by expanding the normalized K2 range. Unverified 2017 physical geometry values are deliberately not copied into the 2016 profile; lens spacing, screen distance, alignment and FOV retain the app's adjustable baseline until measured on the user's viewer.
+- Android metadata is `versionName 0.5.17`, `versionCode 52`; repository, Host, SteamVR driver and AOA accessory metadata are synchronized to `0.5.17`.
+
+## Validation status
+
+- `cd windows-host && go test ./...`: passed, including single-path retained-frame retransmission and selected-mode reorder-window tests.
+- `cd windows-host && go test -race ./...`: passed.
+- `cd windows-host && go vet ./...`: passed.
+- `cd windows-host && GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build ./...`: passed.
+- Standalone Kotlin/JVM smoke compilation and execution passed for full-frame NACK sentinel preservation, invalid-index filtering, 60 ms Network Only reorder release, cross-frame repair ordering and partial-fragment NACK retries.
+- Full Gradle Android compilation, Android JUnit suite and APK packaging were not run because this runtime has no Android SDK (`ANDROID_HOME` / `ANDROID_SDK_ROOT` are unset).
+- Physical Wi-Fi packet-loss/retransmit timing and Daydream View optical fit require target-device validation.
+
+## Target-device validation
+
+1. Install matching 0.5.17 Host and Android builds. Select **Network Only**, run the same SteamVR scene and bitrate used with 0.5.16, and observe Network RX, completed FPS, decode FPS, expired assemblies, decoder queue drops and Host retransmission count.
+2. Introduce controlled UDP loss. Confirm Android sends `video_nack` with `missingFragments: [-2]` when a complete frame is absent, Host retransmits the retained PVRV access unit, and the receiver emits frames in order without unnecessarily waiting for the next IDR.
+3. Switch to **Network + USB AOA aggregation**. Confirm Host advertises a 120 ms reorder window, both routes receive different fragments, and missing fragments are repaired via the alternate route.
+4. In Android Optical Presets, select **Daydream View 2016**. Check lens-center alignment, straight-line distortion calibration, eye convergence and peripheral distortion. Adjust the geometry values for the physical phone tray before saving a personal preset.
+
+---
+
 # PhoneVR 0.5.16 build status
 
 ## This revision

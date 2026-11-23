@@ -34,7 +34,9 @@ data class DisplaySettings(
         lensCenterX = lensCenterX.coerceIn(0.35f, 0.65f),
         lensCenterY = lensCenterY.coerceIn(0.35f, 0.65f),
         distortionK1 = distortionK1.coerceIn(-0.30f, 0.60f),
-        distortionK2 = distortionK2.coerceIn(-0.20f, 0.30f),
+        // Daydream View v1.0 (2016) uses a much larger positive K2 value.
+        // The previous 0.30 ceiling silently clipped its published 0.67 value.
+        distortionK2 = distortionK2.coerceIn(MIN_DISTORTION_K2, MAX_DISTORTION_K2),
         blur = blur.coerceIn(0.0f, 1.0f),
         sharpness = sharpness.coerceIn(0.0f, 1.0f),
         fovDegrees = fovDegrees.coerceIn(60.0f, 115.0f),
@@ -46,6 +48,15 @@ data class DisplaySettings(
         lensSeparationMm = 64.0f,
         distortionK1 = 0.4331f,
         distortionK2 = -0.085f,
+    ).normalized()
+
+    fun withDaydreamView2016Profile(): DisplaySettings = copy(
+        viewerProfileId = PROFILE_DAYDREAM_VIEW_2016,
+        // The published 2016 profile coefficients are k1=0.01 and k2=0.67.
+        // Keep physical geometry and FOV at the user's generic baseline because
+        // the available 64 mm / 100 degree measurements refer to the 2017 model.
+        distortionK1 = 0.01f,
+        distortionK2 = 0.67f,
     ).normalized()
 
     fun toJson(): JSONObject = JSONObject()
@@ -66,6 +77,7 @@ data class DisplaySettings(
     /** Parses remote settings while preserving local defaults for omitted fields. */
     companion object {
         const val PROFILE_CUSTOM = "custom"
+        const val PROFILE_DAYDREAM_VIEW_2016 = "daydream_view_2016"
         const val PROFILE_DAYDREAM_VIEW_2017 = "daydream_view_2017"
         const val ALIGNMENT_CENTER = "center"
         const val ALIGNMENT_BOTTOM = "bottom"
@@ -78,6 +90,8 @@ data class DisplaySettings(
         const val MAX_SCREEN_TO_LENS_MM = 70.0f
         const val MIN_TRAY_TO_LENS_CENTER_MM = 10.0f
         const val MAX_TRAY_TO_LENS_CENTER_MM = 60.0f
+        const val MIN_DISTORTION_K2 = -0.20f
+        const val MAX_DISTORTION_K2 = 0.80f
 
         fun fromJson(json: JSONObject, fallback: DisplaySettings = DisplaySettings()): DisplaySettings = DisplaySettings(
             viewerProfileId = json.optString("viewerProfileId", fallback.viewerProfileId),

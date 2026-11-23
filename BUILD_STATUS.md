@@ -1,29 +1,22 @@
-# PhoneVR 0.5.26 build status
+# PhoneVR 0.5.27 build status
 
-## This revision (0.5.26)
+## This revision (0.5.27)
 
-- Add dual Daydream View BLE controller pairing on Android, independent left/right GATT links, remembered device assignments, reconnect backoff and stale-report watchdog.
-- Parse the reference 19-byte report notification format and keep controller data outside the HMD pose stream.
-- Add TCP `controller_state` messages and Host-side validation/translation to the loopback-only 44-byte `PVSC` packet on UDP port 48108.
-- Register left/right OpenVR controller devices with touchpad, click, trigger compatibility alias, App/Menu, Home/System, volume inputs and 3DoF orientation.
-- Add SteamVR input profile, legacy bindings and controller hand icons.
-- Add BLE protocol unit tests and Go PVSC packet tests.
-- Product metadata synchronized to 0.5.26; Android versionCode is 61.
+- Fix the MSVC driver compile error by removing `override` from `PhoneVRDaydreamController`'s destructor. The OpenVR `ITrackedDeviceServerDriver` interface does not declare a virtual destructor; the concrete controller objects are owned and deleted through their derived type.
+- Fix the Android Kotlin compile error by using `FrameLayout.LayoutParams` when adding the controller candidate list to the `ScrollView` content container.
+- Make the release version-bump helper update the version number while preserving any current `DisplayRedirect` startup log suffix. Add regression checks for both reported compiler failures.
+- Product metadata synchronized to 0.5.27; Android versionCode is 62.
 
-## 0.5.26 validation status
+## 0.5.27 validation status
 
+- `python3 -m unittest discover -s tools/release -p 'test_*.py'`: passed, 64 tests.
 - `cd windows-host && go test ./...`: passed.
 - `cd windows-host && go test -race ./...`: passed.
 - `cd windows-host && go vet ./...`: passed.
 - `GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build ./cmd/phonevr-host`: passed.
-- Daydream BLE parser/state Kotlin standalone compile and smoke checks: passed.
-- `python3 -m unittest discover -s tools/release -p 'test_*.py'`: passed, 62 tests.
-- SteamVR input profile/legacy binding JSON and Android manifest/accessory XML parse checks: passed.
-- Android Gradle unit tests/APK: not run; Android SDK is unavailable and Gradle distribution download was blocked by DNS/network access.
-- SteamVR MSVC native driver build: not run; Windows SDK/MSVC environment is unavailable.
-- Physical single-controller BLE test, simultaneous dual-controller test and SteamVR game binding test: not run.
-- Dual BLE GATT operation is implemented but simultaneous connection behavior still requires testing on the target Android phone and two physical Daydream controllers.
-- Position tracking limitation: the Daydream remote supplies 3DoF orientation. The current controller pose uses a head-relative fixed hand offset and must be calibrated/validated in SteamVR.
+- Android Gradle build: not run in this environment because Android SDK Platform 36 and Build Tools 36.0.0 are unavailable. The reported source error is corrected, but CI must confirm the full APK build.
+- SteamVR MSVC driver build: not run in this environment because Windows MSVC and the Windows SDK are unavailable. The reported C3668 source error is corrected, but the Windows CI build must confirm the full native driver build.
+- Physical dual-Daydream-controller BLE and SteamVR input tests remain pending.
 
 ## Previous build status: 0.5.25
 
@@ -74,7 +67,7 @@
 - Add SteamVR virtual-display timing telemetry for maximum `Present` callback interval, intervals exceeding 1.5 and 3 nominal 72 Hz periods, pending-Present overwrites, actual `WaitForPresent` wake overshoot, missed virtual VSync ticks, and keyed-mutex acquisition failures.
 - Emit the counters in the existing five-second `virtual display` driver diagnostic line. The new counters are observational only. The 72 Hz clock, 60 FPS capture ceiling, pose prediction, D3D11 capture behavior and H.264 encoder configuration are unchanged.
 - Keep the 800x720 per-eye render target, 1600x720 SBS stream and 8 Mbps H.264 target unchanged. A higher-resolution profile needs end-to-end capability negotiation and runtime performance validation.
-- Android metadata is `versionName 0.5.23`, `versionCode 58`; repository, Host, SteamVR driver and AOA accessory metadata are synchronized to `0.5.23`.
+- Android metadata is `versionName 0.5.27`, `versionCode 62`; repository, Host, SteamVR driver and AOA accessory metadata are synchronized to `0.5.27`.
 
 ## 0.5.23 validation status
 

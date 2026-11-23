@@ -1943,7 +1943,7 @@ static std::array<double, 3> RotateVector(const ControllerQuaternion& q, const s
 class PhoneVRDaydreamController final : public vr::ITrackedDeviceServerDriver {
 public:
     explicit PhoneVRDaydreamController(bool isLeft) : m_isLeft(isLeft) {}
-    ~PhoneVRDaydreamController() override { Deactivate(); }
+    ~PhoneVRDaydreamController() { Deactivate(); }
 
     vr::EVRInitError Activate(uint32_t objectId) override {
         m_objectId.store(objectId, std::memory_order_release);
@@ -2150,7 +2150,7 @@ public:
         if (!host->TrackedDeviceAdded("PHONEVR-DAYDREAM-RIGHT", vr::TrackedDeviceClass_Controller, m_rightController)) {
             Cleanup(); return vr::VRInitError_Driver_Unknown;
         }
-        if (vr::VRDriverLog()) vr::VRDriverLog()->Log("PhoneVR 0.5.26 DisplayRedirect and dual Daydream controller devices registered");
+        if (vr::VRDriverLog()) vr::VRDriverLog()->Log("PhoneVR 0.5.27 DisplayRedirect and dual Daydream controller devices registered");
         return vr::VRInitError_None;
     }
     void Cleanup() override {

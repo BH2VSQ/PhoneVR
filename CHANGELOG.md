@@ -1,3 +1,10 @@
+## 0.5.27 - Daydream controller build fixes
+
+- Fix the MSVC C3668 error by removing the invalid `override` specifier from the concrete Daydream controller destructor. Keep the destructor cleanup call; the controller instances are owned as their concrete type.
+- Fix the Android Kotlin unresolved `LayoutParams` reference by using `FrameLayout.LayoutParams` for the child view added to the `ScrollView`.
+- Harden the release version bump helper so it updates the startup-log version number without requiring a fixed suffix.
+- Add regression checks for both compiler errors and keep repository, Android, Host, SteamVR driver and AOA metadata synchronized to `0.5.27`.
+
 ## 0.5.26 - Dual Google Daydream View BLE controllers
 
 - Add Android BLE scanning, device assignment and persistent pairing for independent left and right Daydream View controllers using the `FE55` GATT service and `00000001-1000-1000-8000-00805f9b34fb` notification characteristic.

@@ -68,11 +68,17 @@ def bump_repository(root: Path, bump: str) -> tuple[str, int]:
         r'(<usb-accessory[^>]*\bversion=")[^"]+(\")',
         rf'\g<1>{version}\g<2>',
     )
-    replace_one(
-        root / "steamvr-driver/src/driver.cpp",
-        r'PhoneVR [0-9]+\.[0-9]+\.[0-9]+ DisplayRedirect order-fix diagnostics SteamVR driver initialized',
-        f'PhoneVR {version} DisplayRedirect order-fix diagnostics SteamVR driver initialized',
+    driver_cpp = root / "steamvr-driver/src/driver.cpp"
+    driver_text = driver_cpp.read_text(encoding="utf-8")
+    driver_text, driver_log_count = re.subn(
+        r'(PhoneVR )([0-9]+\.[0-9]+\.[0-9]+)( DisplayRedirect [^\r\n]*)',
+        rf'\g<1>{version}\g<3>',
+        driver_text,
+        count=1,
     )
+    if driver_log_count != 1:
+        raise RuntimeError("Could not update SteamVR driver version log")
+    driver_cpp.write_text(driver_text, encoding="utf-8", newline="\n")
     aoa_doc = root / "docs/usb-aoa-windows-driver.md"
     aoa_doc_text = aoa_doc.read_text(encoding="utf-8")
     aoa_doc_text, doc_intro_count = re.subn(

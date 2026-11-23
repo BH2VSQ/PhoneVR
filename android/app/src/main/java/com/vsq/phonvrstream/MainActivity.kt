@@ -553,7 +553,7 @@ class MainActivity : Activity(), SensorEventListener {
             clipToPadding = false
         }
         controllerCandidateList = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        scroll.addView(controllerCandidateList, ScrollView.LayoutParams(-1, -2))
+        scroll.addView(controllerCandidateList, FrameLayout.LayoutParams(-1, -2))
         panel.addView(scroll, LinearLayout.LayoutParams(-1, 0, 1f))
         panel.addView(label("分配左右手柄：扫描到的设备可分别指定为左手或右手。两个手柄需要同时保持唤醒。", secondary = true).apply {
             setPadding(0, dp(7), 0, dp(5))

@@ -21,6 +21,11 @@ class SettingsStore(context: Context) {
         blur = prefs.getFloat(KEY_BLUR, 0.0f),
         sharpness = prefs.getFloat(KEY_SHARPNESS, 0.35f),
         fovDegrees = prefs.getFloat(KEY_FOV, 90.0f),
+        swapEyes = prefs.getBoolean(KEY_SWAP_EYES, false),
+        leftEyeOffsetX = prefs.getFloat(KEY_LEFT_EYE_OFFSET_X, 0f),
+        leftEyeOffsetY = prefs.getFloat(KEY_LEFT_EYE_OFFSET_Y, 0f),
+        rightEyeOffsetX = prefs.getFloat(KEY_RIGHT_EYE_OFFSET_X, 0f),
+        rightEyeOffsetY = prefs.getFloat(KEY_RIGHT_EYE_OFFSET_Y, 0f),
     ).normalized()
 
     fun loadOpticalPresets(legacySettings: DisplaySettings = load()): List<OpticalPreset> {
@@ -98,6 +103,11 @@ class SettingsStore(context: Context) {
             .putFloat(KEY_BLUR, value.blur)
             .putFloat(KEY_SHARPNESS, value.sharpness)
             .putFloat(KEY_FOV, value.fovDegrees)
+            .putBoolean(KEY_SWAP_EYES, value.swapEyes)
+            .putFloat(KEY_LEFT_EYE_OFFSET_X, value.leftEyeOffsetX)
+            .putFloat(KEY_LEFT_EYE_OFFSET_Y, value.leftEyeOffsetY)
+            .putFloat(KEY_RIGHT_EYE_OFFSET_X, value.rightEyeOffsetX)
+            .putFloat(KEY_RIGHT_EYE_OFFSET_Y, value.rightEyeOffsetY)
             .apply()
     }
 
@@ -118,5 +128,10 @@ class SettingsStore(context: Context) {
         private const val KEY_BLUR = "blur"
         private const val KEY_SHARPNESS = "sharpness"
         private const val KEY_FOV = "fov_degrees"
+        private const val KEY_SWAP_EYES = "swap_eyes"
+        private const val KEY_LEFT_EYE_OFFSET_X = "left_eye_offset_x"
+        private const val KEY_LEFT_EYE_OFFSET_Y = "left_eye_offset_y"
+        private const val KEY_RIGHT_EYE_OFFSET_X = "right_eye_offset_x"
+        private const val KEY_RIGHT_EYE_OFFSET_Y = "right_eye_offset_y"
     }
 }

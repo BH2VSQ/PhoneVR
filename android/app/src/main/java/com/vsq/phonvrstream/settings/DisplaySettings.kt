@@ -22,6 +22,13 @@ data class DisplaySettings(
     val blur: Float = 0.0f,
     val sharpness: Float = 0.35f,
     val fovDegrees: Float = 90.0f,
+    /** Select the opposite SBS source half for each physical display eye. */
+    val swapEyes: Boolean = false,
+    /** Per-physical-eye image translation in normalized single-eye UV units. */
+    val leftEyeOffsetX: Float = 0.0f,
+    val leftEyeOffsetY: Float = 0.0f,
+    val rightEyeOffsetX: Float = 0.0f,
+    val rightEyeOffsetY: Float = 0.0f,
 ) {
     fun normalized(): DisplaySettings = copy(
         ipdMm = ipdMm.coerceIn(MIN_IPD_MM, MAX_IPD_MM),
@@ -40,6 +47,10 @@ data class DisplaySettings(
         blur = blur.coerceIn(0.0f, 1.0f),
         sharpness = sharpness.coerceIn(0.0f, 1.0f),
         fovDegrees = fovDegrees.coerceIn(60.0f, 115.0f),
+        leftEyeOffsetX = leftEyeOffsetX.coerceIn(-MAX_EYE_OFFSET, MAX_EYE_OFFSET),
+        leftEyeOffsetY = leftEyeOffsetY.coerceIn(-MAX_EYE_OFFSET, MAX_EYE_OFFSET),
+        rightEyeOffsetX = rightEyeOffsetX.coerceIn(-MAX_EYE_OFFSET, MAX_EYE_OFFSET),
+        rightEyeOffsetY = rightEyeOffsetY.coerceIn(-MAX_EYE_OFFSET, MAX_EYE_OFFSET),
     )
 
     fun withDaydreamView2017Profile(): DisplaySettings = copy(
@@ -73,6 +84,11 @@ data class DisplaySettings(
         .put("blur", blur.toDouble())
         .put("sharpness", sharpness.toDouble())
         .put("fovDegrees", fovDegrees.toDouble())
+        .put("swapEyes", swapEyes)
+        .put("leftEyeOffsetX", leftEyeOffsetX.toDouble())
+        .put("leftEyeOffsetY", leftEyeOffsetY.toDouble())
+        .put("rightEyeOffsetX", rightEyeOffsetX.toDouble())
+        .put("rightEyeOffsetY", rightEyeOffsetY.toDouble())
 
     /** Parses remote settings while preserving local defaults for omitted fields. */
     companion object {
@@ -92,6 +108,7 @@ data class DisplaySettings(
         const val MAX_TRAY_TO_LENS_CENTER_MM = 60.0f
         const val MIN_DISTORTION_K2 = -0.20f
         const val MAX_DISTORTION_K2 = 0.80f
+        const val MAX_EYE_OFFSET = 0.08f
 
         fun fromJson(json: JSONObject, fallback: DisplaySettings = DisplaySettings()): DisplaySettings = DisplaySettings(
             viewerProfileId = json.optString("viewerProfileId", fallback.viewerProfileId),
@@ -107,6 +124,11 @@ data class DisplaySettings(
             blur = json.optDouble("blur", fallback.blur.toDouble()).toFloat(),
             sharpness = json.optDouble("sharpness", fallback.sharpness.toDouble()).toFloat(),
             fovDegrees = json.optDouble("fovDegrees", fallback.fovDegrees.toDouble()).toFloat(),
+            swapEyes = json.optBoolean("swapEyes", fallback.swapEyes),
+            leftEyeOffsetX = json.optDouble("leftEyeOffsetX", fallback.leftEyeOffsetX.toDouble()).toFloat(),
+            leftEyeOffsetY = json.optDouble("leftEyeOffsetY", fallback.leftEyeOffsetY.toDouble()).toFloat(),
+            rightEyeOffsetX = json.optDouble("rightEyeOffsetX", fallback.rightEyeOffsetX.toDouble()).toFloat(),
+            rightEyeOffsetY = json.optDouble("rightEyeOffsetY", fallback.rightEyeOffsetY.toDouble()).toFloat(),
         ).normalized()
     }
 

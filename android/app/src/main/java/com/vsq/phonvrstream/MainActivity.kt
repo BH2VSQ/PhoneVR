@@ -64,6 +64,9 @@ class MainActivity : Activity(), SensorEventListener {
     private lateinit var menuVideoDetailText: TextView
     private lateinit var streamStatusText: TextView
     private lateinit var screenFlipButton: Button
+    private lateinit var eyeSwapButton: Button
+    private lateinit var calibrationDistortionButton: Button
+    private lateinit var stereoCalibrationStatusText: TextView
     private lateinit var menuPanel: LinearLayout
     private lateinit var dismissLayer: View
     private lateinit var settingsPanel: LinearLayout
@@ -86,6 +89,8 @@ class MainActivity : Activity(), SensorEventListener {
     private var connectionTransportMessage = "当前连接方式：未连接"
     private var startupDiscoveryStarted = false
     private var screenFlipped = false
+    private var stereoCalibrationMode = StereoRenderer.CALIBRATION_OFF
+    private var calibrationDistortionEnabled = false
     @Volatile private var videoStreamStats = VideoStreamStats()
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -183,7 +188,8 @@ class MainActivity : Activity(), SensorEventListener {
             applyRemoteDisplaySettings = { json ->
                 check(!isFinishing && !isDestroyed) { "Activity is no longer active" }
                 settings = DisplaySettings.fromJson(json, settings).normalized()
-                settingsStore.save(settings)
+                persistActiveOpticalSettings(publish = false)
+                if (::eyeSwapButton.isInitialized) eyeSwapButton.text = eyeSwapButtonText()
                 updateRendererSettings()
                 // Do not rebuild the panel during a remote transaction. Its widgets
                 // read the persisted state when reopened, avoiding view-tree races.
@@ -790,6 +796,88 @@ class MainActivity : Activity(), SensorEventListener {
             orientation = LinearLayout.VERTICAL
             setPadding(0, dp(2), 0, dp(8))
         }
+
+        list.addView(label("双目诊断", secondary = false).apply {
+            textSize = 14f
+            typeface = Typeface.DEFAULT_BOLD
+            setPadding(0, dp(4), 0, dp(3))
+        })
+        list.addView(label(
+            "建议先关闭校正观察原始图，再启用校正。测试图由手机本地生成，不依赖 PC 或网络视频。",
+            secondary = true,
+        ).apply { setPadding(0, 0, 0, dp(5)) })
+        stereoCalibrationStatusText = label(stereoCalibrationModeDescription(), secondary = false).apply {
+            setTextColor(Color.rgb(91, 206, 250))
+            setPadding(0, 0, 0, dp(5))
+        }
+        list.addView(stereoCalibrationStatusText)
+
+        fun addCalibrationRow(
+            firstText: String,
+            firstMode: Int,
+            secondText: String,
+            secondMode: Int,
+        ) {
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+            }
+            row.addView(makeButton(firstText) { selectStereoCalibrationMode(firstMode) }.apply {
+                layoutParams = LinearLayout.LayoutParams(0, dp(38), 1f).apply { rightMargin = dp(4) }
+            })
+            row.addView(makeButton(secondText) { selectStereoCalibrationMode(secondMode) }.apply {
+                layoutParams = LinearLayout.LayoutParams(0, dp(38), 1f).apply { leftMargin = dp(4) }
+            })
+            list.addView(row, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(5) })
+        }
+        addCalibrationRow("双眼同图", StereoRenderer.CALIBRATION_ALIGNMENT,
+            "左右眼标识", StereoRenderer.CALIBRATION_EYE_LABELS)
+        addCalibrationRow("仅显示左眼", StereoRenderer.CALIBRATION_LEFT_ONLY,
+            "仅显示右眼", StereoRenderer.CALIBRATION_RIGHT_ONLY)
+        addCalibrationRow("立体视差", StereoRenderer.CALIBRATION_DEPTH,
+            "恢复实时视频", StereoRenderer.CALIBRATION_OFF)
+
+        calibrationDistortionButton = makeButton(calibrationDistortionButtonText()) {
+            calibrationDistortionEnabled = !calibrationDistortionEnabled
+            renderer.setCalibrationDistortionEnabled(calibrationDistortionEnabled)
+            calibrationDistortionButton.text = calibrationDistortionButtonText()
+        }
+        list.addView(calibrationDistortionButton, LinearLayout.LayoutParams(-1, dp(36)).apply { bottomMargin = dp(5) })
+
+        eyeSwapButton = makeButton(eyeSwapButtonText()) {
+            settings = settings.copy(swapEyes = !settings.swapEyes).normalized()
+            eyeSwapButton.text = eyeSwapButtonText()
+            persistActiveOpticalSettings(publish = true)
+            updateRendererSettings()
+        }
+        list.addView(eyeSwapButton, LinearLayout.LayoutParams(-1, dp(38)).apply { bottomMargin = dp(5) })
+        list.addView(label("每眼画面位置微调", secondary = false).apply {
+            textSize = 13f
+            typeface = Typeface.DEFAULT_BOLD
+            setPadding(0, dp(5), 0, dp(2))
+        })
+        list.addView(label("左右眼偏移独立保存到当前光学预设。正值向右或向下移动源图像。", true))
+        addEyeOffsetSlider(list, "左眼水平", settings.leftEyeOffsetX) { value -> settings.copy(leftEyeOffsetX = value) }
+        addEyeOffsetSlider(list, "左眼垂直", settings.leftEyeOffsetY) { value -> settings.copy(leftEyeOffsetY = value) }
+        addEyeOffsetSlider(list, "右眼水平", settings.rightEyeOffsetX) { value -> settings.copy(rightEyeOffsetX = value) }
+        addEyeOffsetSlider(list, "右眼垂直", settings.rightEyeOffsetY) { value -> settings.copy(rightEyeOffsetY = value) }
+        list.addView(makeButton("重置左右眼偏移") {
+            settings = settings.copy(
+                leftEyeOffsetX = 0f, leftEyeOffsetY = 0f,
+                rightEyeOffsetX = 0f, rightEyeOffsetY = 0f,
+            ).normalized()
+            persistActiveOpticalSettings(publish = true)
+            updateRendererSettings()
+            recreateSettingsPanelContent()
+        }.apply {
+            layoutParams = LinearLayout.LayoutParams(-1, dp(36)).apply { topMargin = dp(4); bottomMargin = dp(10) }
+        })
+
+        list.addView(label("光学预设库", secondary = false).apply {
+            textSize = 14f
+            typeface = Typeface.DEFAULT_BOLD
+            setPadding(0, dp(8), 0, dp(5))
+        })
         if (opticalPresets.isEmpty()) {
             list.addView(label("尚无可用预设。请连接电脑端同步。", secondary = true))
         } else {
@@ -833,6 +921,88 @@ class MainActivity : Activity(), SensorEventListener {
             layoutParams = LinearLayout.LayoutParams(-1, dp(42)).apply { topMargin = dp(8) }
         })
         return panel
+    }
+
+    private fun stereoCalibrationModeDescription(): String = when (stereoCalibrationMode) {
+        StereoRenderer.CALIBRATION_ALIGNMENT -> "当前模式：双眼同图，对齐网格与同心圆"
+        StereoRenderer.CALIBRATION_EYE_LABELS -> "当前模式：源左眼为红色 L，源右眼为蓝色 R"
+        StereoRenderer.CALIBRATION_LEFT_ONLY -> "当前模式：仅源左眼有图，另一眼应为黑屏"
+        StereoRenderer.CALIBRATION_RIGHT_ONLY -> "当前模式：仅源右眼有图，另一眼应为黑屏"
+        StereoRenderer.CALIBRATION_DEPTH -> "当前模式：近处目标带有交叉视差，用于检查立体方向"
+        else -> "当前模式：实时视频"
+    }
+
+    private fun eyeSwapButtonText(): String =
+        "左右眼源交换：${if (settings.swapEyes) "开" else "关"}"
+
+    private fun calibrationDistortionButtonText(): String =
+        "测试图镜片畸变：${if (calibrationDistortionEnabled) "开" else "关（原始 SBS）"}"
+
+    private fun selectStereoCalibrationMode(mode: Int) {
+        stereoCalibrationMode = mode
+        renderer.setCalibrationMode(mode)
+        if (::stereoCalibrationStatusText.isInitialized) {
+            stereoCalibrationStatusText.text = stereoCalibrationModeDescription()
+        }
+    }
+
+    private fun addEyeOffsetSlider(
+        parent: LinearLayout,
+        title: String,
+        initialValue: Float,
+        update: (Float) -> DisplaySettings,
+    ) {
+        val block = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(0, dp(4), 0, dp(2))
+        }
+        val header = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        header.addView(label(title), LinearLayout.LayoutParams(0, -2, 1f))
+        val valueLabel = label(formatEyeOffset(initialValue)).apply {
+            typeface = Typeface.MONOSPACE
+            setTextColor(Color.rgb(130, 195, 255))
+        }
+        header.addView(valueLabel)
+        block.addView(header)
+        val seek = SeekBar(this).apply {
+            max = 200
+            progress = (100f + initialValue.coerceIn(-DisplaySettings.MAX_EYE_OFFSET, DisplaySettings.MAX_EYE_OFFSET) /
+                DisplaySettings.MAX_EYE_OFFSET * 100f).toInt().coerceIn(0, 200)
+        }
+        seek.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
+                val value = (progress - 100) / 100f * DisplaySettings.MAX_EYE_OFFSET
+                valueLabel.text = formatEyeOffset(value)
+                settings = update(value).normalized()
+                persistActiveOpticalSettings(publish = false)
+                updateRendererSettings()
+            }
+            override fun onStartTrackingTouch(seekBar: SeekBar?) = Unit
+            override fun onStopTrackingTouch(seekBar: SeekBar?) {
+                persistActiveOpticalSettings(publish = true)
+            }
+        })
+        block.addView(seek)
+        parent.addView(block)
+    }
+
+    private fun formatEyeOffset(value: Float): String =
+        String.format(java.util.Locale.US, "%+.3f", value)
+
+    private fun persistActiveOpticalSettings(publish: Boolean) {
+        settings = settings.normalized()
+        settingsStore.save(settings)
+        val activeIndex = opticalPresets.indexOfFirst { it.id == activeOpticalPresetId }
+        if (activeIndex >= 0) {
+            val updated = opticalPresets.toMutableList()
+            updated[activeIndex] = updated[activeIndex].copy(settings = settings)
+            opticalPresets = updated
+            settingsStore.saveOpticalPresets(updated)
+        }
+        if (publish && pcConnected) networkClient.publishDisplaySettings(settings.toJson())
     }
 
     private fun applyLocalOpticalPreset(presetId: String) {

@@ -33,6 +33,9 @@ class StereoRenderer : GLSurfaceView.Renderer {
     private var sceneProgram = 0
     private var postProgram = 0
     private var videoProgram = 0
+    private var calibrationProgram = 0
+    @Volatile private var calibrationMode = CALIBRATION_OFF
+    @Volatile private var calibrationDistortionEnabled = false
     private var videoTextureId = 0
     private var videoSurfaceTexture: SurfaceTexture? = null
     private var videoSurface: Surface? = null
@@ -59,10 +62,15 @@ class StereoRenderer : GLSurfaceView.Renderer {
     )
     private data class PostLocations(
         val position: Int, val eyeSign: Int, val lensCenter: Int, val distortion: Int,
-        val blur: Int, val sharpness: Int, val sourceTexel: Int, val aspect: Int, val sceneTexture: Int,
+        val blur: Int, val sharpness: Int, val sourceTexel: Int, val aspect: Int,
+        val sceneTexture: Int, val swapEyes: Int, val eyeOffset: Int,
+    )
+    private data class CalibrationLocations(
+        val position: Int, val eyeSign: Int, val mode: Int,
     )
     private lateinit var scene: SceneLocations
     private lateinit var post: PostLocations
+    private lateinit var calibration: CalibrationLocations
 
     fun setVideoSurfaceListener(listener: (Surface) -> Unit) {
         videoSurfaceListener = listener
@@ -114,6 +122,16 @@ class StereoRenderer : GLSurfaceView.Renderer {
         videoSurfaceListener?.invoke(surface)
     }
 
+    /** Render a built-in stereo diagnostic chart instead of the received video. */
+    fun setCalibrationMode(mode: Int) {
+        calibrationMode = mode.coerceIn(CALIBRATION_OFF, CALIBRATION_DEPTH)
+    }
+
+    /** Lens warp is disabled by default for raw SBS checks and can be enabled for optical checks. */
+    fun setCalibrationDistortionEnabled(enabled: Boolean) {
+        calibrationDistortionEnabled = enabled
+    }
+
     fun updateSettings(value: DisplaySettings, physicalScreenWidthMm: Float) {
         val normalized = value.normalized()
         displaySettings = normalized
@@ -147,6 +165,12 @@ class StereoRenderer : GLSurfaceView.Renderer {
         sceneProgram = createProgram(VERTEX_SHADER, SCENE_FRAGMENT_SHADER)
         postProgram = createProgram(VERTEX_SHADER, POST_FRAGMENT_SHADER)
         videoProgram = createProgram(VERTEX_SHADER, VIDEO_FRAGMENT_SHADER)
+        calibrationProgram = createProgram(VERTEX_SHADER, CALIBRATION_FRAGMENT_SHADER)
+        calibration = CalibrationLocations(
+            position = GLES30.glGetAttribLocation(calibrationProgram, "aPosition"),
+            eyeSign = GLES30.glGetUniformLocation(calibrationProgram, "uEyeSign"),
+            mode = GLES30.glGetUniformLocation(calibrationProgram, "uMode"),
+        )
         video = VideoLocations(
             position = GLES30.glGetAttribLocation(videoProgram, "aPosition"),
             texture = GLES30.glGetUniformLocation(videoProgram, "uVideoTexture"),
@@ -172,6 +196,8 @@ class StereoRenderer : GLSurfaceView.Renderer {
             sourceTexel = GLES30.glGetUniformLocation(postProgram, "uSourceTexel"),
             aspect = GLES30.glGetUniformLocation(postProgram, "uAspect"),
             sceneTexture = GLES30.glGetUniformLocation(postProgram, "uSceneTexture"),
+            swapEyes = GLES30.glGetUniformLocation(postProgram, "uSwapEyes"),
+            eyeOffset = GLES30.glGetUniformLocation(postProgram, "uEyeOffset"),
         )
     }
 
@@ -219,7 +245,22 @@ class StereoRenderer : GLSurfaceView.Renderer {
         GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, framebuffer)
         GLES30.glViewport(0, 0, width, height)
         GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT)
-        if (hasVideoFrame && !videoStreamStale && videoProgram != 0 && videoTextureId != 0) {
+        val activeCalibrationMode = calibrationMode
+        if (activeCalibrationMode != CALIBRATION_OFF && calibrationProgram != 0) {
+            // Draw the diagnostic SBS chart in source-eye order. The post pass
+            // below then applies the same eye routing, offsets and lens warp as
+            // the live video path, so the test reveals the actual optical path.
+            GLES30.glUseProgram(calibrationProgram)
+            bindPosition(calibration.position)
+            GLES30.glUniform1i(calibration.mode, activeCalibrationMode)
+            GLES30.glViewport(0, 0, halfWidth, height)
+            GLES30.glUniform1f(calibration.eyeSign, -1f)
+            GLES30.glDrawArrays(GLES30.GL_TRIANGLE_STRIP, 0, 4)
+            GLES30.glViewport(halfWidth, 0, width - halfWidth, height)
+            GLES30.glUniform1f(calibration.eyeSign, 1f)
+            GLES30.glDrawArrays(GLES30.GL_TRIANGLE_STRIP, 0, 4)
+            GLES30.glDisableVertexAttribArray(calibration.position)
+        } else if (hasVideoFrame && !videoStreamStale && videoProgram != 0 && videoTextureId != 0) {
             GLES30.glUseProgram(videoProgram)
             bindPosition(video.position)
             GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
@@ -261,17 +302,25 @@ class StereoRenderer : GLSurfaceView.Renderer {
         GLES30.glUniform1i(post.sceneTexture, 0)
         GLES30.glUniform2f(post.sourceTexel, 1f / width, 1f / height)
         GLES30.glUniform1f(post.aspect, halfWidth.toFloat() / height.toFloat())
-        GLES30.glUniform2f(post.distortion, settings.distortionK1, settings.distortionK2)
-        GLES30.glUniform1f(post.blur, settings.blur)
-        GLES30.glUniform1f(post.sharpness, settings.sharpness)
+        val applyLensProcessing = activeCalibrationMode == CALIBRATION_OFF || calibrationDistortionEnabled
+        GLES30.glUniform2f(
+            post.distortion,
+            if (applyLensProcessing) settings.distortionK1 else 0f,
+            if (applyLensProcessing) settings.distortionK2 else 0f,
+        )
+        GLES30.glUniform1f(post.blur, if (applyLensProcessing) settings.blur else 0f)
+        GLES30.glUniform1f(post.sharpness, if (applyLensProcessing) settings.sharpness else 0f)
+        GLES30.glUniform1f(post.swapEyes, if (settings.swapEyes) 1f else 0f)
 
         GLES30.glViewport(0, 0, halfWidth, height)
         GLES30.glUniform1f(post.eyeSign, -1f)
         GLES30.glUniform2f(post.lensCenter, leftLensCenterX, settings.lensCenterY)
+        GLES30.glUniform2f(post.eyeOffset, settings.leftEyeOffsetX, settings.leftEyeOffsetY)
         GLES30.glDrawArrays(GLES30.GL_TRIANGLE_STRIP, 0, 4)
         GLES30.glViewport(halfWidth, 0, width - halfWidth, height)
         GLES30.glUniform1f(post.eyeSign, 1f)
         GLES30.glUniform2f(post.lensCenter, rightLensCenterX, settings.lensCenterY)
+        GLES30.glUniform2f(post.eyeOffset, settings.rightEyeOffsetX, settings.rightEyeOffsetY)
         GLES30.glDrawArrays(GLES30.GL_TRIANGLE_STRIP, 0, 4)
         GLES30.glDisableVertexAttribArray(post.position)
         GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, 0)
@@ -350,6 +399,13 @@ class StereoRenderer : GLSurfaceView.Renderer {
     }
 
     companion object {
+        const val CALIBRATION_OFF = 0
+        const val CALIBRATION_ALIGNMENT = 1
+        const val CALIBRATION_EYE_LABELS = 2
+        const val CALIBRATION_LEFT_ONLY = 3
+        const val CALIBRATION_RIGHT_ONLY = 4
+        const val CALIBRATION_DEPTH = 5
+
         private const val VIDEO_WIDTH = 1600
         private const val VIDEO_HEIGHT = 720
         private const val VERTEX_SHADER = """
@@ -454,6 +510,93 @@ class StereoRenderer : GLSurfaceView.Renderer {
             }
         """
 
+        private const val CALIBRATION_FRAGMENT_SHADER = """
+            #version 300 es
+            precision highp float;
+            in vec2 vUv;
+            out vec4 outColor;
+            uniform float uEyeSign;
+            uniform int uMode;
+
+            float rectMask(vec2 p, vec2 center, vec2 halfSize) {
+                vec2 d = abs(p - center) - halfSize;
+                return 1.0 - smoothstep(0.0, 0.004, max(d.x, d.y));
+            }
+
+            float segmentMask(vec2 p, vec2 a, vec2 b, float radius) {
+                vec2 pa = p - a;
+                vec2 ba = b - a;
+                float h = clamp(dot(pa, ba) / max(dot(ba, ba), 0.00001), 0.0, 1.0);
+                return 1.0 - smoothstep(radius, radius + 0.004, length(pa - ba * h));
+            }
+
+            void main() {
+                bool isLeft = uEyeSign < 0.0;
+                if ((uMode == 3 && !isLeft) || (uMode == 4 && isLeft)) {
+                    outColor = vec4(0.0, 0.0, 0.0, 1.0);
+                    return;
+                }
+
+                vec2 p = vUv;
+                vec2 centered = p - vec2(0.5);
+                vec3 base = vec3(0.014, 0.020, 0.031);
+                if (uMode == 2) {
+                    base = isLeft ? vec3(0.28, 0.045, 0.025) : vec3(0.015, 0.16, 0.34);
+                }
+
+                float gx = 1.0 - smoothstep(0.0015, 0.004, abs(fract(p.x * 10.0) - 0.5) / 10.0);
+                float gy = 1.0 - smoothstep(0.0015, 0.004, abs(fract(p.y * 8.0) - 0.5) / 8.0);
+                float grid = max(gx, gy);
+                float r = length(centered);
+                float rings = 0.0;
+                rings = max(rings, 1.0 - smoothstep(0.002, 0.006, abs(r - 0.16)));
+                rings = max(rings, 1.0 - smoothstep(0.002, 0.006, abs(r - 0.30)));
+                rings = max(rings, 1.0 - smoothstep(0.002, 0.006, abs(r - 0.44)));
+                vec3 color = base + vec3(0.12, 0.20, 0.27) * grid * 0.38;
+                color += vec3(0.20, 0.34, 0.43) * rings * 0.55;
+
+                float centerCross = max(
+                    rectMask(p, vec2(0.5), vec2(0.12, 0.0018)),
+                    rectMask(p, vec2(0.5), vec2(0.0018, 0.12))
+                );
+                color = mix(color, vec3(0.86, 0.91, 0.96), centerCross);
+
+                float targetX = 0.5;
+                if (uMode == 5) targetX += isLeft ? 0.055 : -0.055;
+                float targetRadius = length(p - vec2(targetX, 0.5));
+                float targetRing = 1.0 - smoothstep(0.003, 0.009, abs(targetRadius - 0.035));
+                float targetDot = 1.0 - smoothstep(0.012, 0.018, targetRadius);
+                color = mix(color, uMode == 5 ? vec3(1.0, 0.78, 0.16) : vec3(0.32, 0.91, 0.68), max(targetRing, targetDot));
+
+                float border = max(
+                    max(rectMask(p, vec2(0.5, 0.025), vec2(0.47, 0.002)), rectMask(p, vec2(0.5, 0.975), vec2(0.47, 0.002))),
+                    max(rectMask(p, vec2(0.025, 0.5), vec2(0.002, 0.46)), rectMask(p, vec2(0.975, 0.5), vec2(0.002, 0.46)))
+                );
+                color = mix(color, vec3(0.95, 0.72, 0.18), border);
+
+                if (uMode == 2) {
+                    float glyph = 0.0;
+                    if (isLeft) {
+                        glyph = max(
+                            rectMask(p, vec2(0.37, 0.77), vec2(0.018, 0.105)),
+                            rectMask(p, vec2(0.425, 0.685), vec2(0.073, 0.018))
+                        );
+                    } else {
+                        glyph = max(
+                            rectMask(p, vec2(0.585, 0.75), vec2(0.018, 0.12)),
+                            max(
+                                max(rectMask(p, vec2(0.635, 0.85), vec2(0.068, 0.018)), rectMask(p, vec2(0.635, 0.75), vec2(0.068, 0.018))),
+                                max(segmentMask(p, vec2(0.70, 0.84), vec2(0.70, 0.76), 0.018), segmentMask(p, vec2(0.60, 0.72), vec2(0.69, 0.63), 0.018))
+                            )
+                        );
+                    }
+                    color = mix(color, vec3(0.98), glyph);
+                }
+
+                outColor = vec4(clamp(color, 0.0, 1.0), 1.0);
+            }
+        """
+
         private const val POST_FRAGMENT_SHADER = """
             #version 300 es
             precision highp float;
@@ -466,6 +609,8 @@ class StereoRenderer : GLSurfaceView.Renderer {
             uniform float uSharpness;
             uniform vec2 uSourceTexel;
             uniform float uAspect;
+            uniform float uSwapEyes;
+            uniform vec2 uEyeOffset;
             uniform sampler2D uSceneTexture;
 
             vec3 sampleScene(vec2 uv, float eyeMin, float eyeMax) {
@@ -481,15 +626,23 @@ class StereoRenderer : GLSurfaceView.Renderer {
                 // This is the polynomial form used by the SDK's pre-warp path.
                 float rd2 = dot(radialDelta, radialDelta);
                 float radialScale = 1.0 + uDistortion.x * rd2 + uDistortion.y * rd2 * rd2;
-                vec2 warpedUv = uLensCenter + delta * radialScale;
+                // Positive X/Y values move the displayed source image right/down:
+                // X therefore subtracts from the sample coordinate, while the
+                // GL texture Y axis is bottom-up and uses the opposite sign.
+                vec2 warpedUv = uLensCenter + delta * radialScale + vec2(-uEyeOffset.x, uEyeOffset.y);
                 if (warpedUv.x < 0.0 || warpedUv.x > 1.0 || warpedUv.y < 0.0 || warpedUv.y > 1.0) {
                     outColor = vec4(0.0, 0.0, 0.0, 1.0);
                     return;
                 }
 
-                float eyeMin = uEyeSign < 0.0 ? 0.0005 : 0.5005;
-                float eyeMax = uEyeSign < 0.0 ? 0.4995 : 0.9995;
-                vec2 sourceUv = vec2((uEyeSign < 0.0 ? 0.0 : 0.5) + warpedUv.x * 0.5,
+                // uEyeSign identifies the physical half-screen viewport and
+                // therefore selects its lens center and user adjustment.
+                // Source-eye routing is independent and can be swapped without
+                // moving either physical lens center.
+                float sourceEyeSign = uSwapEyes > 0.5 ? -uEyeSign : uEyeSign;
+                float eyeMin = sourceEyeSign < 0.0 ? 0.0005 : 0.5005;
+                float eyeMax = sourceEyeSign < 0.0 ? 0.4995 : 0.9995;
+                vec2 sourceUv = vec2((sourceEyeSign < 0.0 ? 0.0 : 0.5) + warpedUv.x * 0.5,
                                      warpedUv.y);
                 vec2 stepUv = uSourceTexel * (1.0 + max(uBlur, uSharpness) * 5.0);
                 vec3 center = sampleScene(sourceUv, eyeMin, eyeMax);

@@ -1,6 +1,6 @@
 # PhoneVRStream
 
-Repository revision: **0.5.17**. Windows Host: **0.5.17**. Android client: **0.5.17**. Control protocol: **v1**; video packet protocol: **v1**.
+Repository revision: **0.5.18**. Windows Host: **0.5.18**. Android client: **0.5.18**. Control protocol: **v1**; video packet protocol: **v1**.
 
 PhoneVRStream is a multi-component project for using an Android phone as a PC VR streaming HMD. Both applications live in one repository and use independent build/test pipelines.
 
@@ -22,7 +22,7 @@ PhoneVRStream/
 └── dist/                       # Local build output (git-ignored)
 ```
 
-## Windows Host 0.5.17 bundled SteamVR driver
+## Windows Host 0.5.18 bundled SteamVR driver
 
 The virtual display timing is fixed at 72 Hz in this revision. The adjustable refresh-rate menu and its configuration file have been removed; this avoids presenting refresh-rate choices before the PC compositor and phone rendering path have been profiled end to end.
 
@@ -49,11 +49,12 @@ The normal `PhoneVRHost.exe` is built with the Windows GUI subsystem and opens t
 
 All helper processes launched by the GUI Host use `CREATE_NO_WINDOW`, including Steam registry discovery, SteamVR driver registration and FFmpeg inventory/preflight/streaming. Their captured output remains available in the Host log. See `docs/2026-11-22-silent-host-child-processes.md`.
 
-## Android client 0.5.17
+## Android client 0.5.18
 
 - Landscape immersive display with OpenGL ES 3.0 stereo rendering.
 - Locally stored optical preset selector with Daydream View v1.0 (2016), Daydream View v2.0 (2017) and Generic Cardboard built-in presets.
-- Existing manual display settings are migrated into an Android-local optical preset during the first upgrade; parameter editing is performed in the Windows Host preset editor.
+- Existing manual display settings are migrated into an Android-local optical preset during the first upgrade. The Android **双目诊断** panel provides source-eye swap, local L/R identifiers, single-eye tests, identical-image alignment and crossed-disparity checks, plus independent per-eye X/Y image offsets.
+- Per-eye routing and offsets are part of the shared display-settings JSON model and are retained by the Windows Host preset manager. Diagnostic patterns bypass lens warp by default, with an independent toggle for testing the current optical post-process.
 - IMU sensor processing on a dedicated HandlerThread, quaternion-continuous pose transmission over UDP at up to 200 Hz on LAN or over the native AOA Bulk channel on USB, TCP-style pairing/control framing and heartbeat, battery reporting and bounded auto-reconnect.
 - Automatic LAN discovery across active IPv4 interfaces and connection to the remembered Host. A separate **USB AOA 直连** action uses Android Open Accessory mode and a full-duplex Bulk stream, with no USB tethering, RNDIS or ADB data channel.
 - On normal startup, the app discovers the Host over LAN while independently monitoring for an AOA accessory session. The AOA auxiliary session feeds USB video into the same receiver as LAN UDP video and sends pose only when the network control session is unavailable. The explicit **USB AOA 直连** action remains available for USB-only operation. Duplicate AOA startup notifications are coalesced into one connection worker, and Android re-resolves the accessory after permission is granted before opening its descriptor.
@@ -65,7 +66,7 @@ All helper processes launched by the GUI Host use `CREATE_NO_WINDOW`, including 
 - The AOA reader uses 16 KiB raw reads before parsing PVRU headers. The stream decoder reassembles frames split across reads or coalesced by the USB stack; it does not issue 16-byte reads directly to the accessory file descriptor. Android raw-read sizes and PVRU CRC32 values are logged for diagnosis.
 
 
-## SteamVR driver 0.5.17
+## SteamVR driver 0.5.18
 
 The PhoneVR Host contains its own Windows x64 OpenVR driver inside the Host executable. The normal build compiles `steamvr-driver/`, embeds the resulting manifest, DLL and resources into both Host executables, and no longer asks users to download or select a ZIP. On startup, the Host checks whether SteamVR is installed and whether the user has disabled automatic deployment. When enabled, it copies the embedded driver into a content-versioned directory under `%LOCALAPPDATA%\PhoneVR\SteamVRDriver` and registers it with SteamVR's own `vrpathreg.exe`.
 

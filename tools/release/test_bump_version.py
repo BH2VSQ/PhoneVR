@@ -45,6 +45,11 @@ class VersionBumpTests(unittest.TestCase):
             (root / "steamvr-driver/README.md").write_text('# PhoneVR SteamVR Driver — 0.3.8\n', encoding="utf-8")
             (root / "VERSION").write_text('0.3.8\n', encoding="ascii")
             (root / "CHANGELOG.md").write_text('# Changelog\n', encoding="utf-8")
+            (root / "BUILD_STATUS.md").write_text(
+                '# PhoneVR 0.3.8 build status\n\n'
+                '- Android metadata is `versionName 0.3.8`, `versionCode 12`; repository, Host, SteamVR driver and AOA accessory metadata are synchronized to `0.3.8`.\n',
+                encoding="utf-8",
+            )
 
             version, version_code = bump_repository(root, "patch")
             self.assertEqual(version, "0.3.9")
@@ -66,6 +71,9 @@ class VersionBumpTests(unittest.TestCase):
             self.assertIn('## SteamVR driver 0.3.9', (root / "README.md").read_text())
             self.assertEqual((root / "VERSION").read_text().strip(), "0.3.9")
             self.assertTrue((root / "CHANGELOG.md").read_text().startswith("## 0.3.9 - Automated release"))
+            build_status = (root / "BUILD_STATUS.md").read_text()
+            self.assertTrue(build_status.startswith("# PhoneVR 0.3.9 build status"))
+            self.assertIn("versionCode 13", build_status)
 
 
 if __name__ == "__main__":

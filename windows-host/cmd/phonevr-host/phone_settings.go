@@ -26,6 +26,11 @@ type PhoneDisplaySettings struct {
 	Blur                    float32 `json:"blur"`
 	Sharpness               float32 `json:"sharpness"`
 	FOVDegrees              float32 `json:"fovDegrees"`
+	SwapEyes                bool    `json:"swapEyes"`
+	LeftEyeOffsetX          float32 `json:"leftEyeOffsetX"`
+	LeftEyeOffsetY          float32 `json:"leftEyeOffsetY"`
+	RightEyeOffsetX         float32 `json:"rightEyeOffsetX"`
+	RightEyeOffsetY         float32 `json:"rightEyeOffsetY"`
 }
 
 func DefaultPhoneDisplaySettings() PhoneDisplaySettings {
@@ -34,12 +39,13 @@ func DefaultPhoneDisplaySettings() PhoneDisplaySettings {
 		ScreenToLensDistanceMm: 40, ScreenVerticalAlignment: "center",
 		TrayToLensCenterMm: 35, LensCenterX: .5, LensCenterY: .5,
 		DistortionK1: .18, DistortionK2: .04, Blur: 0, Sharpness: .35, FOVDegrees: 90,
+		SwapEyes: false,
 	}
 }
 
 func (s PhoneDisplaySettings) Normalized() PhoneDisplaySettings {
 	defaults := DefaultPhoneDisplaySettings()
-	if s.ViewerProfileID != "custom" && s.ViewerProfileID != "daydream_view_2017" {
+	if s.ViewerProfileID != "custom" && s.ViewerProfileID != "daydream_view_2016" && s.ViewerProfileID != "daydream_view_2017" {
 		s.ViewerProfileID = defaults.ViewerProfileID
 	}
 	if s.ScreenVerticalAlignment != "center" && s.ScreenVerticalAlignment != "top" && s.ScreenVerticalAlignment != "bottom" {
@@ -52,10 +58,14 @@ func (s PhoneDisplaySettings) Normalized() PhoneDisplaySettings {
 	s.LensCenterX = clampFloat32(s.LensCenterX, .35, .65)
 	s.LensCenterY = clampFloat32(s.LensCenterY, .35, .65)
 	s.DistortionK1 = clampFloat32(s.DistortionK1, -.30, .60)
-	s.DistortionK2 = clampFloat32(s.DistortionK2, -.20, .30)
+	s.DistortionK2 = clampFloat32(s.DistortionK2, -.20, .80)
 	s.Blur = clampFloat32(s.Blur, 0, 1)
 	s.Sharpness = clampFloat32(s.Sharpness, 0, 1)
 	s.FOVDegrees = clampFloat32(s.FOVDegrees, 60, 115)
+	s.LeftEyeOffsetX = clampFloat32(s.LeftEyeOffsetX, -.08, .08)
+	s.LeftEyeOffsetY = clampFloat32(s.LeftEyeOffsetY, -.08, .08)
+	s.RightEyeOffsetX = clampFloat32(s.RightEyeOffsetX, -.08, .08)
+	s.RightEyeOffsetY = clampFloat32(s.RightEyeOffsetY, -.08, .08)
 	// The Daydream preset button seeds the published starting values in the UI.
 	// Keep subsequent manual calibration edits when the profile remains selected.
 	return s

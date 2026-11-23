@@ -167,6 +167,35 @@ class VideoStreamingIntegrationTests(unittest.TestCase):
         self.assertIn("poseText", menu)
         self.assertIn("menuVideoDetailText", menu)
 
+
+    def test_android_stereo_source_routing_and_calibration_are_independent(self):
+        for mode in (
+            "CALIBRATION_ALIGNMENT",
+            "CALIBRATION_EYE_LABELS",
+            "CALIBRATION_LEFT_ONLY",
+            "CALIBRATION_RIGHT_ONLY",
+            "CALIBRATION_DEPTH",
+        ):
+            self.assertIn(mode, ANDROID_RENDERER)
+        self.assertIn("uniform float uSwapEyes", ANDROID_RENDERER)
+        self.assertIn("float sourceEyeSign = uSwapEyes > 0.5 ? -uEyeSign : uEyeSign", ANDROID_RENDERER)
+        self.assertIn("uniform vec2 uEyeOffset", ANDROID_RENDERER)
+        self.assertIn("settings.leftEyeOffsetX", ANDROID_RENDERER)
+        self.assertIn("settings.rightEyeOffsetX", ANDROID_RENDERER)
+        self.assertIn("setCalibrationDistortionEnabled", ANDROID_RENDERER)
+        activity = (ROOT / "android/app/src/main/java/com/vsq/phonvrstream/MainActivity.kt").read_text(encoding="utf-8")
+        self.assertIn("左右眼源交换", activity)
+        self.assertIn("仅显示左眼", activity)
+        self.assertIn("仅显示右眼", activity)
+        settings = (ROOT / "android/app/src/main/java/com/vsq/phonvrstream/settings/DisplaySettings.kt").read_text(encoding="utf-8")
+        self.assertIn('put("swapEyes", swapEyes)', settings)
+        self.assertIn('put("leftEyeOffsetX", leftEyeOffsetX.toDouble())', settings)
+        self.assertIn('put("rightEyeOffsetY", rightEyeOffsetY.toDouble())', settings)
+        host_settings = (ROOT / "windows-host/cmd/phonevr-host/phone_settings.go").read_text(encoding="utf-8")
+        self.assertIn('json:"swapEyes"', host_settings)
+        self.assertIn('json:"leftEyeOffsetX"', host_settings)
+        self.assertIn('json:"rightEyeOffsetY"', host_settings)
+
     def test_android_screen_flip_persists_reverse_landscape_orientation(self):
         activity = (ROOT / "android/app/src/main/java/com/vsq/phonvrstream/MainActivity.kt").read_text(encoding="utf-8")
         store = (ROOT / "android/app/src/main/java/com/vsq/phonvrstream/settings/SettingsStore.kt").read_text(encoding="utf-8")

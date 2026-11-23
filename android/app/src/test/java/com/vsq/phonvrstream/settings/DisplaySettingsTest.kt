@@ -73,6 +73,38 @@ class DisplaySettingsTest {
     }
 
     @Test
+    fun stereoMappingAndPerEyeOffsetsArePersistableAndBounded() {
+        val original = DisplaySettings(
+            swapEyes = true,
+            leftEyeOffsetX = -0.025f,
+            leftEyeOffsetY = 0.012f,
+            rightEyeOffsetX = 0.04f,
+            rightEyeOffsetY = -0.018f,
+        )
+        val restored = DisplaySettings.fromJson(original.toJson())
+        assertEquals(original, restored)
+
+        val bounded = original.copy(
+            leftEyeOffsetX = -1f,
+            leftEyeOffsetY = 1f,
+            rightEyeOffsetX = 0.5f,
+            rightEyeOffsetY = -0.5f,
+        ).normalized()
+        assertEquals(-DisplaySettings.MAX_EYE_OFFSET, bounded.leftEyeOffsetX)
+        assertEquals(DisplaySettings.MAX_EYE_OFFSET, bounded.leftEyeOffsetY)
+        assertEquals(DisplaySettings.MAX_EYE_OFFSET, bounded.rightEyeOffsetX)
+        assertEquals(-DisplaySettings.MAX_EYE_OFFSET, bounded.rightEyeOffsetY)
+    }
+
+    @Test
+    fun olderRemoteSettingsPreserveFallbackStereoMapping() {
+        val fallback = DisplaySettings(swapEyes = true, leftEyeOffsetX = 0.02f)
+        val restored = DisplaySettings.fromJson(org.json.JSONObject().put("ipdMm", 65.0), fallback)
+        assertEquals(true, restored.swapEyes)
+        assertEquals(0.02f, restored.leftEyeOffsetX, 0.0001f)
+    }
+
+    @Test
     fun defaultsAreWithinSupportedRanges() {
         val value = DisplaySettings().normalized()
         assertEquals(63f, value.ipdMm)

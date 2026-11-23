@@ -1,30 +1,33 @@
-# PhoneVR 0.5.17 build status
+# PhoneVR 0.5.18 build status
 
 ## This revision
 
-- Restore full-frame UDP recovery. Android preserves the `-2` NACK sentinel when constructing control messages; Host can retransmit a complete access unit when an entire frame is missing. Invalid negative indexes are filtered and duplicate indexes are removed.
-- Retain successfully transmitted access units in the bounded Host cache in Network Only and USB Only modes. The same cache serves partial-fragment and whole-frame recovery.
-- Reduce single-path frame reorder grace to 60 ms. Host communicates the selected receive reorder window in `welcome`; parallel UDP/AOA mode retains 120 ms for cross-link latency differences.
-- Start NACK feedback after 10 ms, leaving time for repair rounds inside the single-path reorder window.
-- Add Daydream View v1.0 (2016) as a built-in Android optical preset. The reported profile coefficients `k1=0.01`, `k2=0.67` are preserved by expanding the normalized K2 range. Unverified 2017 physical geometry values are deliberately not copied into the 2016 profile; lens spacing, screen distance, alignment and FOV retain the app's adjustable baseline until measured on the user's viewer.
-- Android metadata is `versionName 0.5.17`, `versionCode 52`; repository, Host, SteamVR driver and AOA accessory metadata are synchronized to `0.5.17`.
+- Split physical display-eye identity from SBS source-eye selection in the Android post-process shader. The persistent **左右眼源交换** setting can correct an L/R source-order mismatch without moving the optical centers.
+- Add independent left/right horizontal and vertical source-image offsets. Values are saved into the selected local optical preset, synchronized in the display-settings JSON model, and limited to ±0.08 normalized eye-image units.
+- Add the headset-side **双目诊断** patterns: both eyes identical alignment grid, source-eye L/R identifiers, left-only, right-only, and crossed-disparity depth target. The patterns are generated locally and remain usable without a PC connection or incoming video stream.
+- Lens distortion, blur and sharpening are disabled in diagnostic mode by default. The **测试图镜片畸变** toggle enables the selected optical profile's post-processing for comparison.
+- Extend the Windows Host display-settings model and normalization so it retains the new eye-routing/offset values and accepts the Daydream 2016 profile and K2 range used by Android.
+- Android metadata is `versionName 0.5.18`, `versionCode 53`; repository, Host, SteamVR driver and AOA accessory metadata are synchronized to `0.5.18`.
 
 ## Validation status
 
-- `cd windows-host && go test ./...`: passed, including single-path retained-frame retransmission and selected-mode reorder-window tests.
+- `cd windows-host && go test ./...`: passed.
 - `cd windows-host && go test -race ./...`: passed.
 - `cd windows-host && go vet ./...`: passed.
 - `cd windows-host && GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build ./...`: passed.
-- Standalone Kotlin/JVM smoke compilation and execution passed for full-frame NACK sentinel preservation, invalid-index filtering, 60 ms Network Only reorder release, cross-frame repair ordering and partial-fragment NACK retries.
-- Full Gradle Android compilation, Android JUnit suite and APK packaging were not run because this runtime has no Android SDK (`ANDROID_HOME` / `ANDROID_SDK_ROOT` are unset).
-- Physical Wi-Fi packet-loss/retransmit timing and Daydream View optical fit require target-device validation.
+- `python3 -m unittest discover -s tools/release -p 'test_*.py' -v`: 60 tests passed, including the new stereo calibration and synchronized version-bump regressions.
+- Standalone Kotlin/JVM smoke compilation and execution passed for `DisplaySettings` and `OpticalPreset`, including serialization and legacy-settings fallback checks.
+- Full Android Gradle unit tests and APK packaging could not run in this environment. No Android SDK is configured, and the Gradle 9.6.1 distribution download failed because `services.gradle.org` could not be resolved.
+- GLES shader compilation, full Android type-check, physical eye routing, Daydream View optical fit and headset comfort remain pending target-device validation.
 
 ## Target-device validation
 
-1. Install matching 0.5.17 Host and Android builds. Select **Network Only**, run the same SteamVR scene and bitrate used with 0.5.16, and observe Network RX, completed FPS, decode FPS, expired assemblies, decoder queue drops and Host retransmission count.
-2. Introduce controlled UDP loss. Confirm Android sends `video_nack` with `missingFragments: [-2]` when a complete frame is absent, Host retransmits the retained PVRV access unit, and the receiver emits frames in order without unnecessarily waiting for the next IDR.
-3. Switch to **Network + USB AOA aggregation**. Confirm Host advertises a 120 ms reorder window, both routes receive different fragments, and missing fragments are repaired via the alternate route.
-4. In Android Optical Presets, select **Daydream View 2016**. Check lens-center alignment, straight-line distortion calibration, eye convergence and peripheral distortion. Adjust the geometry values for the physical phone tray before saving a personal preset.
+1. Install matching 0.5.18 Android and Windows Host builds, open **菜单 → 光学预设 → 双目诊断**, and select **左右眼标识**. With source-eye swap disabled, the physical left lens should show the red `L` source pattern and the physical right lens should show the blue `R` source pattern. If they are reversed, toggle **左右眼源交换** and repeat.
+2. Select **仅显示左眼** and **仅显示右眼**. Confirm that only the corresponding source-eye image is visible and the opposite eye is black. Repeat with source-eye swap both off and on to verify the physical-eye routing.
+3. Select **双眼同图** with test distortion disabled. Both eyes should show the same grid and concentric rings. Adjust each eye's horizontal/vertical offset only after confirming the source-eye identity. Values are saved to the active optical preset and should remain after restarting the app.
+4. Select **立体视差**. The center target is rendered with crossed disparity for a near target. Confirm that it fuses comfortably and appears in front of the grid. Stop if it causes eye strain; do not force convergence.
+5. Enable **测试图镜片畸变** and compare the chart with the raw pattern. Use this only to inspect the existing optical warp; this change does not claim that the Daydream View 2017 distortion model has been fully recalibrated.
+6. Select **恢复实时视频** before normal streaming. Compare Host H.264 FPS, Android receive/decode/display FPS and frame-reassembly counters separately; the stereo-calibration changes do not alter UDP pacing or codec timing.
 
 ---
 

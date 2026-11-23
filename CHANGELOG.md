@@ -1,3 +1,13 @@
+## 0.5.18 - Stereo eye routing and headset calibration tools
+
+- Separate the physical display eye from the SBS source eye in the Android post-process shader. The new persistent **Swap Eyes** setting exchanges only the source halves while preserving each physical eye's lens center and calibration offsets.
+- Add independent horizontal and vertical source-image offsets for the physical left and right eye. Offsets are stored in the active local optical preset, included in the display-settings JSON exchange, and clamped to ±0.08 of one eye's normalized image area.
+- Add local diagnostic patterns that do not depend on the Host or network stream: identical-eye alignment grid, colored L/R source-eye identifiers, left-only image, right-only image, and a crossed-disparity depth target.
+- Calibration patterns bypass lens distortion, blur and sharpening by default. A separate toggle enables the selected viewer's current lens post-processing so raw SBS routing and optical warp can be compared independently.
+- Extend the Windows Host display-settings model to retain eye routing and per-eye offsets when settings or optical presets are round-tripped. Keep Daydream View 2016/2017 profile identifiers and the supported K2 range consistent with Android.
+- Bump synchronized repository, Android, Windows Host, SteamVR driver and AOA accessory metadata to `0.5.18`; Android `versionCode` is `53`.
+- Add Android JSON/normalization tests, Windows Host settings normalization/JSON round-trip tests, and version-bump regression coverage for `BUILD_STATUS.md`.
+
 ## 0.5.17 - Network video recovery and Daydream View 2016 preset
 
 - Fix Android full-access-unit NACK filtering. Preserve the `-2` sentinel so Host can retransmit a wholly missing H.264 access unit; filter invalid negative indexes and remove duplicate requests.

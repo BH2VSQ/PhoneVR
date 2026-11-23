@@ -90,6 +90,26 @@ def bump_repository(root: Path, bump: str) -> tuple[str, int]:
     if doc_intro_count != 1 or doc_filter_count != 1:
         raise RuntimeError("Could not update current AOA version documentation")
     aoa_doc.write_text(aoa_doc_text, encoding="utf-8", newline="\n")
+    build_status = root / "BUILD_STATUS.md"
+    if build_status.exists():
+        status_text = build_status.read_text(encoding="utf-8")
+        status_text, heading_count = re.subn(
+            r"^# PhoneVR [0-9]+\.[0-9]+\.[0-9]+ build status",
+            f"# PhoneVR {version} build status",
+            status_text,
+            count=1,
+            flags=re.MULTILINE,
+        )
+        status_text, metadata_count = re.subn(
+            r"Android metadata is `versionName [^`]+`, `versionCode [0-9]+`; repository, Host, SteamVR driver and AOA accessory metadata are synchronized to `[^`]+`\.",
+            f"Android metadata is `versionName {version}`, `versionCode {version_code}`; repository, Host, SteamVR driver and AOA accessory metadata are synchronized to `{version}`.",
+            status_text,
+            count=1,
+        )
+        if heading_count != 1 or metadata_count != 1:
+            raise RuntimeError("Could not update BUILD_STATUS.md version metadata")
+        build_status.write_text(status_text, encoding="utf-8", newline="\n")
+
     replace_one(
         root / "README.md",
         r'Repository revision: \*\*[^*]+\*\*\. Windows Host: \*\*[^*]+\*\*\. Android client: \*\*[^*]+\*\*\.',

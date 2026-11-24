@@ -59,16 +59,25 @@ int main() {
     CHECK(Near(rolledUp.y, 0.0));
     CHECK(Near(rolledUp.z, 0.0));
 
-    // Daydream BLE touch coordinates are normalized bottom-left to top-right.
+    // Daydream BLE touch coordinates are normalized with a top-left origin and +Y down.
     // SteamVR's trackpad +X/+Y must therefore follow right/up finger movement.
     const auto untouchedPad = DaydreamTouchpadToOpenVR(0.9, 0.1, false);
     CHECK(Near(untouchedPad[0], 0.0) && Near(untouchedPad[1], 0.0));
     const auto padCenter = DaydreamTouchpadToOpenVR(0.5, 0.5, true);
     CHECK(Near(padCenter[0], 0.0) && Near(padCenter[1], 0.0));
-    const auto padUpperRight = DaydreamTouchpadToOpenVR(1.0, 1.0, true);
-    CHECK(Near(padUpperRight[0], 1.0) && Near(padUpperRight[1], 1.0));
-    const auto padLowerLeft = DaydreamTouchpadToOpenVR(0.0, 0.0, true);
-    CHECK(Near(padLowerLeft[0], -1.0) && Near(padLowerLeft[1], -1.0));
+    const auto padUpperRight = DaydreamTouchpadToOpenVR(1.0, 0.0, true);
+    CHECK(Near(padUpperRight[0], std::sqrt(0.5)) && Near(padUpperRight[1], std::sqrt(0.5)));
+    const auto padLowerLeft = DaydreamTouchpadToOpenVR(0.0, 1.0, true);
+    CHECK(Near(padLowerLeft[0], -std::sqrt(0.5)) && Near(padLowerLeft[1], -std::sqrt(0.5)));
+    const auto padTop = DaydreamTouchpadToOpenVR(0.5, 0.0, true);
+    const auto padBottom = DaydreamTouchpadToOpenVR(0.5, 1.0, true);
+    CHECK(padTop[1] > 0.99 && padBottom[1] < -0.99);
+    const auto padRight = DaydreamTouchpadToOpenVR(1.0, 0.5, true);
+    const auto padLeft = DaydreamTouchpadToOpenVR(0.0, 0.5, true);
+    CHECK(padRight[0] > 0.99 && padLeft[0] < -0.99);
+    const auto padDeadzone = DaydreamTouchpadToOpenVR(0.55, 0.5, true);
+    CHECK(Near(padDeadzone[0], 0.0) && Near(padDeadzone[1], 0.0));
+    CHECK(std::hypot(padUpperRight[0], padUpperRight[1]) <= 1.0 + 1.0e-6);
 
     // The arm model places the left/right estimates symmetrically around the head.
     DaydreamArmModel leftModel;
@@ -94,27 +103,18 @@ int main() {
     CHECK(raisedPose.position[1] > neutralPose.position[1]);
     CHECK(std::abs(raisedPose.velocity[1]) > 0.01);
 
-    // GvrArmModel uses the controller gyro, not HMD angular velocity, to adapt torso-following.
-    DaydreamArmModel lowGyroModel;
-    DaydreamArmModel highGyroModel;
-    const auto lowGyroStart = lowGyroModel.Update({}, headPosition, {}, noControllerGyroscope,
-                                                   2500000000ULL, false);
-    const auto highGyroStart = highGyroModel.Update({}, headPosition, {}, noControllerGyroscope,
-                                                     2500000000ULL, false);
-    (void)lowGyroStart;
-    (void)highGyroStart;
+    // HMD yaw must move the controller reference even if the controller gyro is still.
+    DaydreamArmModel headRelativeModel;
     const DaydreamQuaternion headYaw = Yaw(kPi / 2.0);
-    const std::array<double, 3> lowGyro{0.0, 0.0, 0.0};
-    const std::array<double, 3> highGyro{0.0, 0.0, 45.0};
-    const auto lowGyroPose = lowGyroModel.Update({}, headPosition, headYaw, lowGyro,
-                                                  2580000000ULL, false);
-    const auto highGyroPose = highGyroModel.Update({}, headPosition, headYaw, highGyro,
-                                                    2580000000ULL, false);
-    const double gyroDrivenPositionDelta = std::sqrt(
-        std::pow(lowGyroPose.position[0] - highGyroPose.position[0], 2.0) +
-        std::pow(lowGyroPose.position[1] - highGyroPose.position[1], 2.0) +
-        std::pow(lowGyroPose.position[2] - highGyroPose.position[2], 2.0));
-    CHECK(gyroDrivenPositionDelta > 0.009);
+    const auto headRelativeStart = headRelativeModel.Update(
+        {}, headPosition, {}, noControllerGyroscope, 2500000000ULL, false);
+    const auto headRelativeTurn = headRelativeModel.Update(
+        {}, headPosition, headYaw, noControllerGyroscope, 2580000000ULL, false);
+    (void)headRelativeStart;
+    const auto headRelativeForward = RotateVector(
+        headRelativeTurn.orientation, {0.0, 0.0, -1.0});
+    CHECK(headRelativeForward.x < -0.99);
+    CHECK(std::abs(headRelativeForward.z) < 0.02);
 
     // Initial tracking preserves Google's Start Space orientation without an implicit HMD snap.
     DaydreamArmModel directOrientationModel;

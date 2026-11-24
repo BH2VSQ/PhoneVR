@@ -1,4 +1,10 @@
-## 0.5.35 - VRChat Daydream controls and axis/recenter correction
+## 0.5.35 - VRChat Daydream controls, audio transport and axis/recenter correction
+
+- Add a separate 48 kHz PCM16 audio protocol over LAN UDP `48110` and USB AOA channels `4/5`, leaving the established video, pose and control transport unchanged.
+- Add Android low-latency stereo `AudioTrack` playback, mono `AudioRecord` microphone capture, runtime recording permission handling, bounded queues and receive-only operation when microphone permission is denied.
+- Add Windows Host PCM packet routing APIs and a bounded microphone uplink queue. Windows WASAPI loopback capture and the system-wide virtual microphone endpoint remain pending integration.
+- Add Daydream touchpad radial deadzone, circular diagonal limiting and a soft analogue response curve. Invert the Daydream top-left-origin Y coordinate to SteamVR's +Y-up axis.
+- Make the controller reference frame follow HMD horizontal yaw continuously, including when the controller gyro is stationary. Keep controller pitch and roll intact and use a time-based torso follow filter.
 
 - Correct the Daydream touchpad Y direction. Normalized BLE coordinates now map directly to SteamVR trackpad X-right/Y-up, with the untouched pad returning to center.
 - Change the SteamVR input profile from joystick to trackpad and ship a VRChat default binding for app `steam.app.438100`.

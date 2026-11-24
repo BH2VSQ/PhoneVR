@@ -69,7 +69,7 @@ All helper processes launched by the GUI Host use `CREATE_NO_WINDOW`, including 
 
 ## Audio streaming status
 
-Audio transport is not implemented in 0.5.26. The current build has no WASAPI capture/render workers, Android `AudioRecord`/`AudioTrack` path, audio packet protocol or virtual headset audio endpoints. The SteamVR input/output selectors therefore cannot provide end-to-end phone audio by themselves. The proposed two-way architecture and Windows endpoint requirements are documented in `docs/audio-streaming-architecture.md`.
+PhoneVR 0.5.35 adds a dedicated 48 kHz PCM transport over LAN UDP `48110` and USB AOA channels `4/5`, plus Android `AudioTrack` playback and `AudioRecord` microphone capture. Windows Host packet routing is in place, while WASAPI system-audio capture and the Windows virtual microphone endpoint remain pending. See `docs/audio-streaming-architecture.md` for implemented behavior and remaining work.
 
 ## SteamVR driver 0.5.35
 
@@ -152,6 +152,7 @@ The Windows Host version is injected from the root VERSION file at build time. T
 | 48102 | UDP | HMD quaternion pose |
 | 48103 | UDP loopback only | Go Host -> SteamVR driver pose bridge |
 | 48104 | UDP | Host -> Android H.264 video fragments on LAN; unused by USB AOA sessions |
+| 48110 | UDP | Bidirectional 48 kHz PCM audio on LAN; unused by USB AOA sessions |
 | 48105 | UDP loopback only | SteamVR driver -> Host runtime heartbeat |
 | 48106 | TCP loopback only | SteamVR driver -> Host raw BGRA capture bridge |
 

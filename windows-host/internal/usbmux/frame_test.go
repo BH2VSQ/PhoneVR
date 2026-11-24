@@ -64,3 +64,20 @@ func TestReadFrameRejectsReservedFlags(t *testing.T) {
 		t.Fatal("expected nonzero flags to be rejected")
 	}
 }
+
+func TestAudioChannelsRoundTrip(t *testing.T) {
+	for _, channel := range []byte{ChannelAudioDownlink, ChannelAudioUplink} {
+		want := Frame{Channel: channel, Sequence: 9, Payload: bytes.Repeat([]byte{0x31}, 2048)}
+		var wire bytes.Buffer
+		if err := WriteFrame(&wire, want); err != nil {
+			t.Fatal(err)
+		}
+		got, err := ReadFrame(&wire)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Channel != want.Channel || got.Sequence != want.Sequence || !bytes.Equal(got.Payload, want.Payload) {
+			t.Fatalf("audio channel %d did not round-trip", channel)
+		}
+	}
+}

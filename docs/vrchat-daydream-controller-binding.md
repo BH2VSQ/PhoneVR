@@ -31,7 +31,7 @@ Recenter now aligns only the controller's horizontal heading with the headset's 
 
 ## Direction convention
 
-The Daydream BLE touch coordinates are normalized from 0 to 1. The driver maps them to SteamVR's two-sided trackpad range from -1 to +1. X increases to the right, and Y increases upward. When the finger is not touching the pad, both axes return to zero.
+The Daydream BLE touch coordinates are normalized from 0 to 1 with a top-left origin. X increases to the right and Y increases downward, so the driver inverts Y when mapping to SteamVR's two-sided analogue axes (+X right, +Y up). A radial 0.15 deadzone, circular magnitude limit and soft response curve provide a joystick-like feel. When the finger is not touching the pad, both axes return to zero.
 
 The default profile targets VRChat on Steam (`steam.app.438100`) and is offered as a SteamVR driver default. SteamVR user-created bindings have higher priority and can override this default.
 

@@ -69,7 +69,7 @@ The `display_settings` report and `set_display_settings` command remain supporte
 
 ## LAN host discovery
 
-The connection panel automatically searches active IPv4 network interfaces for PhoneVR Host instances. If automatic discovery fails, enter the PC address and control port manually. The phone and PC should be connected to the same LAN, and the Windows firewall must allow PhoneVR Host traffic.
+The connection panel automatically searches active IPv4 network interfaces for PhoneVR Host instances. If automatic discovery fails, enter the PC address and control port manually. The phone and PC should be connected to the same LAN, and the Windows firewall must allow PhoneVR Host traffic, including bidirectional UDP port `48110` for audio.
 
 ## USB AOA direct connection
 

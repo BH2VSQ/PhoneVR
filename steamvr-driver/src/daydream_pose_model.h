@@ -114,18 +114,31 @@ inline DaydreamQuaternion DaydreamToOpenVR(const DaydreamQuaternion& input) {
     return NormalizeQuaternion(input);
 }
 
-// Daydream's normalized touch coordinates increase left-to-right and bottom-to-top.
-// SteamVR trackpad coordinates use +X right and +Y up, so no axis reflection is
-// required. The untouched state is deliberately centered instead of retaining the
-// last finger position.
+// Daydream touch coordinates are normalized with a top-left origin. The driver
+// converts them to SteamVR trackpad axes (+X right, +Y up). The untouched state
+// returns to zero instead of retaining the last finger position.
 inline std::array<double, 2> DaydreamTouchpadToOpenVR(double touchX,
                                                        double touchY,
                                                        bool touching) {
+    // Google Daydream touch coordinates use a top-left origin: X grows right,
+    // Y grows down. SteamVR's two-axis input uses +X right and +Y up.
     if (!touching) return {0.0, 0.0};
-    return {
-        std::clamp(touchX * 2.0 - 1.0, -1.0, 1.0),
-        std::clamp(touchY * 2.0 - 1.0, -1.0, 1.0),
-    };
+
+    double x = std::clamp(touchX * 2.0 - 1.0, -1.0, 1.0);
+    double y = std::clamp(1.0 - touchY * 2.0, -1.0, 1.0);
+    const double magnitude = std::sqrt(x * x + y * y);
+    constexpr double kDeadzone = 0.15;
+    if (!std::isfinite(magnitude) || magnitude <= kDeadzone) return {0.0, 0.0};
+
+    // A circular gate prevents diagonal movement from being faster than
+    // cardinal movement. Rescale the remaining range and soften the centre
+    // response for a touchpad-to-analogue-stick feel.
+    const double normalizedMagnitude = std::min(magnitude, 1.0);
+    const double scaled = std::clamp(
+        (normalizedMagnitude - kDeadzone) / (1.0 - kDeadzone), 0.0, 1.0);
+    const double response = 0.35 * scaled + 0.65 * scaled * scaled * scaled;
+    const double inverseMagnitude = 1.0 / magnitude;
+    return {x * inverseMagnitude * response, y * inverseMagnitude * response};
 }
 
 struct DaydreamButtonGestureResult {
@@ -212,8 +225,11 @@ public:
         m_orientationAlignment = MultiplyQuaternion(
             headHeading, InverseQuaternion(controllerHeading));
         m_hasOrientationAlignment = true;
+        m_headYawReference = headHeading;
+        m_hasHeadYawReference = true;
         m_torsoRotation = headHeading;
         m_torsoInitialized = true;
+        m_lastHeadUpdateNs = 0;
         m_positionInitialized = false;
         m_lastUpdateNs = 0;
         m_lastPoseNs = 0;
@@ -230,25 +246,37 @@ public:
         DaydreamPoseOutput output{};
         const DaydreamQuaternion rawOpenVr = DaydreamToOpenVR(rawDaydreamOrientation);
         const DaydreamQuaternion headQ = NormalizeQuaternion(headOrientation);
-
-        const DaydreamQuaternion controllerWorldQ =
-            MultiplyQuaternion(m_orientationAlignment, rawOpenVr);
-        output.orientation = controllerWorldQ;
+        (void)controllerGyroscope; // HMD yaw, not controller motion, drives the reference frame.
 
         const DaydreamQuaternion targetTorsoQ = HorizontalHeadRotation(headQ);
+        if (!m_hasHeadYawReference) {
+            m_headYawReference = targetTorsoQ;
+            m_hasHeadYawReference = true;
+        }
+        // Daydream controller orientation is reported in its original Start Space.
+        // Rotate that reference by the HMD's yaw delta so the estimated hand
+        // remains head-relative even while the controller itself is stationary.
+        const DaydreamQuaternion headYawDelta = MultiplyQuaternion(
+            targetTorsoQ, InverseQuaternion(m_headYawReference));
+        const DaydreamQuaternion controllerWorldQ = MultiplyQuaternion(
+            headYawDelta, MultiplyQuaternion(m_orientationAlignment, rawOpenVr));
+        output.orientation = controllerWorldQ;
+
         if (!m_torsoInitialized) {
             m_torsoRotation = targetTorsoQ;
             m_torsoInitialized = true;
+        } else if (m_lastHeadUpdateNs == 0 || nowNs <= m_lastHeadUpdateNs) {
+            m_torsoRotation = targetTorsoQ;
         } else {
-            // Match Google's GvrArmModel: torso direction follows horizontal HMD gaze,
-            // with filter strength driven by the controller's gyro magnitude in rad/s.
-            const double gyroMagnitude = std::sqrt(
-                controllerGyroscope[0] * controllerGyroscope[0] +
-                controllerGyroscope[1] * controllerGyroscope[1] +
-                controllerGyroscope[2] * controllerGyroscope[2]);
-            const double gazeFilterStrength = std::clamp((gyroMagnitude - 0.2) / 45.0, 0.0, 0.1);
-            m_torsoRotation = Slerp(m_torsoRotation, targetTorsoQ, gazeFilterStrength);
+            // Follow HMD yaw continuously with a time-based filter. This remains
+            // responsive when the controller gyro is stationary or unavailable.
+            const double dt = std::clamp(
+                static_cast<double>(nowNs - m_lastHeadUpdateNs) / 1.0e9, 0.0, 0.1);
+            constexpr double kHeadFollowTimeConstantSeconds = 0.020;
+            const double follow = 1.0 - std::exp(-dt / kHeadFollowTimeConstantSeconds);
+            m_torsoRotation = Slerp(m_torsoRotation, targetTorsoQ, follow);
         }
+        m_lastHeadUpdateNs = nowNs;
 
         const DaydreamQuaternion relativeControllerQ =
             MultiplyQuaternion(InverseQuaternion(m_torsoRotation), controllerWorldQ);
@@ -391,12 +419,15 @@ private:
     }
 
     DaydreamQuaternion m_orientationAlignment{};
+    DaydreamQuaternion m_headYawReference{};
     DaydreamQuaternion m_torsoRotation{};
     // Google defines Daydream Start Space to coincide with headset space when
     // tracking starts. Keep the raw quaternion until the user explicitly recenters.
     bool m_hasOrientationAlignment = true;
+    bool m_hasHeadYawReference = false;
     bool m_torsoInitialized = false;
     bool m_positionInitialized = false;
+    uint64_t m_lastHeadUpdateNs = 0;
     uint64_t m_lastUpdateNs = 0;
     uint64_t m_lastPoseNs = 0;
     DaydreamQuaternion m_previousOrientation{};

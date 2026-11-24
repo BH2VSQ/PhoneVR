@@ -53,6 +53,7 @@ class MainActivity : Activity(), SensorEventListener {
         // Request 200 Hz updates where the handset IMU supports it; Android may cap this to hardware rate.
         private const val HEAD_TRACKING_SAMPLE_PERIOD_US = 5_000
         private const val REQUEST_DAYDREAM_BLUETOOTH_PERMISSIONS = 6107
+        private const val REQUEST_AUDIO_RECORD_PERMISSION = 6108
     }
 
     private lateinit var glView: GLSurfaceView
@@ -109,6 +110,7 @@ class MainActivity : Activity(), SensorEventListener {
     @Volatile private var rightControllerState = ControllerInputState(false, 0L)
     @Volatile private var daydreamCandidates = emptyList<DaydreamDeviceCandidate>()
     private var pendingBluetoothPermissionAction: (() -> Unit)? = null
+    private var pendingAudioConnectionAction: (() -> Unit)? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -678,6 +680,16 @@ class MainActivity : Activity(), SensorEventListener {
         }
     }
 
+    private fun requestMicrophonePermissionAndRun(action: () -> Unit) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M ||
+            checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+            action()
+            return
+        }
+        pendingAudioConnectionAction = action
+        requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), REQUEST_AUDIO_RECORD_PERMISSION)
+    }
+
     private fun requiredBluetoothPermissions(): Array<String> = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
         arrayOf(Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT)
     } else {
@@ -811,7 +823,9 @@ class MainActivity : Activity(), SensorEventListener {
                 connectionStatusLabel.text = connectionMessage
                 connectionStatusLabel.setTextColor(Color.rgb(242, 183, 112))
             }
-            networkClient.connect(selected.address, selected.controlPort, Build.MODEL ?: "Android")
+            requestMicrophonePermissionAndRun {
+                networkClient.connect(selected.address, selected.controlPort, Build.MODEL ?: "Android")
+            }
         }
     }
 
@@ -906,7 +920,9 @@ class MainActivity : Activity(), SensorEventListener {
             connectionStatusLabel.text = connectionMessage
             connectionStatusLabel.setTextColor(Color.rgb(130, 195, 255))
             updateTopHud()
-            networkClient.connectUsb(Build.MODEL ?: "Android")
+            requestMicrophonePermissionAndRun {
+                networkClient.connectUsb(Build.MODEL ?: "Android")
+            }
         }.apply {
             layoutParams = LinearLayout.LayoutParams(-1, dp(42)).apply { topMargin = dp(4) }
         })
@@ -968,7 +984,9 @@ class MainActivity : Activity(), SensorEventListener {
             }
             getSharedPreferences("phone_vr_connection", MODE_PRIVATE).edit()
                 .putString("host", address).putInt("port", port).apply()
-            networkClient.connect(address, port, Build.MODEL ?: "Android")
+            requestMicrophonePermissionAndRun {
+                networkClient.connect(address, port, Build.MODEL ?: "Android")
+            }
         }.apply {
             layoutParams = LinearLayout.LayoutParams(0, dp(44), 1f).apply { rightMargin = dp(5) }
         })
@@ -1444,6 +1462,16 @@ class MainActivity : Activity(), SensorEventListener {
     @Deprecated("Deprecated in Android API; retained for broad target compatibility")
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == REQUEST_AUDIO_RECORD_PERMISSION) {
+            val action = pendingAudioConnectionAction
+            pendingAudioConnectionAction = null
+            if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+                connectionMessage = "麦克风权限未授予，仍可接收 PC 游戏音频，手机麦克风回传将保持关闭"
+                updateTopHud()
+            }
+            action?.invoke()
+            return
+        }
         if (requestCode != REQUEST_DAYDREAM_BLUETOOTH_PERMISSIONS) return
         val action = pendingBluetoothPermissionAction
         pendingBluetoothPermissionAction = null

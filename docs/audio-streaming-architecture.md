@@ -1,66 +1,51 @@
 # PhoneVR audio streaming architecture
 
-Status: design note for PhoneVR 0.5.24. No end-to-end audio transport is implemented in this revision.
+Status: PhoneVR 0.5.35 transport and Android PCM pipeline integrated; Windows audio-device endpoints are still pending.
 
-## Current behavior
+## 0.5.35 implementation status
 
-The 0.5.24 codebase still has no Windows WASAPI capture/render worker, no Android `AudioRecord` or `AudioTrack` pipeline, no audio packet type, and no Android `RECORD_AUDIO` permission. The SteamVR driver did not publish `Prop_Audio_DefaultPlaybackDeviceId_String` or `Prop_Audio_DefaultRecordingDeviceId_String`. Consequently, choosing an HMD-related input/output entry in SteamVR cannot create the missing Windows endpoints or transport audio to the phone.
+PhoneVR 0.5.35 adds a dedicated audio packet format, an independent LAN UDP listener, two USB AOA multiplex channels, Android playback with `AudioTrack`, and Android microphone capture with `AudioRecord`. The audio receive and playback work uses its own bounded queue and worker threads. Existing H.264 video packetization, video UDP port `48104`, pose UDP port `48102`, TCP control port `48101`, and AOA video channel remain unchanged.
 
-OpenVR defines the playback and recording endpoint ID properties as tracked-device properties 2300 and 2301. PhoneVR must populate them with real Windows audio endpoint IDs after the virtual endpoints are installed and enumerated.
+The first implementation uses signed 16-bit little-endian PCM because it can be tested without assuming a device-specific Opus codec implementation. It is a transport baseline, not the final bandwidth-optimized codec. At 48 kHz, 20 ms frames, it uses 1,536 kbit/s for stereo PC playback and 768 kbit/s for mono phone microphone audio, excluding framing and transport overhead.
 
-## Required independent paths
+The Windows Host currently exposes `PublishAudioPCM` for the future PC playback capture worker and `AudioUplinkFrames` for the future Windows microphone endpoint worker. These are transport integration points. This revision does not yet contain the Windows WASAPI loopback capture worker, the Windows audio render/capture endpoint driver, audio-device selection UI, or OpenVR playback/recording endpoint-ID publication. Therefore, a complete PC game-audio-to-phone and phone-microphone-to-Windows-application experience still requires those endpoint components. The Host will receive microphone packets, but no Windows virtual microphone currently consumes them.
 
-### PC playback to the phone
+## Independent paths
 
-1. Windows applications and SteamVR render to a dedicated virtual render endpoint named `PhoneVR Headphones`.
-2. PhoneVR Host opens that endpoint in WASAPI shared mode with loopback capture enabled.
-3. Host converts the endpoint mix to 48 kHz stereo PCM and encodes low-latency Opus frames.
-4. Audio packets are sent to Android over the selected LAN or USB AOA path.
-5. Android decodes with Opus and writes to an `AudioTrack`, using the phone's selected physical output route.
+### PC playback to phone
 
-WASAPI loopback capture is specifically designed to capture the stream being played by a render endpoint. It obtains the render `IMMDevice` and initializes the capture client with `AUDCLNT_STREAMFLAGS_LOOPBACK` in shared mode.
+1. A future Windows WASAPI shared-mode loopback worker captures the selected PC render endpoint.
+2. The Host converts the mix to 48 kHz stereo PCM16 and calls `PublishAudioPCM` once per 20 ms frame.
+3. LAN sends the framed audio packet over UDP port `48110`; USB sends it over AOA channel `4`.
+4. Android validates the packet, enqueues it in a bounded 12-frame queue, prebuffers two frames, and writes to a low-latency stereo `AudioTrack`.
+5. A missing frame is currently replaced by silence. There is no Opus PLC decoder in this PCM baseline.
 
-### Phone microphone to Windows applications
+### Phone microphone to PC
 
-1. Android requests runtime microphone permission and captures the selected microphone with `AudioRecord`.
-2. Android converts to 48 kHz mono PCM and encodes low-latency Opus frames.
-3. Host receives the frames, applies a small jitter buffer and clock-drift correction, then decodes to PCM.
-4. Host feeds the PCM to a dedicated virtual microphone capture endpoint.
-5. Windows applications select `PhoneVR Microphone` as their recording device.
+1. Android requests `RECORD_AUDIO` at connection time. If permission is denied, PC-to-phone playback remains available and microphone capture is disabled.
+2. `AudioRecord` captures 48 kHz mono PCM16 in 20 ms blocks. Android attempts to enable the platform acoustic echo canceller and noise suppressor when available.
+3. LAN sends packets to Host UDP port `48110`; USB sends them over AOA channel `5`.
+4. Host validates packets and exposes them on the bounded `AudioUplinkFrames` queue. When full, stale frames are discarded to keep latency bounded.
+5. A Windows virtual microphone capture endpoint still needs to consume this queue and publish the stream as a Windows recording device.
 
-The playback and microphone paths must use independent endpoint IDs and independent stream queues. Reusing the same virtual cable for both directions would risk capturing the phone microphone in the PC-to-phone loopback stream and creating an audio feedback path.
+For LAN receive-only use, Android sends one silent microphone-format registration frame when the audio socket starts. This lets the Host learn the phone's ephemeral UDP source port even when microphone permission is unavailable, so the Host can send playback audio to the phone.
 
-## Windows endpoint strategy
+## Wire format
 
-For an early integration test, two independent virtual audio cable pairs can model the two paths:
+All audio packets use the same 24-byte little-endian header on UDP and AOA. The signature is `PVRA`; protocol version is `1`; direction `1` is Host-to-phone and direction `2` is phone-to-Host; channel count is `2` for playback and `1` for microphone; sample format `1` is PCM16LE; then follow a 32-bit sequence number, 64-bit sender-local nanosecond timestamp, 16-bit samples per channel (`960`) and 16-bit payload length. The payload contains interleaved PCM samples. Timestamps are sender-local and must not be compared directly across device clocks.
 
-- Cable A render endpoint: Windows game/SteamVR output; Host captures it with WASAPI loopback.
-- Cable B render endpoint: Host plays the phone microphone stream into it; Windows applications use Cable B's paired capture endpoint as their microphone.
+The UDP socket is independent of pose/video sockets. USB AOA multiplex channel `4` is Host-to-phone audio and channel `5` is phone-to-Host audio. Both directions use the same audio packet payload. The AOA framing layer retains its 16-byte `PVRU` frame header.
 
-For a self-contained PhoneVR installer, use a dedicated virtual audio driver exposing the corresponding playback and microphone endpoints. Microsoft's SysVAD sample is a useful WDM/WaveRT starting point, but it is a driver-development sample rather than a drop-in finished bridge. Its published sample explicitly simulates some capture/loopback behavior, so PhoneVR would need to implement the real ring-buffer transport and endpoint data flow, validate it with the Windows Hardware Lab Kit, and package/sign the driver appropriately.
+## Remaining Windows integration
 
-After endpoint installation, Host should enumerate endpoint IDs using `IMMDeviceEnumerator`, store the selected IDs in `%APPDATA%\\PhoneVRStream\\audio-devices.json`, and expose those IDs to the SteamVR driver. The driver should assign the OpenVR playback and recording ID properties to the selected endpoints. The Host must also confirm at startup that the IDs still resolve, because Windows endpoint IDs can change after a device reinstall or driver replacement.
+- Add a WASAPI loopback worker for the selected playback endpoint and call `PublishAudioPCM` with exact 20 ms frames. WASAPI loopback uses a render `IMMDevice` opened in shared mode with `AUDCLNT_STREAMFLAGS_LOOPBACK`.
+- Add or integrate a virtual capture endpoint named `PhoneVR Microphone`, feed it from `AudioUplinkFrames`, and expose its real endpoint ID to Windows applications. A user-mode callback alone cannot create a system-wide Windows recording endpoint.
+- Publish actual endpoint IDs to SteamVR using OpenVR tracked-device properties `Prop_Audio_DefaultPlaybackDeviceId_String` and `Prop_Audio_DefaultRecordingDeviceId_String` after the endpoints are installed and enumerated.
+- Add endpoint selection, mute/volume controls, sample-rate conversion, clock-drift correction and a measured jitter buffer.
+- Replace PCM with Opus after a supported encoder/decoder is integrated and tested on both Windows and Android.
 
-## Audio packet design
+A virtual cable pair can be used as an interim test: one render endpoint feeds Host loopback capture; a separate render endpoint receives the phone microphone stream, while its paired capture endpoint is selected by Windows applications. Keep the playback and microphone paths separate to prevent feedback.
 
-Use a separate framed audio channel rather than putting audio into the video access-unit protocol. The initial stream should use:
+## Validation requirements
 
-- Codec: Opus.
-- Output: 48 kHz, stereo, 20 ms frames.
-- Microphone: 48 kHz, mono, 20 ms frames.
-- Independent sequence number and capture timestamp for each direction.
-- A bounded 40 to 80 ms jitter buffer with packet-loss concealment.
-- USB AOA and UDP paths with the same packet payload and sequence semantics.
-- Audio queue priority above video retransmissions, while keeping pose updates on their existing low-latency channel.
-
-The implementation also needs sample-rate conversion, drift correction between the PC and phone clocks, mute/volume controls, Android audio focus handling, runtime microphone permission, disconnect flushing and recovery. Acoustic echo cancellation and noise suppression should be configurable and measured on-device; they must not be assumed to work automatically for every microphone route.
-
-## Integration order
-
-1. Install and enumerate the two virtual endpoint paths. Prove PC loopback capture and virtual-microphone playback independently with a local test tone and microphone recording.
-2. Add a Windows audio worker using WASAPI and expose selected endpoint IDs to the SteamVR driver.
-3. Add the audio packet protocol and USB AOA/UDP transport.
-4. Add Android `AudioTrack` playback and `AudioRecord` capture, including permission and lifecycle handling.
-5. Validate one-way latency, round-trip latency, drift, packet loss, reconnection and feedback prevention before enabling audio by default.
-
-Audio remains disabled until both directions pass those tests. Merely setting SteamVR's input and output selectors to an HMD entry is not evidence that a transport path is active.
+Before enabling audio by default, measure LAN and USB latency independently, packet loss, jitter, long-run clock drift, reconnect behavior, Android output-route changes, microphone permission changes, echo behavior and simultaneous H.264/video/pose load. The current source tests validate packet encoding/decoding and AOA channel framing; they do not yet establish end-to-end audio device operation.

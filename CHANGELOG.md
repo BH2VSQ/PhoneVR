@@ -2,7 +2,12 @@
 
 - Add a separate 48 kHz PCM16 audio protocol over LAN UDP `48110` and USB AOA channels `4/5`, leaving the established video, pose and control transport unchanged.
 - Add Android low-latency stereo `AudioTrack` playback, mono `AudioRecord` microphone capture, runtime recording permission handling, bounded queues and receive-only operation when microphone permission is denied.
-- Add Windows Host PCM packet routing APIs and a bounded microphone uplink queue. Windows WASAPI loopback capture and the system-wide virtual microphone endpoint remain pending integration.
+- Add a Windows WASAPI shared-mode loopback bridge that captures the default console render mix, converts it to 48 kHz stereo PCM16 and emits 20 ms frames. Build and embed the helper with the Windows Host release script.
+- Supervise the WASAPI bridge as part of `HostService.Start/Stop`, including process/pipe cleanup, endpoint invalidation restart, endpoint ID publication and a bounded phone-microphone uplink queue.
+- Add a SysVAD `TabletAudioSample` patcher and build/install script for the `PhoneVR Microphone` WaveRT capture endpoint. A kernel-created ACL-protected shared section carries phone PCM from the user-mode bridge into a PASSIVE_LEVEL consumer and the WaveRT capture buffer.
+- Restrict the virtual microphone to one 48 kHz mono PCM16 capture stream, use DPC-safe queue locking in the WaveRT timer path, and create the required root-enumerated SysVAD device with WDK DevCon during installation.
+- Clear published Windows audio endpoint IDs while the Host audio worker restarts or shuts down so SteamVR does not keep stale endpoint selections.
+- Pin the SysVAD source sample to Microsoft Windows-driver-samples commit `d49bb7d72f3651952b2b6e4ad28d14fe2247eb69`. The driver and WASAPI helper require a Windows MSVC/WDK build, test-signing and target-PC validation.
 - Add Daydream touchpad radial deadzone, circular diagonal limiting and a soft analogue response curve. Present the touch surface to SteamVR as a two-sided software joystick.
 - Make the controller reference frame follow HMD horizontal yaw continuously, including when the controller gyro is stationary. Keep controller pitch and roll intact and use a time-based torso follow filter.
 

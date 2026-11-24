@@ -1,5 +1,28 @@
 # PhoneVR 0.5.35 build status
 
+## 0.5.35 Windows bidirectional audio implementation
+
+- Integrate a Windows WASAPI shared-mode loopback helper. It captures the current default console render endpoint, normalizes it to 48 kHz stereo PCM16 and emits 20 ms frames to the Host. The helper is built with CMake/MSVC and embedded into both Windows Host binaries by `scripts/build-windows-host.ps1`.
+- Connect PC playback and phone microphone audio to the independent LAN UDP `48110` and USB AOA audio channels `4/5`; existing video UDP `48104`, pose UDP `48102`, control TCP `48101` and AOA video framing remain unchanged.
+- Supervise the audio bridge process and its stdin/stdout workers through `HostService.Start/Stop`, with cancellation, process reaping, bounded restart backoff and endpoint-ID cleanup.
+- Integrate a SysVAD `TabletAudioSample` WaveRT capture patch for the `PhoneVR Microphone` endpoint. The patch creates a kernel-owned ACL-protected shared section, moves PCM into a bounded nonpaged WaveRT queue and zero-fills underflow. The endpoint is limited to one 48 kHz mono PCM16 stream so the single-consumer ring remains valid; Windows Audio Engine provides shared-mode fan-out.
+- Restrict WaveRT capture to frame-aligned overflow handling and DPC-safe spin-lock operations. Pin Microsoft Windows-driver-samples to `d49bb7d72f3651952b2b6e4ad28d14fe2247eb69`. The build/install script uses WDK DevCon to create the `Root\sysvad_ComponentizedAudioSample` device node after checking test-signing and the INF hardware ID.
+- SteamVR refreshes the OpenVR playback/recording endpoint properties from Host-published IDs. Host clears stale IDs when the WASAPI worker restarts or shuts down.
+
+### 0.5.35 audio validation
+
+- `python3 -m unittest discover -v -s tools/release -p 'test_*.py'`: passed, 72 tests.
+- `python3 -m unittest -v windows-audio-driver/test_patch_sysvad.py`: passed, 3 tests covering transformations, idempotence, ring contract, DPC-safe queueing and root-device installation logic.
+- `python3 -m py_compile windows-audio-driver/patch_sysvad.py windows-audio-driver/test_patch_sysvad.py`: passed.
+- `cd windows-host && go test ./... -count=1`: passed.
+- `cd windows-host && go test -race ./... -count=1`: passed.
+- `cd windows-host && go vet ./...`: passed.
+- `cd windows-host && GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -o /tmp/PhoneVRHost-0.5.35-windows-audio.exe ./cmd/phonevr-host`: passed.
+- `steamvr-driver/tests/daydream_pose_model_test.cpp`: compiled with strict C++17 warnings and passed.
+- `windows-audio-driver/shared/PhoneVRAudioShared.h`: compiled independently with static ABI validation for the 32-byte ring header and 64 × 1,928-byte slots.
+- The source patcher and DevCon install script have fixture/static tests, but the PowerShell script was not executed on Windows in this environment.
+- WASAPI helper MSVC/CMake build, SysVAD WDK `.sys` build, test-signing, root-device installation, Windows audio endpoint enumeration, Android hardware playback/recording and full-duplex load testing remain unverified because this environment has no Windows SDK/WDK, PowerShell, Windows audio stack or physical Android device.
+
 ## This revision (0.5.35)
 
 - Fix Daydream touchpad axis mapping. BLE normalized X/Y now map to SteamVR trackpad X-right/Y-up, and the no-touch state is centered.
@@ -14,12 +37,16 @@
 
 - `steamvr-driver/tests/daydream_pose_model_test.cpp`: compiled with `c++ -std=c++17 -Wall -Wextra -Werror -pedantic` and passed, including trackpad X/Y direction and yaw-only recenter tests.
 - `python -m unittest discover -v -s tools/release -p 'test_*.py'`: passed, 72 tests.
+- `python3 -m unittest windows-audio-driver/test_patch_sysvad.py -v`: passed, including SysVAD patch transformation/idempotence and shared-memory contract tests.
+- Shared ABI header `windows-audio-driver/shared/PhoneVRAudioShared.h`: compiled with the local C++ compiler and passed static layout assertions (32-byte header, 64 × 1,928-byte slots).
 - `cd windows-host && go test ./...`: passed.
 - `cd windows-host && go test -race ./...`: passed.
 - `cd windows-host && go vet ./...`: passed.
 - `cd windows-host && GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -o /tmp/PhoneVRHost-0.5.35.exe ./cmd/phonevr-host`: passed.
-- VRChat default binding, SteamVR input profile and recursive CMake resource installation are validated by the release contract test.
-- Windows MSVC SteamVR driver compilation and physical SteamVR/VRChat play tests are not available in this Linux environment and remain pending. Android APK packaging was not run because this revision changes no Android runtime source and no Android SDK is configured.
+- Host lifecycle tests cover audio bridge status parsing, endpoint-ID publication, bounded uplink packet routing and cancellation-aware restart delays.
+- The Windows WASAPI bridge has been source-integrated and is built by `scripts/build-windows-host.ps1`, but it could not be compiled here because MSVC and Windows SDK headers are absent.
+- The SysVAD WaveRT source patcher and Windows build/install script are included. The `.sys` driver has not been compiled, test-signed, installed or exercised because this environment lacks Visual Studio/WDK and a Windows kernel audio stack. The PhoneVR Microphone endpoint therefore still requires the documented Windows build/install step.
+- No physical Android device, actual SteamVR runtime, Windows audio loopback, microphone recording or end-to-end full-duplex test was available in this environment.
 
 ## Previous build status: 0.5.25
 

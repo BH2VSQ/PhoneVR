@@ -69,7 +69,7 @@ All helper processes launched by the GUI Host use `CREATE_NO_WINDOW`, including 
 
 ## Audio streaming status
 
-PhoneVR 0.5.35 adds a dedicated 48 kHz PCM transport over LAN UDP `48110` and USB AOA channels `4/5`, plus Android `AudioTrack` playback and `AudioRecord` microphone capture. Windows Host packet routing is in place, while WASAPI system-audio capture and the Windows virtual microphone endpoint remain pending. See `docs/audio-streaming-architecture.md` for implemented behavior and remaining work.
+PhoneVR 0.5.35 adds a dedicated 48 kHz PCM transport over LAN UDP `48110` and USB AOA channels `4/5`, Android `AudioTrack` playback and `AudioRecord` microphone capture, a Windows WASAPI shared-mode loopback bridge supervised by the Host lifecycle, and a SysVAD WaveRT source patch for the `PhoneVR Microphone` recording endpoint. The Host and SysVAD code are integrated, but the Windows MSVC/WDK build, driver test-signing/install and physical end-to-end audio validation must be performed on a Windows development PC. The driver install script creates the required Root-enumerated SysVAD device using WDK DevCon. See `docs/audio-streaming-architecture.md` for the build and validation steps.
 
 ## SteamVR driver 0.5.35
 

@@ -3,6 +3,7 @@ package com.vsq.phonvrstream.network
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class AudioPacketTest {
@@ -63,4 +64,39 @@ class AudioPacketTest {
         val wrongVersion = packet.copyOf().also { it[4] = 2 }
         assertNull(AudioPacket.decode(wrongVersion))
     }
+    @Test
+    fun udpFragmentsFitDatagramLimitAndReassembleOutOfOrder() {
+        val original = AudioPacket.encode(
+            AudioPacket.Frame(
+                AudioPacket.DIRECTION_PHONE_TO_HOST, 1, 0x10203040, 123L,
+                AudioPacket.SAMPLES_PER_CHANNEL,
+                ByteArray(AudioPacket.SAMPLES_PER_CHANNEL * 2) { (it * 7).toByte() },
+            ),
+        )
+        val fragments = AudioPacket.fragment(original)
+        assertEquals(2, fragments.size)
+        fragments.forEach { assertTrue(it.size <= AudioPacket.UDP_MAX_DATAGRAM_BYTES) }
+        val reassembler = AudioPacket.Reassembler()
+        var complete: ByteArray? = null
+        fragments.asReversed().forEach { datagram ->
+            complete = reassembler.add(datagram) ?: complete
+        }
+        assertArrayEquals(original, complete)
+    }
+
+    @Test
+    fun udpFragmentChecksumIsValidated() {
+        val original = AudioPacket.encode(
+            AudioPacket.Frame(
+                AudioPacket.DIRECTION_HOST_TO_PHONE, 2, 7, 9L,
+                AudioPacket.SAMPLES_PER_CHANNEL,
+                ByteArray(AudioPacket.SAMPLES_PER_CHANNEL * 4),
+            ),
+        )
+        val corrupted = AudioPacket.fragment(original).first().copyOf().also {
+            it[it.lastIndex] = (it.last().toInt() xor 0x40).toByte()
+        }
+        assertNull(AudioPacket.Reassembler().add(corrupted))
+    }
+
 }

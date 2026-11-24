@@ -360,7 +360,9 @@ class NetworkClient(
             }
             val engine = AudioStreamEngine(appContext) { payload ->
                 if (isSessionActive(generation) && !socket.isClosed) {
-                    socket.send(DatagramPacket(payload, payload.size, destination, port))
+                    for (fragment in AudioPacket.fragment(payload)) {
+                        socket.send(DatagramPacket(fragment, fragment.size, destination, port))
+                    }
                 }
             }
             synchronized(audioLock) {

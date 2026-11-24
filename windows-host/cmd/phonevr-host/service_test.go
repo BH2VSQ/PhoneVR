@@ -161,8 +161,8 @@ func TestHostServiceLifecycleAndPairing(t *testing.T) {
 	if err := decoder.Decode(&welcome); err != nil {
 		t.Fatalf("read welcome: %v", err)
 	}
-	if welcome.Type != "welcome" || welcome.PosePort != snapshot.PosePort {
-		t.Fatalf("unexpected welcome response: %+v", welcome)
+	if welcome.Type != "welcome" || welcome.PosePort != snapshot.PosePort || welcome.AudioUplinkPort != audioUplinkPort {
+		t.Fatalf("unexpected welcome response or audio port advertisement: %+v", welcome)
 	}
 	if service.Snapshot().VideoCaptureBridgeActive {
 		t.Fatal("control-channel pairing must not be reported as an active raw-video capture bridge")
@@ -592,7 +592,7 @@ func TestStopReleasesAllListeningPortsForImmediateRestart(t *testing.T) {
 	}
 	_ = tcp.Close()
 
-	for _, port := range []int{started.DiscoveryPort, started.PosePort} {
+	for _, port := range []int{started.DiscoveryPort, started.PosePort, audioUplinkPort} {
 		udp, listenErr := net.ListenUDP("udp4", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: port})
 		if listenErr != nil {
 			t.Fatalf("UDP port %d was not released: %v", port, listenErr)

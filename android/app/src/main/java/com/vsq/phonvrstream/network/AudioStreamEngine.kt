@@ -33,6 +33,7 @@ class AudioStreamEngine(
     private val packetSequence = java.util.concurrent.atomic.AtomicInteger(0)
     private val playbackSequenceLock = Any()
     private var lastPlaybackSequence: Int? = null
+    private val downlinkReassembler = AudioPacket.Reassembler()
     @Volatile private var audioTrack: AudioTrack? = null
     @Volatile private var audioRecord: AudioRecord? = null
     @Volatile private var echoCanceler: AcousticEchoCanceler? = null
@@ -77,7 +78,8 @@ class AudioStreamEngine(
     /** Called by the UDP or AOA receive worker. This method never blocks. */
     fun acceptDownlinkPacket(wire: ByteArray) {
         if (!running.get()) return
-        val frame = AudioPacket.decode(wire) ?: return
+        val completeFrame = downlinkReassembler.add(wire) ?: return
+        val frame = AudioPacket.decode(completeFrame) ?: return
         if (frame.direction != AudioPacket.DIRECTION_HOST_TO_PHONE || frame.channels != 2) return
         synchronized(playbackSequenceLock) {
             val previous = lastPlaybackSequence

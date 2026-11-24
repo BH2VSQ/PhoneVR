@@ -530,7 +530,7 @@ func (s *HostService) Start(config HostConfig) error {
 	s.videoCaptureListener = videoCaptureListener
 	s.videoUDP = videoUDP
 	s.audioUDP = udpAudio
-	s.audioUplink = make(chan phonevraudio.Packet, 64)
+	s.audioUplink = make(chan phonevraudio.Packet, 16)
 	s.audioSequence.Store(0)
 	s.audioUplinkPackets.Store(0)
 	s.audioDownlinkPackets.Store(0)
@@ -582,7 +582,8 @@ func (s *HostService) Start(config HostConfig) error {
 		s.addLog(fmt.Sprintf("Host interface [%s] %s: %s", address.Kind, address.Name, address.IP))
 	}
 
-	s.wg.Add(10)
+	s.wg.Add(11)
+	go s.audioEndpointWorker(ctx)
 	go s.acceptLoop(ctx, tcpListener)
 	go s.usbAccessoryLoop(ctx)
 	go s.discoveryLoop(ctx, udpDiscovery, serverName, config.ControlPort)

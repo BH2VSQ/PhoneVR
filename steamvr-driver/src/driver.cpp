@@ -82,6 +82,28 @@ const VideoStreamProfile& ActiveVideoStreamProfile() {
     }();
     return profile;
 }
+std::string ReadPhoneVRAudioEndpointFile(const wchar_t* fileName) {
+    wchar_t localAppData[MAX_PATH]{};
+    const DWORD length = GetEnvironmentVariableW(L"LOCALAPPDATA", localAppData, MAX_PATH);
+    if (length == 0 || length >= MAX_PATH) return {};
+    std::wstring path(localAppData);
+    path += L"\\PhoneVR\\";
+    path += fileName;
+    HANDLE file = CreateFileW(path.c_str(), GENERIC_READ,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file == INVALID_HANDLE_VALUE) return {};
+    char buffer[4096]{};
+    DWORD bytesRead = 0;
+    const BOOL readOk = ReadFile(file, buffer, sizeof(buffer) - 1, &bytesRead, nullptr);
+    CloseHandle(file);
+    if (!readOk || bytesRead == 0) return {};
+    std::string value(buffer, bytesRead);
+    while (!value.empty() && (value.back() == '\r' || value.back() == '\n' || value.back() == ' ' || value.back() == '\t')) value.pop_back();
+    while (!value.empty() && (value.front() == ' ' || value.front() == '\t')) value.erase(value.begin());
+    return value;
+}
+
 constexpr size_t kVideoCaptureSlots = 3;
 constexpr double gDisplayRefreshRateHz = 72.0;
 constexpr double DisplayFrameIntervalSeconds() { return 1.0 / gDisplayRefreshRateHz; }
@@ -521,6 +543,7 @@ public:
         properties->SetStringProperty(container, vr::Prop_RegisteredDeviceType_String, "phonevr/phonevr_hmd");
         properties->SetBoolProperty(container, vr::Prop_HasDisplayComponent_Bool, true);
         properties->SetBoolProperty(container, vr::Prop_DeviceIsWireless_Bool, true);
+        UpdateAudioEndpointProperties(true);
         properties->SetFloatProperty(container, vr::Prop_UserIpdMeters_Float, 0.064f);
         properties->SetFloatProperty(container, vr::Prop_DisplayFrequency_Float,
                                      static_cast<float>(gDisplayRefreshRateHz));
@@ -660,6 +683,7 @@ public:
     }
 
     void RunFrame() {
+        UpdateAudioEndpointProperties(false);
         // Intentionally do not submit pose here. OpenVR's RunFrame cadence is
         // controlled by vrserver. The dedicated publisher submits every fresh
         // UDP generation immediately and records this callback cadence only as
@@ -696,6 +720,34 @@ public:
     }
 
 private:
+    void UpdateAudioEndpointProperties(bool force) {
+        const uint64_t now = MonotonicNowNs();
+        if (!force && now < m_nextAudioEndpointCheckNs) return;
+        m_nextAudioEndpointCheckNs = now + 1000000000ULL;
+        const std::string playbackId = ReadPhoneVRAudioEndpointFile(L"audio-render-endpoint.txt");
+        const std::string recordingId = ReadPhoneVRAudioEndpointFile(L"audio-record-endpoint.txt");
+        if (!force && playbackId == m_audioPlaybackEndpointId && recordingId == m_audioRecordingEndpointId) return;
+        const uint32_t objectId = m_objectId.load(std::memory_order_acquire);
+        auto* properties = vr::VRProperties();
+        if (objectId == vr::k_unTrackedDeviceIndexInvalid || !properties) return;
+        const auto container = properties->TrackedDeviceToPropertyContainer(objectId);
+        const auto playbackResult = properties->SetStringProperty(
+            container, vr::Prop_Audio_DefaultPlaybackDeviceId_String, playbackId.c_str());
+        const auto recordingResult = properties->SetStringProperty(
+            container, vr::Prop_Audio_DefaultRecordingDeviceId_String, recordingId.c_str());
+        if (playbackResult == vr::TrackedProp_Success) m_audioPlaybackEndpointId = playbackId;
+        if (recordingResult == vr::TrackedProp_Success) m_audioRecordingEndpointId = recordingId;
+        if (vr::VRDriverLog()) {
+            char line[320]{};
+            std::snprintf(line, sizeof(line),
+                "PhoneVR: audio endpoint properties refreshed playback=%s recording=%s (results=%d/%d)",
+                playbackId.empty() ? "unset" : "set",
+                recordingId.empty() ? "unset" : "set",
+                static_cast<int>(playbackResult), static_cast<int>(recordingResult));
+            vr::VRDriverLog()->Log(line);
+        }
+    }
+
     void PosePublisherLoop() {
         (void)SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL);
         uint64_t observedGeneration = 0;
@@ -766,6 +818,9 @@ private:
     }
 
     std::atomic<uint32_t> m_objectId{vr::k_unTrackedDeviceIndexInvalid};
+    std::string m_audioPlaybackEndpointId;
+    std::string m_audioRecordingEndpointId;
+    uint64_t m_nextAudioEndpointCheckNs = 0;
     std::atomic<bool> m_loggedGetComponent{false};
     PoseReceiver m_receiver;
     HmdDisplay m_display;

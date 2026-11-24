@@ -3,6 +3,7 @@ package audio
 import (
 	"bytes"
 	"testing"
+	"time"
 )
 
 func TestPacketRoundTripBothDirections(t *testing.T) {
@@ -89,5 +90,101 @@ func TestEncodeRejectsUnexpectedFrameSize(t *testing.T) {
 		SamplesPerCh: SamplesPerFrame, Payload: make([]byte, 2)})
 	if err == nil {
 		t.Fatal("expected invalid PCM frame size to be rejected")
+	}
+}
+
+func TestFragmentReassemblyHandlesOutOfOrderAndDuplicates(t *testing.T) {
+	payload := make([]byte, SamplesPerFrame*2*2)
+	for index := range payload {
+		payload[index] = byte(index * 19)
+	}
+	frame, err := Encode(Packet{
+		Direction: DirectionHostToPhone, Channels: 2, Sequence: 77,
+		TimestampNs: 123456, SamplesPerCh: SamplesPerFrame, Payload: payload,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fragments, err := Fragment(frame)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(fragments) < 2 {
+		t.Fatalf("expected multiple UDP fragments, got %d", len(fragments))
+	}
+	for _, fragment := range fragments {
+		if len(fragment) > MaxUDPDatagramSize {
+			t.Fatalf("fragment exceeds MTU-safe datagram size: %d", len(fragment))
+		}
+	}
+	reassembler := NewReassembler()
+	now := time.Now()
+	var completed []byte
+	for index := len(fragments) - 1; index >= 0; index-- {
+		result, complete, addErr := reassembler.Add(fragments[index], now)
+		if addErr != nil {
+			t.Fatal(addErr)
+		}
+		if complete {
+			completed = result
+		}
+	}
+	if !bytes.Equal(completed, frame) {
+		t.Fatal("out-of-order UDP fragments did not reconstruct original PVRA frame")
+	}
+
+	// Exact duplicates are harmless while an assembly is in flight.
+	reassembler = NewReassembler()
+	_, complete, err := reassembler.Add(fragments[0], now)
+	if err != nil || complete {
+		t.Fatalf("first fragment: complete=%v err=%v", complete, err)
+	}
+	_, complete, err = reassembler.Add(fragments[0], now)
+	if err != nil || complete {
+		t.Fatalf("duplicate fragment: complete=%v err=%v", complete, err)
+	}
+}
+
+func TestFragmentRejectsBadChecksumAndExpiresIncompleteFrames(t *testing.T) {
+	frame, err := Encode(Packet{
+		Direction: DirectionPhoneToHost, Channels: 1, Sequence: 9,
+		SamplesPerCh: SamplesPerFrame, Payload: make([]byte, SamplesPerFrame*2),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fragments, err := Fragment(frame)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bad := append([]byte(nil), fragments[0]...)
+	bad[len(bad)-1] ^= 0x80
+	if _, _, err := NewReassembler().Add(bad, time.Now()); err == nil {
+		t.Fatal("expected fragment checksum mismatch")
+	}
+
+	reassembler := NewReassembler()
+	now := time.Now()
+	if _, complete, err := reassembler.Add(fragments[0], now); err != nil || complete {
+		t.Fatalf("incomplete fragment should be buffered: complete=%v err=%v", complete, err)
+	}
+	// A new sequence after the expiration window evicts the stale first frame.
+	other, err := Encode(Packet{
+		Direction: DirectionPhoneToHost, Channels: 1, Sequence: 10,
+		SamplesPerCh: SamplesPerFrame, Payload: make([]byte, SamplesPerFrame*2),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherFragments, err := Fragment(other)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = reassembler.Add(otherFragments[0], now.Add(fragmentLifetime+time.Millisecond))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := len(reassembler.pending); got != 1 {
+		t.Fatalf("expected stale assembly to expire, pending=%d", got)
 	}
 }

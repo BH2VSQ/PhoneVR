@@ -2,6 +2,7 @@
 param(
     [switch]$SkipTests,
     [switch]$SkipBundledSteamVRDriver,
+    [switch]$SkipWindowsAudioBridge,
     [string]$Version = ""
 )
 
@@ -23,6 +24,10 @@ $outputRoot = Join-Path $repoRoot "dist\windows"
 $driverOutput = Join-Path $repoRoot "dist\steamvr-driver"
 $embeddedDriverRoot = Join-Path $hostRoot "cmd\phonevr-host\embedded-driver"
 $embeddedPlaceholder = Join-Path $embeddedDriverRoot "README.txt"
+$audioBridgeRoot = Join-Path $repoRoot "windows-host\native-audio"
+$embeddedAudioRoot = Join-Path $hostRoot "cmd\phonevr-host\embedded-audio"
+$embeddedAudioPlaceholder = Join-Path $embeddedAudioRoot "README.txt"
+$audioBridgeBuildRoot = Join-Path $repoRoot "dist\native-audio"
 
 $go = Get-Command go.exe -ErrorAction SilentlyContinue
 if (-not $go) {
@@ -30,6 +35,21 @@ if (-not $go) {
 }
 if (-not $go) {
     throw "Go was not found. Install Go 1.22 or newer and add go.exe to PATH."
+}
+
+function Reset-EmbeddedAudioDirectory {
+    if (-not (Test-Path $embeddedAudioRoot)) {
+        New-Item -ItemType Directory -Force -Path $embeddedAudioRoot | Out-Null
+    }
+    Get-ChildItem -LiteralPath $embeddedAudioRoot -Force | Where-Object {
+        $_.FullName -ne $embeddedAudioPlaceholder
+    } | ForEach-Object {
+        Remove-Item -LiteralPath $_.FullName -Recurse -Force
+    }
+    if (-not (Test-Path $embeddedAudioPlaceholder)) {
+        "This directory is populated by build-windows-host.ps1 before the Go Host is compiled." |
+            Set-Content -LiteralPath $embeddedAudioPlaceholder -Encoding UTF8
+    }
 }
 
 function Reset-EmbeddedDriverDirectory {
@@ -53,6 +73,7 @@ $oldCgo = $env:CGO_ENABLED
 
 try {
     Reset-EmbeddedDriverDirectory
+    Reset-EmbeddedAudioDirectory
 
     if (-not $SkipBundledSteamVRDriver) {
         Write-BuildStep "Building the PhoneVR SteamVR driver for embedding"
@@ -75,6 +96,24 @@ try {
     }
     else {
         Write-Host "Skipping bundled SteamVR driver. The resulting Host will not be able to auto-deploy it." -ForegroundColor Yellow
+    }
+
+    if (-not $SkipWindowsAudioBridge) {
+        $cmake = Get-Command cmake.exe -ErrorAction SilentlyContinue
+        if (-not $cmake) { $cmake = Get-Command cmake -ErrorAction SilentlyContinue }
+        if (-not $cmake) { throw "CMake was not found. Install CMake and a Visual Studio C++ workload to build the WASAPI bridge." }
+        Write-BuildStep "Building the Windows WASAPI audio bridge"
+        Invoke-PhoneVRCommand -FilePath $cmake.Source -ArgumentList @("-S", $audioBridgeRoot, "-B", $audioBridgeBuildRoot, "-A", "x64") -WorkingDirectory $repoRoot -FailureMessage "WASAPI audio bridge CMake configuration failed"
+        Invoke-PhoneVRCommand -FilePath $cmake.Source -ArgumentList @("--build", $audioBridgeBuildRoot, "--config", "Release", "--target", "PhoneVRAudioBridge") -WorkingDirectory $repoRoot -FailureMessage "WASAPI audio bridge build failed"
+        $audioBridgeExe = Join-Path $audioBridgeBuildRoot "bin\PhoneVRAudioBridge.exe"
+        if (-not (Test-Path $audioBridgeExe)) {
+            $audioBridgeExe = Join-Path $audioBridgeBuildRoot "bin\Release\PhoneVRAudioBridge.exe"
+        }
+        if (-not (Test-Path $audioBridgeExe)) { throw "PhoneVRAudioBridge.exe was not produced by the CMake build." }
+        Copy-Item -LiteralPath $audioBridgeExe -Destination (Join-Path $embeddedAudioRoot "PhoneVRAudioBridge.exe") -Force
+    }
+    else {
+        Write-Host "Skipping WASAPI audio bridge. The resulting Host will not include Windows audio capture." -ForegroundColor Yellow
     }
 
     Write-BuildStep "Go environment"
@@ -130,7 +169,7 @@ try {
     Write-BuildStep "Windows Host build completed"
     Write-Host $guiExePath -ForegroundColor Green
     Write-Host $consoleExePath -ForegroundColor DarkGray
-    Write-Host "The SteamVR driver is embedded inside both Host executables." -ForegroundColor Green
+    Write-Host "The SteamVR driver and Windows audio bridge are embedded inside both Host executables." -ForegroundColor Green
     Write-Host "SHA256SUMS.txt updated." -ForegroundColor DarkGray
 }
 finally {
@@ -138,4 +177,5 @@ finally {
     $env:GOARCH = $oldGoarch
     $env:CGO_ENABLED = $oldCgo
     Reset-EmbeddedDriverDirectory
+    Reset-EmbeddedAudioDirectory
 }

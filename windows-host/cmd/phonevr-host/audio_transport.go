@@ -50,6 +50,10 @@ func (s *HostService) PublishAudioPCM(pcm []byte) error {
 	if len(devices) == 0 {
 		return errors.New("no active PhoneVR audio session")
 	}
+	udpFragments, err := phonevraudio.Fragment(packet)
+	if err != nil {
+		return fmt.Errorf("fragment PCM audio for UDP: %w", err)
+	}
 
 	var sendErrors []string
 	sent := 0
@@ -65,8 +69,15 @@ func (s *HostService) PublishAudioPCM(pcm []byte) error {
 		if audioUDP == nil || device.AudioUDP == nil {
 			continue // Wait for the phone's first microphone packet to learn its UDP port.
 		}
-		if _, err := audioUDP.WriteToUDP(packet, device.AudioUDP); err != nil {
-			sendErrors = append(sendErrors, err.Error())
+		fragmentFailed := false
+		for _, fragment := range udpFragments {
+			if _, err := audioUDP.WriteToUDP(fragment, device.AudioUDP); err != nil {
+				sendErrors = append(sendErrors, err.Error())
+				fragmentFailed = true
+				break
+			}
+		}
+		if fragmentFailed {
 			continue
 		}
 		sent++
@@ -81,9 +92,47 @@ func (s *HostService) PublishAudioPCM(pcm []byte) error {
 	return nil
 }
 
+type audioPeerReassembler struct {
+	assembler *phonevraudio.Reassembler
+	lastSeen  time.Time
+}
+
+type audioUDPReassemblySet struct {
+	peers map[string]*audioPeerReassembler
+}
+
+func (set *audioUDPReassemblySet) Add(peer string, datagram []byte, now time.Time) ([]byte, bool, error) {
+	if set.peers == nil {
+		set.peers = make(map[string]*audioPeerReassembler)
+	}
+	for key, state := range set.peers {
+		if now.Sub(state.lastSeen) > 30*time.Second {
+			delete(set.peers, key)
+		}
+	}
+	state := set.peers[peer]
+	if state == nil {
+		if len(set.peers) >= 16 {
+			oldestKey := ""
+			var oldest time.Time
+			for key, candidate := range set.peers {
+				if oldest.IsZero() || candidate.lastSeen.Before(oldest) {
+					oldestKey, oldest = key, candidate.lastSeen
+				}
+			}
+			delete(set.peers, oldestKey)
+		}
+		state = &audioPeerReassembler{assembler: phonevraudio.NewReassembler()}
+		set.peers[peer] = state
+	}
+	state.lastSeen = now
+	return state.assembler.Add(datagram, now)
+}
+
 func (s *HostService) audioLoop(ctx context.Context, conn *net.UDPConn) {
 	defer s.wg.Done()
 	buffer := make([]byte, phonevraudio.HeaderSize+phonevraudio.MaxPayloadSize+1)
+	var reassembly audioUDPReassemblySet
 	for ctx.Err() == nil {
 		_ = conn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
 		n, remote, err := conn.ReadFromUDP(buffer)
@@ -97,11 +146,15 @@ func (s *HostService) audioLoop(ctx context.Context, conn *net.UDPConn) {
 			s.addLog("Audio UDP read failed: " + err.Error())
 			continue
 		}
-		packet, decodeErr := phonevraudio.Decode(buffer[:n])
+		frame, complete, decodeErr := reassembly.Add(remote.String(), buffer[:n], time.Now())
+		if decodeErr != nil || !complete {
+			continue
+		}
+		packet, decodeErr := phonevraudio.Decode(frame)
 		if decodeErr != nil || packet.Direction != phonevraudio.DirectionPhoneToHost || packet.Channels != 1 {
 			continue
 		}
-		s.acceptAudioUplink("", remote, buffer[:n])
+		s.acceptAudioUplink("", remote, frame)
 	}
 }
 

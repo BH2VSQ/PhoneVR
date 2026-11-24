@@ -38,7 +38,7 @@ class DaydreamControllerBuildContractTests(unittest.TestCase):
         self.assertIn('"/pose/tip"', profile)
         self.assertIn('/user/hand/left/pose/tip', legacy)
         self.assertIn('/user/hand/right/pose/tip', legacy)
-        self.assertIn('"type": "trackpad"', profile)
+        self.assertIn('"type": "joystick"', profile)
         binding = json.loads((ROOT / "steamvr-driver/resources/input/default_bindings/steam.app.438100_phonevr_daydream_controller.json").read_text(encoding="utf-8"))
         self.assertEqual(binding["app_key"], "steam.app.438100")
         self.assertIn("/actions/global", binding["bindings"])
@@ -47,8 +47,7 @@ class DaydreamControllerBuildContractTests(unittest.TestCase):
         self.assertIn("/actions/action_menu", binding["bindings"])
         global_sources = binding["bindings"]["/actions/global"]["sources"]
         one_hand_sources = binding["bindings"]["/actions/one_hand"]["sources"]
-        self.assertTrue(any(source["path"] == "/user/hand/left/input/joystick" and source["inputs"].get("position", {}).get("output") == "/actions/global/in/move" for source in global_sources))
-        self.assertTrue(any(source["path"] == "/user/hand/right/input/joystick" and source["inputs"].get("position", {}).get("output") == "/actions/global/in/rotate" for source in global_sources))
+        self.assertTrue(all(any(source["path"] == f"/user/hand/{hand}/input/joystick" and source["mode"] == "joystick" and source["inputs"].get("position", {}).get("output") == "/actions/global/in/move" for source in global_sources) for hand in ("left", "right")))
         self.assertTrue(all(any(source["path"] == f"/user/hand/{hand}/input/joystick" and source["inputs"].get("position", {}).get("output") == "/actions/one_hand/in/move_rotate" for source in one_hand_sources) for hand in ("left", "right")))
         menu_sources = binding["bindings"]["/actions/menu"]["sources"]
         action_menu_sources = binding["bindings"]["/actions/action_menu"]["sources"]

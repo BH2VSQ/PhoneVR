@@ -1504,6 +1504,7 @@ func (s *HostService) handleControlConnection(ctx context.Context, conn net.Conn
 		}
 	}
 
+	lastControllerBridgeLog := time.Time{}
 	for {
 		// Apply the idle deadline before Scan. Setting it after Scan allowed
 		// the initial handshake deadline to remain active for the first idle
@@ -1551,6 +1552,15 @@ func (s *HostService) handleControlConnection(ctx context.Context, conn net.Conn
 		case "controller_state":
 			if hello.VideoOnly || message.Controllers == nil || controllerBridge == nil {
 				continue
+			}
+			if time.Since(lastControllerBridgeLog) >= 2*time.Second {
+				left, right := message.Controllers.Left, message.Controllers.Right
+				s.addLog(fmt.Sprintf(
+					"Daydream input bridge: left connected=%t touch=%t xy=%.3f,%.3f; right connected=%t touch=%t xy=%.3f,%.3f",
+					left.Connected, left.Touching, left.TouchX, left.TouchY,
+					right.Connected, right.Touching, right.TouchX, right.TouchY,
+				))
+				lastControllerBridgeLog = time.Now()
 			}
 			leftPacket, leftErr := protocol.EncodeControllerPacket(protocol.ControllerHandLeft, message.Controllers.Left)
 			rightPacket, rightErr := protocol.EncodeControllerPacket(protocol.ControllerHandRight, message.Controllers.Right)

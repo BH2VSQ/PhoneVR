@@ -71,6 +71,8 @@ internal class DaydreamControllerManager(
         @Volatile var reconnectAttempt: Int = 0,
         @Volatile var reconnectScheduled: Boolean = false,
         @Volatile var packetGeneration: Long = 0L,
+        @Volatile var lastTouchLogTimeMs: Long = 0L,
+        @Volatile var lastLoggedTouching: Boolean? = null,
         @Volatile var lastState: ControllerInputState = ControllerInputState(false, SystemClock.elapsedRealtimeNanos()),
     )
 
@@ -358,6 +360,19 @@ internal class DaydreamControllerManager(
         }
         link.lastState = state
         link.packetGeneration++
+        val touchLogTimeMs = SystemClock.elapsedRealtime()
+        val touchStateChanged = link.lastLoggedTouching != state.isTouching
+        if (touchStateChanged || (state.isTouching && touchLogTimeMs - link.lastTouchLogTimeMs >= 1_000L)) {
+            Log.i(
+                TAG,
+                "Daydream touchpad hand=${link.hand.wireValue} touching=${state.isTouching} " +
+                    "xy=${"%.3f".format(java.util.Locale.US, state.touchX)}," +
+                    "${"%.3f".format(java.util.Locale.US, state.touchY)} " +
+                    "click=${state.click} seq=${state.packetSequence} bytes=${payload.size}",
+            )
+            link.lastTouchLogTimeMs = touchLogTimeMs
+            link.lastLoggedTouching = state.isTouching
+        }
         if (next.app != previous.app) {
             Log.i(TAG, "Daydream App button ${if (next.app) "down" else "up"}: hand=${link.hand.wireValue} packet=${next.packetSequence}")
         }

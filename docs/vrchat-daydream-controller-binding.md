@@ -7,7 +7,7 @@ PhoneVR registers two independent SteamVR controller devices, one left and one r
 | Daydream control | VRChat action |
 | --- | --- |
 | Left touchpad position | Move |
-| Right touchpad position | Rotate |
+| Right touchpad position | Move |
 | Either App button, short press | Quick Menu / Menu action |
 | Either App button, hold | Action Menu |
 | Either App button, double press | Main Menu |
@@ -31,9 +31,11 @@ Recenter now aligns only the controller's horizontal heading with the headset's 
 
 ## Direction convention
 
-The Daydream BLE touch coordinates are normalized from 0 to 1 with a top-left origin. X increases to the right and Y increases downward, so the driver inverts Y when mapping to SteamVR's two-sided analogue axes (+X right, +Y up). A radial 0.15 deadzone, circular magnitude limit and soft response curve provide a joystick-like feel. When the finger is not touching the pad, both axes return to zero.
+The Daydream BLE touch coordinates are normalized from 0 to 1. SteamVR receives the filtered values as a software joystick (two-sided X/Y axes), while the physical click and touch state remain separate inputs. X increases left-to-right and Y increases bottom-to-top, matching SteamVR's two-sided analogue axes (+X right, +Y up). A radial 0.15 deadzone, circular magnitude limit and soft response curve provide a joystick-like feel. When the finger is not touching the pad, both axes return to zero. The default VRChat binding maps either physical hand to Move, so a single controller works regardless of whether Android assigned it as left or right. The one-hand action set also maps either side to Move & Rotate.
 
-The default profile targets VRChat on Steam (`steam.app.438100`) and is offered as a SteamVR driver default. SteamVR user-created bindings have higher priority and can override this default.
+The default profile targets VRChat on Steam (`steam.app.438100`) and is offered as a SteamVR driver default. SteamVR user-created bindings have higher priority and can override this default. After updating the PhoneVR driver, open SteamVR Settings → Controllers → Show Binding UI, select VRChat, then activate **PhoneVR Daydream VRChat Default**. This is required when an older saved personal binding is still active.
+
+For input-path diagnosis, Android Logcat (`PhoneVRDaydream`) reports the decoded touch state and normalized BLE coordinates. The Windows Host log reports the same left/right snapshots after the TCP control bridge. SteamVR `vrserver.txt` reports the raw coordinates and final joystick X/Y values after driver conversion. A valid forward path should show `touching=true` on Android and Host, followed by non-zero joystick axes in the driver log while the finger is away from the pad centre.
 
 ## Limitations
 

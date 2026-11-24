@@ -3,12 +3,13 @@
 - Add a separate 48 kHz PCM16 audio protocol over LAN UDP `48110` and USB AOA channels `4/5`, leaving the established video, pose and control transport unchanged.
 - Add Android low-latency stereo `AudioTrack` playback, mono `AudioRecord` microphone capture, runtime recording permission handling, bounded queues and receive-only operation when microphone permission is denied.
 - Add Windows Host PCM packet routing APIs and a bounded microphone uplink queue. Windows WASAPI loopback capture and the system-wide virtual microphone endpoint remain pending integration.
-- Add Daydream touchpad radial deadzone, circular diagonal limiting and a soft analogue response curve. Invert the Daydream top-left-origin Y coordinate to SteamVR's +Y-up axis.
+- Add Daydream touchpad radial deadzone, circular diagonal limiting and a soft analogue response curve. Present the touch surface to SteamVR as a two-sided software joystick.
 - Make the controller reference frame follow HMD horizontal yaw continuously, including when the controller gyro is stationary. Keep controller pitch and roll intact and use a time-based torso follow filter.
 
-- Correct the Daydream touchpad Y direction. Normalized BLE coordinates now map directly to SteamVR trackpad X-right/Y-up, with the untouched pad returning to center.
-- Change the SteamVR input profile from joystick to trackpad and ship a VRChat default binding for app `steam.app.438100`.
-- Preconfigure VRChat two-controller movement: left trackpad moves, right trackpad rotates. The `one_hand` action set maps either available controller to combined Move & Rotate, with Menu, Interact, Grab and Jump still available.
+- Correct the Daydream touchpad Y direction using the BLE wire convention: X increases left-to-right and Y increases bottom-to-top. Normalized BLE coordinates map directly to SteamVR joystick X-right/Y-up, with the untouched pad returning to center.
+- Declare `/input/joystick` as a SteamVR joystick source and use joystick binding mode, while retaining separate touch and click components.
+- Map either left or right controller to VRChat `Move` in the global action set, so a single controller works independently of its hand assignment. The `one_hand` action set also maps either side to combined Move & Rotate.
+- Add throttled diagnostics for BLE touch coordinates, Host bridge snapshots and SteamVR axis values. Add a regression test for packed BLE touch coordinates and correct contact detection.
 - Map App as a normal holdable VRChat Menu input. Keep Home short press as System and Home long press as software recenter, preventing App long-press from stealing the Action Menu gesture.
 - Change software recenter to align horizontal yaw only. Preserve controller pitch and roll, and avoid importing HMD pitch/roll into the aim alignment.
 - Bind the physical trackpad click to Interact, menu Confirm and Action Menu Select. App short press opens Quick Menu, App hold opens Action Menu, App double press opens Main Menu; Home short press opens SteamVR System and Home hold for 800 ms recenters. Volume Down maps to Grab and Volume Up maps to Jump.

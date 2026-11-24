@@ -115,6 +115,27 @@ class DaydreamControllerProtocolTest {
     }
 
     @Test
+    fun detectsTouchContactAndDecodesBothAxesFromThePackedWireBytes() {
+        val rawX = 128
+        val rawY = 192 // Upper half of the Daydream pad: protocol Y increases upward.
+        val packet = ByteArray(19).apply {
+            this[16] = (rawX ushr 3).toByte()
+            this[17] = (((rawX and 0x07) shl 5) or (rawY ushr 3)).toByte()
+            this[18] = (((rawY and 0x07) shl 5) or 0x01).toByte()
+        }
+        val state = DaydreamControllerProtocol.decode(packet, 457L)!!.state
+        assertTrue(state.isTouching)
+        assertEquals(rawX / 255f, state.touchX, 1e-6f)
+        assertEquals(rawY / 255f, state.touchY, 1e-6f)
+        assertTrue(state.click)
+
+        val untouched = DaydreamControllerProtocol.decode(ByteArray(19), 458L)!!.state
+        assertFalse(untouched.isTouching)
+        assertEquals(0f, untouched.touchX, 0f)
+        assertEquals(0f, untouched.touchY, 0f)
+    }
+
+    @Test
     fun accelerationAndGyroscopeAreFinite() {
         val state = DaydreamControllerProtocol.decode(ByteArray(19), 789L)!!.state
         listOf(

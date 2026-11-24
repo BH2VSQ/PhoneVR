@@ -59,18 +59,17 @@ int main() {
     CHECK(Near(rolledUp.y, 0.0));
     CHECK(Near(rolledUp.z, 0.0));
 
-    // Daydream BLE touch coordinates are normalized with a top-left origin and +Y down.
-    // SteamVR's trackpad +X/+Y must therefore follow right/up finger movement.
+    // Daydream BLE touch coordinates use +X right and +Y up, matching SteamVR.
     const auto untouchedPad = DaydreamTouchpadToOpenVR(0.9, 0.1, false);
     CHECK(Near(untouchedPad[0], 0.0) && Near(untouchedPad[1], 0.0));
     const auto padCenter = DaydreamTouchpadToOpenVR(0.5, 0.5, true);
     CHECK(Near(padCenter[0], 0.0) && Near(padCenter[1], 0.0));
-    const auto padUpperRight = DaydreamTouchpadToOpenVR(1.0, 0.0, true);
+    const auto padUpperRight = DaydreamTouchpadToOpenVR(1.0, 1.0, true);
     CHECK(Near(padUpperRight[0], std::sqrt(0.5)) && Near(padUpperRight[1], std::sqrt(0.5)));
-    const auto padLowerLeft = DaydreamTouchpadToOpenVR(0.0, 1.0, true);
+    const auto padLowerLeft = DaydreamTouchpadToOpenVR(0.0, 0.0, true);
     CHECK(Near(padLowerLeft[0], -std::sqrt(0.5)) && Near(padLowerLeft[1], -std::sqrt(0.5)));
-    const auto padTop = DaydreamTouchpadToOpenVR(0.5, 0.0, true);
-    const auto padBottom = DaydreamTouchpadToOpenVR(0.5, 1.0, true);
+    const auto padTop = DaydreamTouchpadToOpenVR(0.5, 1.0, true);
+    const auto padBottom = DaydreamTouchpadToOpenVR(0.5, 0.0, true);
     CHECK(padTop[1] > 0.99 && padBottom[1] < -0.99);
     const auto padRight = DaydreamTouchpadToOpenVR(1.0, 0.5, true);
     const auto padLeft = DaydreamTouchpadToOpenVR(0.0, 0.5, true);

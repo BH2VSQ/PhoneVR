@@ -2028,6 +2028,25 @@ public:
         const auto touchpad = DaydreamTouchpadToOpenVR(state.touchX, state.touchY, state.touching);
         const double x = touchpad[0];
         const double y = touchpad[1];
+        const bool inputTouching = connected && state.touching;
+        if (inputTouching && (m_lastTouchLogNs == 0 || nowNs - m_lastTouchLogNs >= 1000000000ULL)) {
+            if (vr::VRDriverLog()) {
+                char line[256]{};
+                std::snprintf(line, sizeof(line),
+                    "PhoneVR: %s Daydream touchpad active raw=(%.3f,%.3f) axis=(%.3f,%.3f) seq=%u",
+                    m_isLeft ? "left" : "right", state.touchX, state.touchY, x, y, state.sequence);
+                vr::VRDriverLog()->Log(line);
+            }
+            m_lastTouchLogNs = nowNs;
+            m_lastTouchingLogged = true;
+        } else if (!inputTouching && m_lastTouchingLogged) {
+            if (vr::VRDriverLog()) {
+                vr::VRDriverLog()->Log(m_isLeft
+                    ? "PhoneVR: left Daydream touchpad released; joystick axes returned to zero"
+                    : "PhoneVR: right Daydream touchpad released; joystick axes returned to zero");
+            }
+            m_lastTouchingLogged = false;
+        }
         DaydreamPoseOutput modeledPose{};
         // App is a normal holdable VRChat menu input. Recenter is kept on the
         // separate Home button so holding App can open the VRChat Action Menu.
@@ -2154,6 +2173,8 @@ private:
     vr::VRInputComponentHandle_t m_systemClick = vr::k_ulInvalidInputComponentHandle;
     vr::VRInputComponentHandle_t m_volumeUpClick = vr::k_ulInvalidInputComponentHandle;
     vr::VRInputComponentHandle_t m_volumeDownClick = vr::k_ulInvalidInputComponentHandle;
+    uint64_t m_lastTouchLogNs = 0;
+    bool m_lastTouchingLogged = false;
 };
 
 class PhoneVRProvider final : public vr::IServerTrackedDeviceProvider {

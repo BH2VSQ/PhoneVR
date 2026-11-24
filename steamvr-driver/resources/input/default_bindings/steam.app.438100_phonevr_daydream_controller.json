@@ -19,7 +19,7 @@
       "sources": [
         {
           "path": "/user/hand/left/input/joystick",
-          "mode": "trackpad",
+          "mode": "joystick",
           "parameters": {
             "maxzone_pct": "95"
           },
@@ -76,13 +76,13 @@
         },
         {
           "path": "/user/hand/right/input/joystick",
-          "mode": "trackpad",
+          "mode": "joystick",
           "parameters": {
             "maxzone_pct": "95"
           },
           "inputs": {
             "position": {
-              "output": "/actions/global/in/rotate"
+              "output": "/actions/global/in/move"
             },
             "click": {
               "output": "/actions/global/in/interact"
@@ -141,7 +141,7 @@
       "sources": [
         {
           "path": "/user/hand/left/input/joystick",
-          "mode": "trackpad",
+          "mode": "joystick",
           "parameters": {
             "maxzone_pct": "95"
           },
@@ -198,7 +198,7 @@
         },
         {
           "path": "/user/hand/right/input/joystick",
-          "mode": "trackpad",
+          "mode": "joystick",
           "parameters": {
             "maxzone_pct": "95"
           },
@@ -263,7 +263,7 @@
       "sources": [
         {
           "path": "/user/hand/left/input/joystick",
-          "mode": "trackpad",
+          "mode": "joystick",
           "parameters": {
             "maxzone_pct": "95"
           },
@@ -278,7 +278,7 @@
         },
         {
           "path": "/user/hand/right/input/joystick",
-          "mode": "trackpad",
+          "mode": "joystick",
           "parameters": {
             "maxzone_pct": "95"
           },
@@ -301,7 +301,7 @@
       "sources": [
         {
           "path": "/user/hand/left/input/joystick",
-          "mode": "trackpad",
+          "mode": "joystick",
           "parameters": {
             "maxzone_pct": "95"
           },
@@ -316,7 +316,7 @@
         },
         {
           "path": "/user/hand/right/input/joystick",
-          "mode": "trackpad",
+          "mode": "joystick",
           "parameters": {
             "maxzone_pct": "95"
           },
@@ -334,7 +334,7 @@
   },
   "category": "gamepad",
   "controller_type": "phonevr_daydream_controller",
-  "description": "PhoneVR Daydream mapping for two-hand and VRChat one-hand play. Left pad moves, right pad rotates, either pad drives one-hand move and rotate.",
+  "description": "PhoneVR Daydream one-controller-first VRChat mapping. Either touchpad moves the player; one_hand also receives the combined move and rotate action.",
   "name": "PhoneVR Daydream VRChat Default",
   "options": {
     "mirror_actions": false,

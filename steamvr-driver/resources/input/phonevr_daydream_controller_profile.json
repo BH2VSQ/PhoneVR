@@ -14,7 +14,7 @@
   },
   "input_source": {
     "/input/joystick": {
-      "type": "trackpad",
+      "type": "joystick",
       "click": true,
       "touch": true,
       "order": 1

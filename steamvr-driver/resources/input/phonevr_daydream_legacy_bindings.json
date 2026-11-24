@@ -16,7 +16,7 @@
       "sources": [
         {
           "path": "/user/hand/left/input/joystick",
-          "mode": "trackpad",
+          "mode": "joystick",
           "inputs": {
             "click": {
               "output": "/actions/legacy/in/left_axis0_press"
@@ -58,7 +58,7 @@
         },
         {
           "path": "/user/hand/right/input/joystick",
-          "mode": "trackpad",
+          "mode": "joystick",
           "inputs": {
             "click": {
               "output": "/actions/legacy/in/right_axis0_press"

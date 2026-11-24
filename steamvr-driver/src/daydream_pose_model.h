@@ -114,18 +114,18 @@ inline DaydreamQuaternion DaydreamToOpenVR(const DaydreamQuaternion& input) {
     return NormalizeQuaternion(input);
 }
 
-// Daydream touch coordinates are normalized with a top-left origin. The driver
-// converts them to SteamVR trackpad axes (+X right, +Y up). The untouched state
-// returns to zero instead of retaining the last finger position.
+// Daydream touch coordinates are normalized with the controller protocol's
+// origin at the bottom-left: X increases right and Y increases up. The driver
+// maps them to SteamVR axes (+X right, +Y up). Untouched state returns to zero.
 inline std::array<double, 2> DaydreamTouchpadToOpenVR(double touchX,
                                                        double touchY,
                                                        bool touching) {
-    // Google Daydream touch coordinates use a top-left origin: X grows right,
-    // Y grows down. SteamVR's two-axis input uses +X right and +Y up.
+    // The BLE protocol reports X left-to-right and Y bottom-to-top.
+    // Keep both axes in the same direction as SteamVR's +X right / +Y up.
     if (!touching) return {0.0, 0.0};
 
     double x = std::clamp(touchX * 2.0 - 1.0, -1.0, 1.0);
-    double y = std::clamp(1.0 - touchY * 2.0, -1.0, 1.0);
+    double y = std::clamp(touchY * 2.0 - 1.0, -1.0, 1.0);
     const double magnitude = std::sqrt(x * x + y * y);
     constexpr double kDeadzone = 0.15;
     if (!std::isfinite(magnitude) || magnitude <= kDeadzone) return {0.0, 0.0};

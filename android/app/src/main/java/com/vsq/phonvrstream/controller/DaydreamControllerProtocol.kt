@@ -82,9 +82,10 @@ object DaydreamControllerProtocol {
             timestampNs = timestampNs,
             packetSequence = sequence,
             deviceTimeTicks = timeTicks,
-            // The published WebBluetooth parser does not define a touch-state bit.
-            // Infer contact from coordinates and keep the limitation explicit.
-            isTouching = touchX != 0f || touchY != 0f,
+            // The BLE report has no dedicated contact bit. In the observed
+            // protocol, both coordinate bytes are zero while untouched and
+            // both become non-zero whenever a finger contacts the pad.
+            isTouching = touchX > 0f && touchY > 0f,
             touchX = touchX,
             touchY = touchY,
             click = (buttons and 0x01) != 0,

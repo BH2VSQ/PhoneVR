@@ -24,6 +24,8 @@
 #include <chrono>
 #include <climits>
 #include <cwctype>
+#include <cwchar>
+#include <utility>
 
 #pragma comment(lib, "ole32.lib")
 #pragma comment(lib, "uuid.lib")
@@ -329,16 +331,58 @@ bool IsVirtualCableRenderEndpoint(IMMDevice* device) {
            name.find(NormalizeEndpointName(kCableInputName)) != std::wstring::npos;
 }
 
+HRESULT GetActiveEndpointById(IMMDeviceEnumerator* enumerator, const std::wstring& endpointId,
+                              EDataFlow expectedFlow, ComPtr<IMMDevice>& selected) {
+    selected.Reset();
+    if (endpointId.empty()) return E_INVALIDARG;
+    HRESULT hr = enumerator->GetDevice(endpointId.c_str(), &selected);
+    if (FAILED(hr)) return hr;
+    DWORD state = 0;
+    hr = selected->GetState(&state);
+    if (FAILED(hr)) { selected.Reset(); return hr; }
+    if ((state & DEVICE_STATE_ACTIVE) == 0) { selected.Reset(); return AUDCLNT_E_DEVICE_INVALIDATED; }
+    ComPtr<IMMEndpoint> endpoint;
+    hr = selected.As(&endpoint);
+    if (FAILED(hr)) { selected.Reset(); return hr; }
+    EDataFlow actualFlow = eAll;
+    hr = endpoint->GetDataFlow(&actualFlow);
+    if (FAILED(hr) || actualFlow != expectedFlow) {
+        selected.Reset();
+        return FAILED(hr) ? hr : E_INVALIDARG;
+    }
+    return S_OK;
+}
+
 HRESULT FindLoopbackRenderEndpoint(IMMDeviceEnumerator* enumerator,
                                    ComPtr<IMMDevice>& selected,
-                                   bool& usedFallback) {
+                                   bool& usedFallback,
+                                   const std::wstring& preferredEndpointId = {},
+                                   const std::wstring& avoidEndpointId = {}) {
     usedFallback = false;
-    HRESULT hr = enumerator->GetDefaultAudioEndpoint(eRender, eConsole, &selected);
-    if (SUCCEEDED(hr) && selected && !IsVirtualCableRenderEndpoint(selected.Get())) return S_OK;
+    if (!preferredEndpointId.empty()) {
+        HRESULT preferredHr = GetActiveEndpointById(enumerator, preferredEndpointId, eRender, selected);
+        if (SUCCEEDED(preferredHr)) {
+            if (!avoidEndpointId.empty() && preferredEndpointId == avoidEndpointId) {
+                std::fprintf(stderr, "PhoneVRAudioBridge: warning: the explicitly selected PC-to-phone loopback endpoint is also the phone-microphone render target; this may create audio feedback\n");
+            }
+            return S_OK;
+        }
+        std::fprintf(stderr, "PhoneVRAudioBridge: configured PC-to-phone playback endpoint is unavailable or is not a render endpoint (0x%08lx)\n", preferredHr);
+        return preferredHr;
+    }
 
-    // VAC/VB-CABLE may become the Windows default render endpoint after
-    // installation. Looping that endpoint back would send the phone mic back
-    // to the phone. Prefer an active non-virtual render endpoint in that case.
+    auto allowedLoopbackEndpoint = [&](IMMDevice* device) {
+        if (!device || IsVirtualCableRenderEndpoint(device)) return false;
+        const std::wstring candidateId = GetDeviceId(device);
+        return candidateId.empty() || avoidEndpointId.empty() || candidateId != avoidEndpointId;
+    };
+
+    HRESULT hr = enumerator->GetDefaultAudioEndpoint(eRender, eConsole, &selected);
+    if (SUCCEEDED(hr) && allowedLoopbackEndpoint(selected.Get())) return S_OK;
+
+    // Avoid both well-known VAC/VB-CABLE names and the user's manually
+    // selected phone-microphone render target. The latter may be a third-party
+    // virtual cable whose friendly name does not contain a known vendor token.
     selected.Reset();
     ComPtr<IMMDeviceCollection> renders;
     hr = enumerator->EnumAudioEndpoints(eRender, DEVICE_STATE_ACTIVE, &renders);
@@ -349,7 +393,7 @@ HRESULT FindLoopbackRenderEndpoint(IMMDeviceEnumerator* enumerator,
     for (UINT i = 0; i < count; ++i) {
         ComPtr<IMMDevice> candidate;
         if (FAILED(renders->Item(i, &candidate))) continue;
-        if (IsVirtualCableRenderEndpoint(candidate.Get())) continue;
+        if (!allowedLoopbackEndpoint(candidate.Get())) continue;
         selected = candidate;
         usedFallback = true;
         return S_OK;
@@ -376,6 +420,119 @@ void EmitStatus(const std::wstring& renderId, const std::wstring& renderName,
         !WriteExact(output, json.data(), length)) {
         std::fprintf(stderr, "PhoneVRAudioBridge: failed to publish endpoint status\n");
     }
+}
+
+std::string EndpointInventoryJSON(IMMDeviceEnumerator* enumerator) {
+    auto defaultId = [&](EDataFlow flow, ERole role) -> std::wstring {
+        ComPtr<IMMDevice> device;
+        if (FAILED(enumerator->GetDefaultAudioEndpoint(flow, role, &device))) return {};
+        return GetDeviceId(device.Get());
+    };
+    const std::wstring defaultRender = defaultId(eRender, eConsole);
+    std::wstring defaultCapture = defaultId(eCapture, eCommunications);
+    if (defaultCapture.empty()) defaultCapture = defaultId(eCapture, eConsole);
+
+    auto collect = [&](EDataFlow flow) {
+        std::string items;
+        ComPtr<IMMDeviceCollection> collection;
+        if (FAILED(enumerator->EnumAudioEndpoints(flow, DEVICE_STATEMASK_ALL, &collection))) return items;
+        UINT count = 0;
+        if (FAILED(collection->GetCount(&count))) return items;
+        for (UINT index = 0; index < count; ++index) {
+            ComPtr<IMMDevice> device;
+            if (FAILED(collection->Item(index, &device))) continue;
+            const std::wstring id = GetDeviceId(device.Get());
+            const std::wstring name = GetFriendlyName(device.Get());
+            DWORD state = 0;
+            if (id.empty() || name.empty() || FAILED(device->GetState(&state))) continue;
+            if (!items.empty()) items += ",";
+            const bool isDefault = (flow == eRender ? id == defaultRender : id == defaultCapture);
+            items += std::string("{\"id\":\"") + JsonEscape(Utf8(id.c_str())) +
+                "\",\"friendlyName\":\"" + JsonEscape(Utf8(name.c_str())) +
+                "\",\"flow\":\"" + (flow == eRender ? "render" : "capture") +
+                "\",\"state\":" + std::to_string(state) +
+                ",\"isDefault\":" + (isDefault ? "true" : "false") + "}";
+        }
+        return items;
+    };
+    return std::string("{\"version\":1,\"defaultRenderEndpointId\":\"") + JsonEscape(Utf8(defaultRender.c_str())) +
+        "\",\"defaultCaptureEndpointId\":\"" + JsonEscape(Utf8(defaultCapture.c_str())) +
+        "\",\"renderEndpoints\":[" + collect(eRender) +
+        "],\"captureEndpoints\":[" + collect(eCapture) + "]}";
+}
+
+int ListAudioEndpoints() {
+    const HRESULT co = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    if (FAILED(co)) return 2;
+    ComUninitializer comUninitializer;
+    ComPtr<IMMDeviceEnumerator> enumerator;
+    HRESULT hr = CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL, IID_PPV_ARGS(&enumerator));
+    if (FAILED(hr)) return 3;
+    const std::string json = EndpointInventoryJSON(enumerator.Get());
+    const HANDLE output = GetStdHandle(STD_OUTPUT_HANDLE);
+    return WriteExact(output, json.data(), static_cast<DWORD>(json.size())) ? 0 : 4;
+}
+
+bool ResolveMicrophoneRoute(IMMDeviceEnumerator* enumerator,
+                            const std::wstring& preferredRenderId,
+                            const std::wstring& preferredCaptureId,
+                            std::wstring& renderId, std::wstring& renderName,
+                            std::wstring& captureId, std::wstring& captureName,
+                            std::wstring& provider, bool& routeActive) {
+    routeActive = false;
+    if (preferredRenderId.empty()) {
+        if (!FindVirtualCableEndpoints(enumerator, renderId, renderName, captureId, captureName, provider)) {
+            return false;
+        }
+        if (!preferredCaptureId.empty()) {
+            ComPtr<IMMDevice> explicitCapture;
+            if (SUCCEEDED(GetActiveEndpointById(enumerator, preferredCaptureId, eCapture, explicitCapture))) {
+                captureId = preferredCaptureId;
+                captureName = GetFriendlyName(explicitCapture.Get());
+                provider = L"User-selected capture endpoint";
+            } else {
+                captureId.clear(); captureName.clear();
+                provider = L"Virtual cable render endpoint";
+            }
+        }
+        routeActive = !renderId.empty() && !captureId.empty();
+        return !renderId.empty();
+    }
+
+    ComPtr<IMMDevice> renderDevice;
+    if (FAILED(GetActiveEndpointById(enumerator, preferredRenderId, eRender, renderDevice))) return false;
+    renderId = preferredRenderId;
+    renderName = GetFriendlyName(renderDevice.Get());
+    provider = L"User-selected playback endpoint";
+    captureId.clear(); captureName.clear();
+
+    if (!preferredCaptureId.empty()) {
+        ComPtr<IMMDevice> captureDevice;
+        if (SUCCEEDED(GetActiveEndpointById(enumerator, preferredCaptureId, eCapture, captureDevice))) {
+            captureId = preferredCaptureId;
+            captureName = GetFriendlyName(captureDevice.Get());
+            provider = L"User-selected endpoint pair";
+        } else {
+            std::fprintf(stderr, "PhoneVRAudioBridge: configured Phone-to-PC recording endpoint is unavailable or is not a capture endpoint\n");
+        }
+    } else {
+        // Only known VAC/VB-CABLE naming conventions are auto-paired. For an
+        // arbitrary third-party driver, friendly names may be identical on an
+        // ordinary headset or unrelated device; require the user to select
+        // the actual paired capture endpoint explicitly in the Host UI.
+        std::wstring autoRenderId, autoRenderName, autoCaptureId, autoCaptureName, autoProvider;
+        if (FindVirtualCableEndpoints(enumerator, autoRenderId, autoRenderName,
+                                      autoCaptureId, autoCaptureName, autoProvider) &&
+            autoRenderId == preferredRenderId) {
+            captureId = autoCaptureId;
+            captureName = autoCaptureName;
+            provider = autoProvider;
+        } else {
+            std::fprintf(stderr, "PhoneVRAudioBridge: no known VAC/VB-CABLE pairing for the selected render endpoint; choose its matching recording endpoint manually in Audio & Microphone\n");
+        }
+    }
+    routeActive = !renderId.empty() && !captureId.empty();
+    return !renderId.empty();
 }
 
 float DecodeSample(const BYTE* data, const WAVEFORMATEX* format, DWORD channel) {
@@ -418,7 +575,10 @@ bool IsSupportedMixFormat(const WAVEFORMATEX* format) {
 // Windows exposes its paired capture endpoint to applications as a microphone.
 class VirtualCableMicRenderer {
 public:
-    VirtualCableMicRenderer() { stopEvent_ = CreateEventW(nullptr, TRUE, FALSE, nullptr); }
+    VirtualCableMicRenderer(std::wstring preferredRenderId, std::wstring preferredCaptureId)
+        : preferredRenderId_(std::move(preferredRenderId)), preferredCaptureId_(std::move(preferredCaptureId)) {
+        stopEvent_ = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    }
     ~VirtualCableMicRenderer() { Stop(); if (stopEvent_) CloseHandle(stopEvent_); }
 
     bool Start() {
@@ -452,13 +612,18 @@ private:
         if (FAILED(hr)) return false;
 
         std::wstring endpointId, endpointName, captureId, captureName, provider;
-        if (!FindVirtualCableEndpoints(enumerator.Get(), endpointId, endpointName, captureId, captureName, provider)) {
+        bool routeActive = false;
+        if (!ResolveMicrophoneRoute(enumerator.Get(), preferredRenderId_, preferredCaptureId_,
+                                    endpointId, endpointName, captureId, captureName, provider, routeActive)) {
             const auto now = std::chrono::steady_clock::now();
             if (lastMissingLog_.time_since_epoch().count() == 0 || now - lastMissingLog_ >= std::chrono::seconds(10)) {
-                std::fprintf(stderr, "PhoneVRAudioBridge: no supported virtual cable pair detected (VB-CABLE or VAC); phone microphone frames are buffered briefly and retried\n");
+                std::fprintf(stderr, "PhoneVRAudioBridge: no active Phone-to-PC playback endpoint selected; configure a virtual cable render endpoint in Audio & Microphone\n");
                 lastMissingLog_ = now;
             }
             return false;
+        }
+        if (captureId.empty()) {
+            std::fprintf(stderr, "PhoneVRAudioBridge: rendering phone microphone to %s, but no paired Windows recording endpoint was resolved; select the capture-side endpoint in Audio & Microphone\n", Utf8(endpointName.c_str()).c_str());
         }
 
         ComPtr<IMMDevice> device;
@@ -572,6 +737,8 @@ private:
         }
     }
 
+    std::wstring preferredRenderId_;
+    std::wstring preferredCaptureId_;
     HANDLE stopEvent_ = nullptr;
     std::atomic<bool> running_{false};
     std::thread worker_;
@@ -583,18 +750,37 @@ private:
 
 class WasapiLoopback {
 public:
+    WasapiLoopback(std::wstring preferredRenderId, std::wstring preferredMicRenderId,
+                   std::wstring preferredMicCaptureId)
+        : preferredRenderId_(std::move(preferredRenderId)),
+          preferredMicRenderId_(std::move(preferredMicRenderId)),
+          preferredMicCaptureId_(std::move(preferredMicCaptureId)) {}
+
     HRESULT Start(std::wstring& endpointId, std::wstring& friendlyName) {
         HRESULT hr = CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL,
                                       IID_PPV_ARGS(&enumerator_));
         if (FAILED(hr)) return hr;
+        std::wstring micId, micName, micProvider;
+        bool microphoneRoutePaired = false;
+        std::wstring micRenderName;
+        const bool microphoneRenderAvailable = ResolveMicrophoneRoute(enumerator_.Get(), preferredMicRenderId_, preferredMicCaptureId_,
+            loopbackAvoidRenderId_, micRenderName, micId, micName, micProvider, microphoneRoutePaired);
+        if (!microphoneRenderAvailable) {
+            loopbackAvoidRenderId_.clear();
+        } else if (!microphoneRoutePaired) {
+            std::fprintf(stderr, "PhoneVRAudioBridge: phone-microphone render target %s is active but its paired recording endpoint is not configured or enabled\n",
+                Utf8(micRenderName.c_str()).c_str());
+        }
+
         ComPtr<IMMDevice> device;
         bool usedFallbackEndpoint = false;
-        hr = FindLoopbackRenderEndpoint(enumerator_.Get(), device, usedFallbackEndpoint);
+        hr = FindLoopbackRenderEndpoint(enumerator_.Get(), device, usedFallbackEndpoint,
+                                        preferredRenderId_, loopbackAvoidRenderId_);
         if (FAILED(hr)) return hr;
         endpointId = GetDeviceId(device.Get());
         friendlyName = GetFriendlyName(device.Get());
         if (usedFallbackEndpoint) {
-            std::fprintf(stderr, "PhoneVRAudioBridge: Windows default playback endpoint is a virtual microphone cable; avoiding mic feedback and using physical endpoint %s for game-audio loopback\n",
+            std::fprintf(stderr, "PhoneVRAudioBridge: default playback endpoint is a known virtual cable or the selected phone-microphone render target; avoiding mic feedback and using %s for PC-to-phone loopback\n",
                 Utf8(friendlyName.c_str()).c_str());
         }
         endpointId_ = endpointId;
@@ -640,15 +826,19 @@ public:
         if (mmcss.Handle) AvSetMmThreadPriority(mmcss.Handle, AVRT_PRIORITY_HIGH);
         auto lastEndpointCheck = std::chrono::steady_clock::now();
         std::wstring micId, micName, micRenderId, micRenderName, micProvider;
-        bool cableActive = FindVirtualCableEndpoints(enumerator_.Get(), micRenderId, micRenderName, micId, micName, micProvider);
-        if (!cableActive) { micId.clear(); micName.clear(); micRenderId.clear(); micRenderName.clear(); micProvider.clear(); }
-        EmitStatus(endpointId_, friendlyName_, micId, micName, micRenderId, micRenderName, micProvider, cableActive);
+        bool microphoneRoutePaired = false;
+        const bool microphoneRenderAvailable = ResolveMicrophoneRoute(enumerator_.Get(), preferredMicRenderId_, preferredMicCaptureId_,
+            micRenderId, micRenderName, micId, micName, micProvider, microphoneRoutePaired);
+        if (!microphoneRenderAvailable) { micId.clear(); micName.clear(); micRenderId.clear(); micRenderName.clear(); micProvider.clear(); }
+        EmitStatus(endpointId_, friendlyName_, micId, micName, micRenderId, micRenderName, micProvider, microphoneRoutePaired);
         std::fprintf(stderr, "PhoneVRAudioBridge: WASAPI loopback active: %s\n", Utf8(friendlyName_.c_str()).c_str());
-        if (cableActive) {
+        if (microphoneRenderAvailable && microphoneRoutePaired) {
             std::fprintf(stderr, "PhoneVRAudioBridge: existing virtual cable route active (%s): %s -> %s\n",
                 Utf8(micProvider.c_str()).c_str(), Utf8(micRenderName.c_str()).c_str(), Utf8(micName.c_str()).c_str());
+        } else if (microphoneRenderAvailable) {
+            std::fprintf(stderr, "PhoneVRAudioBridge: microphone PCM render endpoint is configured (%s), but the paired Windows capture endpoint is not selected or active.\n", Utf8(micRenderName.c_str()).c_str());
         } else {
-            std::fprintf(stderr, "PhoneVRAudioBridge: no supported virtual cable detected; existing audio drivers were left untouched. Install VB-CABLE only if no compatible route is available.\n");
+            std::fprintf(stderr, "PhoneVRAudioBridge: no Phone-to-PC microphone render endpoint configured. Select the playback/render side of a virtual audio cable in PhoneVR.\n");
         }
 
         while (true) {
@@ -664,19 +854,22 @@ public:
                 if (now - lastEndpointCheck >= std::chrono::seconds(3)) {
                     ComPtr<IMMDevice> currentLoopbackEndpoint;
                     bool usingFallbackEndpoint = false;
-                    if (SUCCEEDED(FindLoopbackRenderEndpoint(enumerator_.Get(), currentLoopbackEndpoint, usingFallbackEndpoint)) &&
+                    if (SUCCEEDED(FindLoopbackRenderEndpoint(enumerator_.Get(), currentLoopbackEndpoint, usingFallbackEndpoint, preferredRenderId_, loopbackAvoidRenderId_)) &&
                         GetDeviceId(currentLoopbackEndpoint.Get()) != endpointId_) {
                         std::fprintf(stderr, "PhoneVRAudioBridge: effective game-audio render endpoint changed; restarting WASAPI session\n");
                         return false;
                     }
                     std::wstring currentMicId, currentMicName, currentMicRenderId, currentMicRenderName, currentMicProvider;
-                    const bool currentCableActive = FindVirtualCableEndpoints(enumerator_.Get(), currentMicRenderId, currentMicRenderName, currentMicId, currentMicName, currentMicProvider);
-                    if (!currentCableActive) { currentMicId.clear(); currentMicName.clear(); currentMicRenderId.clear(); currentMicRenderName.clear(); currentMicProvider.clear(); }
-                    if (currentMicId != micId || currentMicRenderId != micRenderId || currentMicProvider != micProvider) {
+                    bool currentCableActive = false;
+                    const bool currentMicRenderAvailable = ResolveMicrophoneRoute(enumerator_.Get(), preferredMicRenderId_, preferredMicCaptureId_,
+                        currentMicRenderId, currentMicRenderName, currentMicId, currentMicName, currentMicProvider, currentCableActive);
+                    if (!currentMicRenderAvailable) { currentMicId.clear(); currentMicName.clear(); currentMicRenderId.clear(); currentMicRenderName.clear(); currentMicProvider.clear(); }
+                    if (currentMicId != micId || currentMicRenderId != micRenderId || currentMicProvider != micProvider || currentCableActive != microphoneRoutePaired) {
                         micId = currentMicId; micName = currentMicName;
                         micRenderId = currentMicRenderId; micRenderName = currentMicRenderName; micProvider = currentMicProvider;
-                        EmitStatus(endpointId_, friendlyName_, micId, micName, micRenderId, micRenderName, micProvider, currentCableActive);
-                        std::fprintf(stderr, "PhoneVRAudioBridge: virtual cable route %s (%s)\n", currentCableActive ? "detected" : "not available", Utf8(micProvider.c_str()).c_str());
+                        microphoneRoutePaired = currentCableActive;
+                        EmitStatus(endpointId_, friendlyName_, micId, micName, micRenderId, micRenderName, micProvider, microphoneRoutePaired);
+                        std::fprintf(stderr, "PhoneVRAudioBridge: Phone-to-PC recording route %s (%s)\n", microphoneRoutePaired ? "paired" : "not paired", Utf8(micProvider.c_str()).c_str());
                     }
                     lastEndpointCheck = now;
                 }
@@ -749,19 +942,22 @@ public:
             if (now - lastEndpointCheck >= std::chrono::seconds(3)) {
                 ComPtr<IMMDevice> currentLoopbackEndpoint;
                 bool usingFallbackEndpoint = false;
-                if (SUCCEEDED(FindLoopbackRenderEndpoint(enumerator_.Get(), currentLoopbackEndpoint, usingFallbackEndpoint)) &&
+                if (SUCCEEDED(FindLoopbackRenderEndpoint(enumerator_.Get(), currentLoopbackEndpoint, usingFallbackEndpoint, preferredRenderId_, loopbackAvoidRenderId_)) &&
                     GetDeviceId(currentLoopbackEndpoint.Get()) != endpointId_) {
                     std::fprintf(stderr, "PhoneVRAudioBridge: effective game-audio render endpoint changed; restarting WASAPI session\n");
                     return false;
                 }
                 std::wstring currentMicId, currentMicName, currentMicRenderId, currentMicRenderName, currentMicProvider;
-                const bool currentCableActive = FindVirtualCableEndpoints(enumerator_.Get(), currentMicRenderId, currentMicRenderName, currentMicId, currentMicName, currentMicProvider);
-                if (!currentCableActive) { currentMicId.clear(); currentMicName.clear(); currentMicRenderId.clear(); currentMicRenderName.clear(); currentMicProvider.clear(); }
-                if (currentMicId != micId || currentMicRenderId != micRenderId || currentMicProvider != micProvider) {
+                bool currentCableActive = false;
+                const bool currentMicRenderAvailable = ResolveMicrophoneRoute(enumerator_.Get(), preferredMicRenderId_, preferredMicCaptureId_,
+                    currentMicRenderId, currentMicRenderName, currentMicId, currentMicName, currentMicProvider, currentCableActive);
+                if (!currentMicRenderAvailable) { currentMicId.clear(); currentMicName.clear(); currentMicRenderId.clear(); currentMicRenderName.clear(); currentMicProvider.clear(); }
+                if (currentMicId != micId || currentMicRenderId != micRenderId || currentMicProvider != micProvider || currentCableActive != microphoneRoutePaired) {
                     micId = currentMicId; micName = currentMicName;
                     micRenderId = currentMicRenderId; micRenderName = currentMicRenderName; micProvider = currentMicProvider;
-                    EmitStatus(endpointId_, friendlyName_, micId, micName, micRenderId, micRenderName, micProvider, currentCableActive);
-                    std::fprintf(stderr, "PhoneVRAudioBridge: virtual cable route %s (%s)\n", currentCableActive ? "detected" : "not available", Utf8(micProvider.c_str()).c_str());
+                    microphoneRoutePaired = currentCableActive;
+                    EmitStatus(endpointId_, friendlyName_, micId, micName, micRenderId, micRenderName, micProvider, microphoneRoutePaired);
+                    std::fprintf(stderr, "PhoneVRAudioBridge: Phone-to-PC recording route %s (%s)\n", microphoneRoutePaired ? "paired" : "not paired", Utf8(micProvider.c_str()).c_str());
                 }
                 lastEndpointCheck = now;
             }
@@ -776,6 +972,10 @@ private:
     ComPtr<IMMDeviceEnumerator> enumerator_;
     std::wstring endpointId_;
     std::wstring friendlyName_;
+    std::wstring preferredRenderId_;
+    std::wstring preferredMicRenderId_;
+    std::wstring preferredMicCaptureId_;
+    std::wstring loopbackAvoidRenderId_;
 };
 
 DWORD WINAPI MicPipeThread(void* context) {
@@ -819,10 +1019,23 @@ int ProbeVirtualCableEndpoints() {
 }
 } // namespace
 
-int wmain(int argc, wchar_t** argv) {
-    if (argc > 1 && std::wstring(argv[1]) == L"--probe") {
-        return ProbeVirtualCableEndpoints();
+std::wstring ArgumentValue(int argc, wchar_t** argv, const wchar_t* prefix) {
+    const size_t length = std::wcslen(prefix);
+    for (int index = 1; index < argc; ++index) {
+        const std::wstring argument(argv[index]);
+        if (argument.compare(0, length, prefix) == 0) return argument.substr(length);
     }
+    return {};
+}
+
+int wmain(int argc, wchar_t** argv) {
+    if (argc > 1 && std::wstring(argv[1]) == L"--probe") return ProbeVirtualCableEndpoints();
+    if (argc > 1 && std::wstring(argv[1]) == L"--list-endpoints") return ListAudioEndpoints();
+
+    const std::wstring preferredLoopbackId = ArgumentValue(argc, argv, L"--loopback-endpoint=");
+    const std::wstring preferredMicRenderId = ArgumentValue(argc, argv, L"--microphone-render-endpoint=");
+    const std::wstring preferredMicCaptureId = ArgumentValue(argc, argv, L"--microphone-capture-endpoint=");
+
     SetConsoleOutputCP(CP_UTF8);
     HRESULT hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
     if (FAILED(hr)) {
@@ -831,7 +1044,7 @@ int wmain(int argc, wchar_t** argv) {
     }
     ComUninitializer comUninitializer;
 
-    WasapiLoopback loopback;
+    WasapiLoopback loopback(preferredLoopbackId, preferredMicRenderId, preferredMicCaptureId);
     std::wstring renderId, renderName;
     hr = loopback.Start(renderId, renderName);
     if (FAILED(hr)) {
@@ -839,7 +1052,7 @@ int wmain(int argc, wchar_t** argv) {
         return 4;
     }
 
-    VirtualCableMicRenderer micRenderer;
+    VirtualCableMicRenderer micRenderer(preferredMicRenderId, preferredMicCaptureId);
     if (!micRenderer.Start()) {
         std::fprintf(stderr, "PhoneVRAudioBridge: virtual microphone cable render worker could not start\n");
         return 5;

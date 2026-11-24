@@ -77,6 +77,15 @@ func (s *HostService) InstallVirtualCable() (string, error) {
 	vbCableInstallMu.Lock()
 	defer vbCableInstallMu.Unlock()
 
+	// A manually configured third-party route may not use VAC/VB-CABLE naming.
+	// Respect it and avoid installing a second virtual driver simply because
+	// automatic vendor-name detection cannot identify the pair.
+	routing := loadAudioRoutingConfig().normalized()
+	if hasCustomPhoneMicrophoneRoute(routing) {
+		s.addLog("Custom phone-microphone audio endpoints are configured; skipping the optional VB-CABLE fallback installer")
+		return "检测到已经配置自定义手机麦克风声卡路由。PhoneVR 会继续使用用户选择的播放端和录音端，不会额外安装 VB-CABLE。若需要更换设备，请在音频设备路由页面修改选择。", nil
+	}
+
 	if status, ok := currentVirtualCableStatus(); ok && isCompatibleVirtualCableStatus(status) {
 		if !status.MicrophoneRouteActive {
 			s.addLog("An existing VAC/VB-CABLE pair is installed but one or both endpoints are disabled; skipping installation")

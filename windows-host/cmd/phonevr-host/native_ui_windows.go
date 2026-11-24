@@ -269,6 +269,12 @@ const (
 	idTransportApply    = 802
 	idVideoProfileCombo = 810
 	idVideoProfileApply = 811
+	idAudioLoopback     = 820
+	idAudioMicRender    = 821
+	idAudioMicCapture   = 822
+	idAudioApply        = 823
+	idAudioRefresh      = 824
+	idAudioInstall      = 825
 )
 
 type nativePoint struct{ X, Y int32 }
@@ -362,6 +368,9 @@ type nativeDialog struct {
 	scrollOffset    int
 	contentHeight   int
 	viewHeight      int
+	audioInventory  AudioEndpointInventory
+	audioRouting    AudioRoutingConfig
+	audioListError  string
 }
 type nativeUI struct {
 	service           *HostService
@@ -772,6 +781,8 @@ func nativeDialogWndProc(hwnd uintptr, message uint32, wParam, lParam uintptr) u
 				minWidth = 720
 			case "presets":
 				minWidth = 700
+			case "audio":
+				minWidth = 760
 			case "network":
 				minWidth = 640
 			case "logs":
@@ -825,6 +836,11 @@ func nativeDialogWndProc(hwnd uintptr, message uint32, wParam, lParam uintptr) u
 		if dialog != nil {
 			commandID := int(wParam & 0xffff)
 			notification := int((wParam >> 16) & 0xffff)
+			if dialog.kind == "audio" && notification == cbnSelChange &&
+				(commandID == idAudioLoopback || commandID == idAudioMicRender || commandID == idAudioMicCapture) {
+				app.updateAudioRoutingStatus(dialog)
+				return 0
+			}
 			if dialog.kind == "presets" && commandID == idPresetList && notification == lbnDblClk {
 				index := int(sendNativeMessage(dialog.controls[idPresetList], 0x0188, 0, 0))
 				app.openPresetEditor(dialog, index)
@@ -1162,7 +1178,11 @@ func (app *nativeUI) syncPhoneOpticalPresets(d *nativeDialog) error {
 func (app *nativeUI) openDialog(kind string) {
 	for _, existing := range app.dialogs {
 		if existing.kind == kind {
+			if kind == "audio" {
+				app.refreshAudioSettingsDialog(existing)
+			}
 			pShowWindow.Call(existing.hwnd, swShow)
+			pUpdateWindow.Call(existing.hwnd)
 			return
 		}
 	}
@@ -1181,6 +1201,8 @@ func (app *nativeUI) openDialog(kind string) {
 		width, height, title = 720, 560, app.text("视频传输模式", "Video Transport")
 	case "videoProfile":
 		width, height, title = 760, 500, app.text("串流分辨率", "Stream Resolution")
+	case "audio":
+		width, height, title = 920, 740, app.text("音频设备路由", "Audio Device Routing")
 	case "logs":
 		width, height, title = 980, 680, app.text("运行日志", "Runtime Logs")
 	case "appearance":
@@ -1213,6 +1235,14 @@ func (app *nativeUI) openDialog(kind string) {
 		return
 	}
 	dialog := &nativeDialog{kind: kind, hwnd: hwnd, controls: make(map[int]uintptr), labels: make(map[int]uintptr), settings: app.currentSettings, config: app.config}
+	if kind == "audio" {
+		dialog.audioRouting = loadAudioRoutingConfig()
+		dialog.audioInventory, err = listWindowsAudioEndpoints()
+		if err != nil {
+			dialog.audioListError = err.Error()
+			dialog.audioInventory = AudioEndpointInventory{Version: 1, RenderEndpoints: []AudioEndpointInfo{}, CaptureEndpoints: []AudioEndpointInfo{}}
+		}
+	}
 	if kind == "settings" && app.pendingPreset != nil {
 		dialog.presetID = app.pendingPreset.ID
 		dialog.settings = app.pendingPreset.Settings.Normalized()
@@ -1385,6 +1415,21 @@ func (app *nativeUI) createDialogControls(d *nativeDialog) {
 		addButton(idTransportApply, app.text("应用模式", "Apply Mode"))
 		addButton(idClose, app.text("关闭", "Close"))
 
+	case "audio":
+		addLabel(d.hwnd, 0, app.text("PC → 手机：选择任意 Windows 播放设备作为声音源。PhoneVR 使用 WASAPI Loopback 捕获该设备输出并发送到手机。", "PC → Phone: Choose any Windows playback device as the source. PhoneVR captures its rendered output using WASAPI loopback and sends it to the phone."))
+		addLabel(d.hwnd, 1, app.text("手机麦克风 → PC：选择虚拟音频设备播放端 / 输入端。PhoneVR 将手机麦克风 PCM 写入此端点，支持任意虚拟声卡驱动。", "Phone microphone → PC: Choose the virtual audio device playback/input side. PhoneVR renders phone microphone PCM here. Any virtual audio driver is supported."))
+		addLabel(d.hwnd, 2, app.text("手机麦克风 → PC：选择与上方播放端配对的 Windows 录音端 / 输出端。VRChat 和 SteamVR 将从这里读取手机麦克风。", "Phone microphone → PC: Choose the Windows recording/output side paired with the playback endpoint above. VRChat and SteamVR read the phone microphone from this endpoint."))
+		comboStyle := uint32(wsChild | wsVisible | wsTabStop | wsVScroll | cbDropDownList | cbNoIntegralHeight)
+		d.controls[idAudioLoopback] = app.createControl(d.hwnd, "COMBOBOX", "", comboStyle, 0, 0, 10, 10, idAudioLoopback)
+		d.controls[idAudioMicRender] = app.createControl(d.hwnd, "COMBOBOX", "", comboStyle, 0, 0, 10, 10, idAudioMicRender)
+		d.controls[idAudioMicCapture] = app.createControl(d.hwnd, "COMBOBOX", "", comboStyle, 0, 0, 10, 10, idAudioMicCapture)
+		d.status = app.createControl(d.hwnd, "EDIT", "", wsChild|wsVisible|wsTabStop|wsBorder|esMultiline|esReadOnly|esAutoVScroll|esNoHideSel, 0, 0, 10, 10, 0)
+		app.populateAudioEndpointCombos(d)
+		addButton(idAudioApply, app.text("保存并应用路由", "Save & Apply Routes"))
+		addButton(idAudioRefresh, app.text("刷新设备", "Refresh Devices"))
+		addButton(idAudioInstall, app.text("安装 VB-CABLE 备用驱动", "Install VB-CABLE Fallback"))
+		addButton(idClose, app.text("关闭", "Close"))
+
 	case "network":
 		viewport := addViewport()
 		labels := []string{
@@ -1523,6 +1568,25 @@ func (app *nativeUI) layoutDialog(d *nativeDialog) {
 		moveRect(d.controls[idThemeModeDark], l.ModeDark)
 		moveRect(d.controls[idThemeModeLight], l.ModeLight)
 		moveRect(d.controls[idClose], l.Close)
+
+	case "audio":
+		margin := 28
+		comboWidth := w - 2*margin
+		move(d.labels[0], margin, 78, comboWidth, 40)
+		move(d.controls[idAudioLoopback], margin, 120, comboWidth, 118)
+		move(d.labels[1], margin, 244, comboWidth, 40)
+		move(d.controls[idAudioMicRender], margin, 286, comboWidth, 118)
+		move(d.labels[2], margin, 410, comboWidth, 40)
+		move(d.controls[idAudioMicCapture], margin, 452, comboWidth, 118)
+		statusY := h - 128
+		move(d.status, margin, statusY, comboWidth, 68)
+		buttonY := h - 52
+		gap := 10
+		buttonWidth := (comboWidth - 3*gap) / 4
+		move(d.controls[idAudioApply], margin, buttonY, buttonWidth, 38)
+		move(d.controls[idAudioRefresh], margin+buttonWidth+gap, buttonY, buttonWidth, 38)
+		move(d.controls[idAudioInstall], margin+2*(buttonWidth+gap), buttonY, buttonWidth, 38)
+		move(d.controls[idClose], margin+3*(buttonWidth+gap), buttonY, buttonWidth, 38)
 
 	case "network":
 		margin := 22
@@ -1707,6 +1771,8 @@ func (app *nativeUI) paintDialog(d *nativeDialog, hdc uintptr) {
 		title = app.text("运行日志", "Runtime Logs")
 	case "appearance":
 		title = app.text("外观与主题", "Appearance & Theme")
+	case "audio":
+		title = app.text("音频设备路由", "Audio Device Routing")
 	}
 	drawNativeText(hdc, title, nativeRect{22, 10, int32(w - 22), 48}, p.Text, app.fontTitle, dtVCenter|dtSingleLine|dtEndEllipsis|dtNoPrefix)
 	drawNativeLine(hdc, 18, 64, w-18, 64, p.Border, 1)
@@ -1964,6 +2030,56 @@ func (app *nativeUI) handleDialogCommand(d *nativeDialog, id int) {
 			app.refreshStatusSnapshot()
 			setNativeText(d.status, app.transportDialogStatusText(app.snapshot.VideoTransport))
 		} else if id == idClose {
+			pDestroyWindow.Call(d.hwnd)
+		}
+
+	case "audio":
+		switch id {
+		case idAudioApply:
+			config, err := app.readAudioRoutingDialog(d)
+			if err != nil {
+				setNativeEditTextAndRedraw(d.status, err.Error())
+				return
+			}
+			if err := saveAudioRoutingConfig(config); err != nil {
+				setNativeEditTextAndRedraw(d.status, app.text("保存音频路由失败：", "Unable to save audio routing: ")+err.Error())
+				return
+			}
+			d.audioRouting = config
+			app.service.notifyAudioRoutingChanged()
+			app.service.addLog("Audio routing settings saved and WASAPI supervisor notified")
+			setNativeEditTextAndRedraw(d.status, app.audioRoutingStatusText(d, app.text("音频路由已保存。Host 运行中时会立即重启独立 WASAPI 音频桥并应用新设备；Host 停止时会在下次启动时生效。", "Audio routes saved. When Host is running, its isolated WASAPI bridge will restart immediately with the new endpoints. If Host is stopped, the settings apply at its next start.")))
+		case idAudioRefresh:
+			app.refreshAudioSettingsDialog(d)
+		case idAudioInstall:
+			if audioMicRouteSelectionMade(d) {
+				config, readErr := app.readAudioRoutingDialog(d)
+				if readErr != nil {
+					setNativeEditTextAndRedraw(d.status, app.text("当前手动选择的端点不可用：", "The manually selected endpoint is unavailable: ")+readErr.Error())
+					return
+				}
+				if saveErr := saveAudioRoutingConfig(config); saveErr != nil {
+					setNativeEditTextAndRedraw(d.status, app.text("保存当前自定义声卡路由失败：", "Unable to save the selected custom audio route: ")+saveErr.Error())
+					return
+				}
+				d.audioRouting = config
+				app.service.notifyAudioRoutingChanged()
+				setNativeEditTextAndRedraw(d.status, app.text("已检测到你手动选择的手机麦克风音频链路。PhoneVR 已保存当前设备并跳过 VB-CABLE 安装，避免重复安装虚拟声卡。", "A manually selected phone-microphone route was found. PhoneVR saved the selected endpoints and skipped VB-CABLE installation to avoid adding a duplicate virtual sound device."))
+				return
+			}
+			if !app.confirmMessage(app.text("当前没有手动配置手机麦克风虚拟音频链路。继续安装 VB-CABLE 会增加一套新的 Windows 虚拟播放 / 录音设备。若你已经安装其他虚拟声卡，请先取消并在上方选择它的播放端和录音端。仍要继续安装 VB-CABLE 吗？", "No custom phone-microphone virtual audio route is selected. Installing VB-CABLE will add another Windows virtual playback / recording device. If you already use another virtual audio driver, cancel and select its playback and recording endpoints above. Continue with VB-CABLE installation?"), app.text("VB-CABLE 备用安装", "VB-CABLE Fallback Installation")) {
+				return
+			}
+			go func() {
+				message, installErr := app.service.InstallVirtualCable()
+				if installErr != nil {
+					app.service.addLog("VB-CABLE fallback installation failed: " + installErr.Error())
+					return
+				}
+				app.service.addLog(message)
+			}()
+			setNativeEditTextAndRedraw(d.status, app.text("已请求检查 / 安装 VB-CABLE 备用驱动。安装完成后点击刷新设备，再自行选择链路端点。", "VB-CABLE fallback check / install started. After installation, refresh the device list and select the desired route endpoints."))
+		case idClose:
 			pDestroyWindow.Call(d.hwnd)
 		}
 

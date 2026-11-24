@@ -273,6 +273,7 @@ type HostService struct {
 	videoUDP                    *net.UDPConn
 	audioUDP                    *net.UDPConn
 	audioUplink                 chan phonevraudio.Packet
+	audioConfigChanged          chan struct{}
 	audioSequence               atomic.Uint32
 	audioClockStartedAt         time.Time
 	audioUplinkPackets          atomic.Uint64
@@ -531,6 +532,7 @@ func (s *HostService) Start(config HostConfig) error {
 	s.videoUDP = videoUDP
 	s.audioUDP = udpAudio
 	s.audioUplink = make(chan phonevraudio.Packet, 16)
+	s.audioConfigChanged = make(chan struct{}, 1)
 	s.audioSequence.Store(0)
 	s.audioUplinkPackets.Store(0)
 	s.audioDownlinkPackets.Store(0)
@@ -722,6 +724,7 @@ func (s *HostService) Stop() {
 	s.videoUDP = nil
 	s.audioUDP = nil
 	s.audioUplink = nil
+	s.audioConfigChanged = nil
 	s.steamVRHeartbeatAt = time.Time{}
 	s.steamVRFlags = 0
 	s.steamVRFrameCounter = 0

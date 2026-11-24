@@ -1,34 +1,31 @@
 # PhoneVR 0.5.35 build status
 
-## 0.5.35 existing VAC reuse and Host audio manager
+## 0.5.35 user-selectable Windows audio routing
 
-- Add Windows MMDevice enumeration for Eugene Muzychenko VAC. The native bridge pairs active render/capture endpoints by the full case-insensitive friendly name, for example `Line 1 (Virtual Audio Cable)`, so Line 1 cannot be crossed with Line 2. A one-shot probe also recognizes disabled/unplugged installed endpoint records.
-- Prefer an already-installed VAC route before VB-CABLE. Reuse existing endpoint IDs without reinstalling, renaming, patching or removing the user's virtual audio driver.
-- Keep VB-Audio VB-CABLE as an optional fallback. The Host's Audio & Microphone menu action reports the detected virtual cable; it offers the original VB-Audio installer only when no supported pair is installed. Disabled pairs are shown with enable instructions and never trigger a second driver install.
-- Validate the downloaded VB-Audio installer's Authenticode signature and expected publisher. The vendor's original package files remain unchanged and are launched through Windows UAC.
-- Prevent loopback feedback when VAC or VB-CABLE becomes the Windows default playback device. The WASAPI bridge chooses an active non-virtual render endpoint for game-audio capture in this case.
-- Add Go regression tests for VAC same-name pairing, VB-CABLE pairing, incomplete routes and cross-line mismatch. Include the detected provider in Host endpoint status so logs and SteamVR endpoint publication identify the selected route.
-- Add an embedded `PhoneVRAudioBridge.exe --probe` mode. The Host Audio & Microphone menu and VB-CABLE installer guard can enumerate VAC/VB-CABLE endpoints even when Host streaming is stopped and its runtime endpoint files have been cleared. Probe all endpoint states so installed-but-disabled pairs are detected and never trigger a duplicate driver installation prompt.
-- Fix the Windows Host installer helper's UTF-16 command encoding to use `unicode/utf16.Encode`, enabling Windows amd64 compilation.
+- Add Windows MMDevice endpoint inventory for all playback/render and recording/capture endpoints, including disabled and unplugged devices. The Host audio dialog displays default and disabled states and permits selection by endpoint ID.
+- Keep the two directions independent. PC → Phone selects any playback endpoint as the WASAPI Loopback source. Phone microphone → PC selects a playback/render endpoint as the virtual-audio write target and a recording/capture endpoint for Windows applications to read.
+- Add explicit link-direction labels and routing guidance to **Menu → Audio & Microphone**. VAC and VB-CABLE name-based pairing are optional shortcuts; custom third-party virtual audio drivers are supported by manually selecting their render and capture endpoints.
+- Persist the three route IDs in `%LOCALAPPDATA%\PhoneVR\audio-routing.json`. Applying changes restarts only the standalone WASAPI helper, leaving Host networking, USB AOA, video and pose paths active.
+- Avoid accidental secondary virtual cable installation after a custom phone-microphone route has been selected. The optional VB-CABLE installer remains a fallback only for users who have not configured another route.
+- Detect a potential PC loopback / phone microphone feedback route and explain the signal directions in the UI. The bridge validates the selected endpoint flow before opening WASAPI.
+- Retain VAC/VB-CABLE automatic pairing for users who prefer it. No vendor-specific device is required for manual routing.
 
 ### Validation
 
-- `cd windows-host && go test ./... -count=1`: passed.
-- `cd windows-host && go test -race ./... -count=1`: passed.
+- `cd windows-host && go test ./... -count=1`: passed, including new arbitrary endpoint, route persistence, flow and disabled-state tests.
 - `cd windows-host && go vet ./...`: passed.
-- `cd windows-host && GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build ./...`: passed.
-- `cd windows-host && GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go test -c ./cmd/phonevr-host`: passed.
-- `python3 -m unittest discover -v -s tools/release -p 'test_*.py'`: passed, 72 tests.
-- `steamvr-driver/tests/daydream_pose_model_test.cpp`: strict C++17 build and regression test passed.
-- Text-file newline and native C++ delimiter sanity checks: passed. `git diff --cached --check` is run during patch generation; one unrelated pre-existing trailing-space line remains in `docs/2026-11-22-displayredirect-startup-order.md` and is unchanged by this patch.
-- Windows MSVC/CMake build of `PhoneVRAudioBridge.exe`, Authenticode verification against a current downloaded vendor installer, endpoint enumeration on a real Windows installation, physical Android playback/capture, VRChat microphone capture and concurrent video/pose/audio stress validation were not run in this Linux environment.
+- `cd windows-host && GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build ./cmd/phonevr-host`: passed.
+- `cd windows-host && GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go test -c ./cmd/phonevr-host`: Windows test binary compiled.
+- `git diff --check`: passed.
+- Native `PhoneVRAudioBridge.exe` MSVC/CMake build and physical Windows audio endpoint testing remain unverified in this Linux environment because Windows SDK/MSVC and Windows MMDevice APIs are unavailable here.
 
 ## Current audio route behavior
 
-- PC playback to phone: Windows WASAPI shared-mode loopback, 48 kHz stereo PCM16, 20 ms frames.
-- Phone microphone to Windows apps: Android AudioRecord to Host UDP `48110` / USB AOA channel 5, then WASAPI render into VAC Line N or VB-CABLE Input. Windows applications record from VAC Line N or VB-CABLE Output.
-- The Host does not rename the third-party capture endpoint to `PhoneVR Microphone`; the original vendor endpoint name remains visible so the signed vendor driver package is not altered.
-- The Host audio path remains independent of the existing video UDP `48104`, pose UDP `48102`, control TCP `48101` and AOA video stream.
+- PC playback to phone: WASAPI loopback from the Windows playback endpoint selected by the user, or the Windows console default when left on automatic.
+- Phone microphone to Windows applications: Android AudioRecord to Host UDP `48110` / USB AOA channel 5, then WASAPI renders PCM into the user-selected virtual-audio playback endpoint. SteamVR/Windows applications receive the paired capture endpoint selected by the user.
+- VAC and VB-CABLE are automatically paired when their known naming conventions are found. Any third-party virtual audio driver can be configured manually with its playback/render and recording/capture endpoint IDs.
+- The Host does not rename third-party recording endpoints to `PhoneVR Microphone`; original vendor endpoint names remain visible.
+- The Host audio path remains independent of video UDP `48104`, pose UDP `48102`, control TCP `48101` and AOA video stream.
 
 ## Previous build status: 0.5.25
 

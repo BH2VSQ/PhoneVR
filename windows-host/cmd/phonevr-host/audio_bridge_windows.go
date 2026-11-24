@@ -105,7 +105,18 @@ func startAudioBridgeProcess(parent context.Context, service *HostService) (*aud
 		return nil, fmt.Errorf("create audio bridge stdout pipe: %w", err)
 	}
 	ctx, cancel := context.WithCancel(parent)
-	cmd := exec.CommandContext(ctx, path)
+	routing := loadAudioRoutingConfig().normalized()
+	args := make([]string, 0, 3)
+	if routing.PCToPhoneRenderEndpointID != "" {
+		args = append(args, "--loopback-endpoint="+routing.PCToPhoneRenderEndpointID)
+	}
+	if routing.PhoneToPCRenderEndpointID != "" {
+		args = append(args, "--microphone-render-endpoint="+routing.PhoneToPCRenderEndpointID)
+	}
+	if routing.PhoneToPCCaptureEndpointID != "" {
+		args = append(args, "--microphone-capture-endpoint="+routing.PhoneToPCCaptureEndpointID)
+	}
+	cmd := exec.CommandContext(ctx, path, args...)
 	cmd.Stdin = childStdin
 	cmd.Stdout = childStdout
 	cmd.Stderr = &audioBridgeLogWriter{service: service}

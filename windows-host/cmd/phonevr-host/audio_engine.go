@@ -97,6 +97,9 @@ func (s *HostService) audioEndpointWorker(ctx context.Context) {
 	}()
 	backoff := time.Second
 	loggedUnavailable := false
+	s.mu.RLock()
+	configurationChanged := s.audioConfigChanged
+	s.mu.RUnlock()
 	for ctx.Err() == nil {
 		// Do not leave stale endpoint IDs published while a helper is restarting
 		// or WASAPI cannot open the current default device. SteamVR will unset its
@@ -115,8 +118,13 @@ func (s *HostService) audioEndpointWorker(ctx context.Context) {
 				s.addLog("Windows audio bridge unavailable: " + err.Error())
 				loggedUnavailable = true
 			}
-			if !waitAudioRetry(ctx, backoff) {
+			retry, reconfigure := waitAudioRetryOrReconfigure(ctx, backoff, configurationChanged)
+			if !retry {
 				return
+			}
+			if reconfigure {
+				backoff = time.Second
+				continue
 			}
 			backoff = nextAudioBackoff(backoff)
 			continue
@@ -132,8 +140,11 @@ func (s *HostService) audioEndpointWorker(ctx context.Context) {
 
 		var reason error
 		processFinished, readerFinished, writerFinished := false, false, false
+		reconfigured := false
 		select {
 		case <-ctx.Done():
+		case <-configurationChanged:
+			reconfigured = true
 		case reason = <-runtime.done:
 			processFinished = true
 		case reason = <-readErr:
@@ -164,13 +175,23 @@ func (s *HostService) audioEndpointWorker(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
+		if reconfigured {
+			s.addLog("Audio routing settings changed; restarting WASAPI with the newly selected endpoints")
+			backoff = time.Second
+			continue
+		}
 		// Reset the retry delay only after a sustained healthy session. A helper
 		// that exits a few seconds after launch must not pin the retry loop at 1s.
 		if time.Since(startedAt) >= 30*time.Second {
 			backoff = time.Second
 		}
-		if !waitAudioRetry(ctx, backoff) {
+		retry, reconfigure := waitAudioRetryOrReconfigure(ctx, backoff, configurationChanged)
+		if !retry {
 			return
+		}
+		if reconfigure {
+			backoff = time.Second
+			continue
 		}
 		backoff = nextAudioBackoff(backoff)
 	}
@@ -192,6 +213,35 @@ func waitAudioRetry(ctx context.Context, delay time.Duration) bool {
 		return false
 	case <-timer.C:
 		return true
+	}
+}
+
+// waitAudioRetryOrReconfigure wakes the supervisor immediately when the user
+// applies new endpoint selections instead of waiting for the retry backoff.
+func waitAudioRetryOrReconfigure(ctx context.Context, delay time.Duration, changed <-chan struct{}) (retry bool, reconfigured bool) {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false, false
+	case <-changed:
+		return true, true
+	case <-timer.C:
+		return true, false
+	}
+}
+
+func (s *HostService) notifyAudioRoutingChanged() {
+	s.mu.RLock()
+	changed := s.audioConfigChanged
+	running := s.listener != nil
+	s.mu.RUnlock()
+	if !running || changed == nil {
+		return
+	}
+	select {
+	case changed <- struct{}{}:
+	default:
 	}
 }
 
@@ -244,15 +294,19 @@ func (s *HostService) readAudioBridgeOutput(ctx context.Context, output io.Reade
 			if err := saveAudioEndpointStatus(status); err != nil {
 				s.addLog("Unable to publish Windows audio endpoint IDs to SteamVR: " + err.Error())
 			}
-			s.addLog(fmt.Sprintf("WASAPI loopback endpoint: %s", status.RenderFriendlyName))
-			if status.MicrophoneEndpointID != "" && status.MicrophoneRenderEndpointID != "" {
+			s.addLog(fmt.Sprintf("PC-to-phone loopback source: %s", status.RenderFriendlyName))
+			if status.MicrophoneRenderEndpointID != "" {
 				provider := strings.TrimSpace(status.MicrophoneRouteProvider)
 				if provider == "" {
 					provider = "existing virtual cable"
 				}
-				s.addLog(fmt.Sprintf("Phone microphone route active via %s: %s -> %s", provider, status.MicrophoneRenderFriendlyName, status.MicrophoneFriendlyName))
+				if status.MicrophoneEndpointID != "" {
+					s.addLog(fmt.Sprintf("Phone-to-PC microphone route via %s: playback endpoint %s -> Windows recording endpoint %s", provider, status.MicrophoneRenderFriendlyName, status.MicrophoneFriendlyName))
+				} else {
+					s.addLog(fmt.Sprintf("Phone microphone is rendered to %s, but no Windows recording endpoint is paired. Select the recording-side endpoint manually in Audio & Microphone.", status.MicrophoneRenderFriendlyName))
+				}
 			} else {
-				s.addLog("No supported virtual microphone cable detected. Existing VAC/VB-CABLE drivers are left untouched; install VB-CABLE only if you do not already have a compatible virtual cable.")
+				s.addLog("No Phone-to-PC microphone playback endpoint selected. Choose a virtual cable render/playback endpoint in Audio & Microphone; any compatible paired recording endpoint can be selected separately.")
 			}
 		default:
 			return fmt.Errorf("unknown Windows audio bridge record %q", string(tag[:]))

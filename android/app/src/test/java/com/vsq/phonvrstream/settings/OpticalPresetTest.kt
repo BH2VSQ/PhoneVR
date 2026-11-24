@@ -16,6 +16,42 @@ class OpticalPresetTest {
         assertTrue(presets.all { it.builtin })
         assertEquals(0.01f, presets.first().settings.distortionK1, 0.0001f)
         assertEquals(0.67f, presets.first().settings.distortionK2, 0.0001f)
+        presets.forEach { preset ->
+            assertEquals(0.09f, preset.settings.leftEyeOffsetX, 0.0001f)
+            assertEquals(0.09f, preset.settings.leftEyeOffsetY, 0.0001f)
+            assertEquals(-0.09f, preset.settings.rightEyeOffsetX, 0.0001f)
+            assertEquals(0.09f, preset.settings.rightEyeOffsetY, 0.0001f)
+        }
+    }
+
+    @Test
+    fun legacyZeroOffsetsAreMigratedOnlyForUntouchedBuiltIns() {
+        val legacyBuiltIns = OpticalPreset.defaults().map { preset ->
+            preset.copy(settings = preset.settings.copy(
+                leftEyeOffsetX = 0f,
+                leftEyeOffsetY = 0f,
+                rightEyeOffsetX = 0f,
+                rightEyeOffsetY = 0f,
+            ))
+        }
+        val manuallyCalibrated = legacyBuiltIns.first().copy(
+            settings = legacyBuiltIns.first().settings.copy(leftEyeOffsetX = 0.025f),
+        )
+        val custom = OpticalPreset(
+            id = "user-custom",
+            name = "My Viewer",
+            settings = DisplaySettings(),
+        )
+
+        val migrated = OpticalPreset.migrateLegacyZeroEyeOffsets(
+            legacyBuiltIns.drop(1) + manuallyCalibrated + custom,
+        ).associateBy { it.id }
+
+        assertEquals(0.09f, migrated.getValue("builtin-daydream-2017").settings.leftEyeOffsetX, 0.0001f)
+        assertEquals(0.09f, migrated.getValue("builtin-cardboard").settings.leftEyeOffsetY, 0.0001f)
+        assertEquals(0.025f, migrated.getValue("builtin-daydream-2016").settings.leftEyeOffsetX, 0.0001f)
+        assertEquals(0f, migrated.getValue("builtin-daydream-2016").settings.leftEyeOffsetY, 0.0001f)
+        assertEquals(custom, migrated.getValue("user-custom"))
     }
 
     @Test

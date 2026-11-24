@@ -1,3 +1,18 @@
+## 0.5.33 - Daydream controller tracking and recenter fixes
+
+- Fix XKF3 orientation, accelerometer and gyroscope axis assignment from wire order X/Z/Y to logical X/Y/Z.
+- Replace the unsupported FE55 Control Characteristic write with host-side App/Home short and long gesture handling. Short App maps to Menu, short Home maps to System, and either long press queues software recenter even during temporary HMD tracking loss.
+- Match Google's GvrArmModel torso-following input by transporting the decoded controller gyro through Android JSON and the Host to a version-2 56-byte PVSC packet. Use controller gyro magnitude, not HMD angular velocity, to filter torso direction.
+- Reset arm-model smoothing and velocity history on recenter, and add Android Logcat/SteamVR driver diagnostics for the full gesture path.
+- Increment Android versionName/versionCode to 0.5.33/68 and synchronize Host, driver and AOA metadata.
+
+## 0.5.32 - Default per-eye optical alignment
+
+- Set the built-in Daydream View 2016, Daydream View 2017 and Generic Cardboard presets to left-eye horizontal `+0.09`, left-eye vertical `+0.09`, right-eye horizontal `-0.09` and right-eye vertical `+0.09`.
+- Migrate existing untouched built-in presets from the previous all-zero offset defaults. Preserve manually calibrated built-ins and user-created presets; the explicit reset action continues to set all four offsets to zero.
+- Synchronize Windows Host optical defaults and the Daydream View 2017 native preset with the Android values. Document the normalized per-eye image-translation convention.
+- Add Kotlin and Go regression tests for the four preset defaults and legacy migration. Android `versionName` is `0.5.32`, `versionCode` is `67`.
+
 ## 0.5.31 - Daydream controller pose and recentering
 
 - Decode Daydream XKF3 orientation as an axis-angle rotation vector and convert it to a quaternion. Add an explicit coordinate conversion for the OpenVR controller frame.

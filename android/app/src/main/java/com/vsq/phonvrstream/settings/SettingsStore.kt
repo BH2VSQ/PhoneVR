@@ -55,11 +55,13 @@ class SettingsStore(context: Context) {
             if (parsed.isEmpty()) {
                 OpticalPreset.defaults().also(::saveOpticalPresets)
             } else {
-                // Add newly introduced built-ins to existing installations
-                // without overwriting locally edited presets or user entries.
-                val knownIds = parsed.mapTo(mutableSetOf()) { it.id }
-                val merged = OpticalPreset.defaults().filterNot { it.id in knownIds } + parsed
-                if (merged.size != parsed.size) saveOpticalPresets(merged)
+                // Upgrade untouched built-ins created before the default eye
+                // alignment values existed. Preserve any manually calibrated
+                // built-in and all user-created presets.
+                val migrated = OpticalPreset.migrateLegacyZeroEyeOffsets(parsed)
+                val knownIds = migrated.mapTo(mutableSetOf()) { it.id }
+                val merged = OpticalPreset.defaults().filterNot { it.id in knownIds } + migrated
+                if (merged != parsed) saveOpticalPresets(merged)
                 merged
             }
         } catch (_: Exception) {

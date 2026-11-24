@@ -7,7 +7,7 @@ import (
 )
 
 const (
-	ControllerPacketSize = 44
+	ControllerPacketSize = 56
 	ControllerHandLeft   = 0
 	ControllerHandRight  = 1
 )
@@ -31,6 +31,9 @@ type ControllerState struct {
 	OrientationZ   float32 `json:"orientationZ"`
 	OrientationW   float32 `json:"orientationW"`
 	HasOrientation bool    `json:"hasOrientation"`
+	GyroscopeX     float32 `json:"gyroscopeX"`
+	GyroscopeY     float32 `json:"gyroscopeY"`
+	GyroscopeZ     float32 `json:"gyroscopeZ"`
 }
 
 type ControllerFrame struct {
@@ -39,12 +42,13 @@ type ControllerFrame struct {
 }
 
 // EncodeControllerPacket serializes one hand into the fixed-size loopback PVSC protocol.
-// Layout: magic/version/hand/flags/buttons, sequence, timestamp, quaternion, touch X/Y.
+// Layout: magic/version/hand/flags/buttons, sequence, timestamp, quaternion, touch X/Y, gyro X/Y/Z.
 func EncodeControllerPacket(hand byte, state ControllerState) ([]byte, error) {
 	if hand != ControllerHandLeft && hand != ControllerHandRight {
 		return nil, errors.New("invalid controller hand")
 	}
-	values := []float32{state.TouchX, state.TouchY, state.OrientationX, state.OrientationY, state.OrientationZ, state.OrientationW}
+	values := []float32{state.TouchX, state.TouchY, state.OrientationX, state.OrientationY, state.OrientationZ, state.OrientationW,
+		state.GyroscopeX, state.GyroscopeY, state.GyroscopeZ}
 	for _, value := range values {
 		if math.IsNaN(float64(value)) || math.IsInf(float64(value), 0) {
 			return nil, errors.New("controller state contains a non-finite value")
@@ -65,7 +69,7 @@ func EncodeControllerPacket(hand byte, state ControllerState) ([]byte, error) {
 
 	packet := make([]byte, ControllerPacketSize)
 	copy(packet[0:4], "PVSC")
-	packet[4] = 1
+	packet[4] = 2
 	packet[5] = hand
 	if state.Connected {
 		packet[6] |= 1 << 0
@@ -99,6 +103,9 @@ func EncodeControllerPacket(hand byte, state ControllerState) ([]byte, error) {
 	putFloat32(packet[32:36], qw)
 	putFloat32(packet[36:40], touchX)
 	putFloat32(packet[40:44], touchY)
+	putFloat32(packet[44:48], state.GyroscopeX)
+	putFloat32(packet[48:52], state.GyroscopeY)
+	putFloat32(packet[52:56], state.GyroscopeZ)
 	return packet, nil
 }
 

@@ -34,10 +34,11 @@ object DaydreamControllerProtocol {
                 (u8(packet, 2) shl 3) or
                 ((u8(packet, 3) and 0x80) ushr 5),
         ) * (2.0 * PI / 4095.0)
-        val yOrientation = signed13(
+        // XKF3 packs the rotation vector in X, Z, Y order.
+        val zOrientation = signed13(
             ((u8(packet, 3) and 0x1f) shl 8) or u8(packet, 4),
         ) * (2.0 * PI / 4095.0)
-        val zOrientation = signed13(
+        val yOrientation = signed13(
             (u8(packet, 5) shl 5) or ((u8(packet, 6) and 0xf8) ushr 3),
         ) * (2.0 * PI / 4095.0)
 
@@ -46,10 +47,10 @@ object DaydreamControllerProtocol {
                 (u8(packet, 7) shl 2) or
                 ((u8(packet, 8) and 0xc0) ushr 6),
         ) * (8.0 * 9.8 / 4095.0)
-        val yAcceleration = signed13(
+        val zAcceleration = signed13(
             ((u8(packet, 8) and 0x3f) shl 7) or ((u8(packet, 9) and 0xfe) ushr 1),
         ) * (8.0 * 9.8 / 4095.0)
-        val zAcceleration = signed13(
+        val yAcceleration = signed13(
             ((u8(packet, 9) and 0x01) shl 12) or
                 (u8(packet, 10) shl 4) or
                 ((u8(packet, 11) and 0xf0) ushr 4),
@@ -61,10 +62,10 @@ object DaydreamControllerProtocol {
                 (u8(packet, 12) shl 1) or
                 ((u8(packet, 13) and 0x80) ushr 7),
         ) * gyroScale
-        val yGyroscope = signed13(
+        val zGyroscope = signed13(
             ((u8(packet, 13) and 0x7f) shl 6) or ((u8(packet, 14) and 0xfc) ushr 2),
         ) * gyroScale
-        val zGyroscope = signed13(
+        val yGyroscope = signed13(
             ((u8(packet, 14) and 0x03) shl 11) or
                 (u8(packet, 15) shl 3) or
                 ((u8(packet, 16) and 0xe0) ushr 5),

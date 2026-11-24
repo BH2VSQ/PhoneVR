@@ -40,7 +40,9 @@ func DefaultPhoneDisplaySettings() PhoneDisplaySettings {
 		ScreenToLensDistanceMm: 40, ScreenVerticalAlignment: "center",
 		TrayToLensCenterMm: 35, LensCenterX: .5, LensCenterY: .5,
 		DistortionK1: .18, DistortionK2: .04, Blur: 0, Sharpness: .35, FOVDegrees: 90,
-		SwapEyes: false,
+		SwapEyes:       false,
+		LeftEyeOffsetX: .09, LeftEyeOffsetY: .09,
+		RightEyeOffsetX: -.09, RightEyeOffsetY: .09,
 	}
 }
 

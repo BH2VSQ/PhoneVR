@@ -393,6 +393,9 @@ class NetworkClient(
         .put("orientationZ", state.orientationZ.toDouble())
         .put("orientationW", state.orientationW.toDouble())
         .put("hasOrientation", state.hasOrientation)
+        .put("gyroscopeX", state.gyroscopeX.toDouble())
+        .put("gyroscopeY", state.gyroscopeY.toDouble())
+        .put("gyroscopeZ", state.gyroscopeZ.toDouble())
 
     private fun publishVideoStats(stats: VideoStreamStats) {
         lastVideoStatsNs.set(System.nanoTime())
@@ -1526,7 +1529,7 @@ class NetworkClient(
         private const val MAX_VIDEO_REORDER_GRACE_MS = 250
         const val DISCOVERY_PORT = 48100
         private const val PROTOCOL_VERSION = 1
-        private const val CLIENT_VERSION = "PhoneVRStream-0.5.31"
+        private const val CLIENT_VERSION = "PhoneVRStream-0.5.33"
         private const val CONTROLLER_SEND_INTERVAL_NS = 20_000_000L
         private const val CONTROLLER_IDLE_SEND_INTERVAL_NS = 100_000_000L
         private const val DISCOVERY_REQUEST = "PHONEVR_DISCOVER_V1"

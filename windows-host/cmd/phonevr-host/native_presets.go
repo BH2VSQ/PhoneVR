@@ -21,6 +21,8 @@ func nativePresetDefaults() []OpticalPreset {
 			ScreenToLensDistanceMm: 42, ScreenVerticalAlignment: "center", TrayToLensCenterMm: 30,
 			LensCenterX: .5, LensCenterY: .5, DistortionK1: .4331, DistortionK2: -.085,
 			Blur: 0, Sharpness: .15, FOVDegrees: 90,
+			LeftEyeOffsetX: .09, LeftEyeOffsetY: .09,
+			RightEyeOffsetX: -.09, RightEyeOffsetY: .09,
 		}},
 		{ID: "builtin-cardboard", Name: "通用 Cardboard", Builtin: true, Settings: DefaultPhoneDisplaySettings()},
 	}

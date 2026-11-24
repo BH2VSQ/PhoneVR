@@ -34,6 +34,10 @@ func TestNativePresetDefaultsIncludeDaydreamAndCustom(t *testing.T) {
 	if presets[0].Settings.DistortionK1 < 0.43 {
 		t.Fatalf("Daydream K1 = %f", presets[0].Settings.DistortionK1)
 	}
+	if presets[0].Settings.LeftEyeOffsetX != .09 || presets[0].Settings.LeftEyeOffsetY != .09 ||
+		presets[0].Settings.RightEyeOffsetX != -.09 || presets[0].Settings.RightEyeOffsetY != .09 {
+		t.Fatalf("unexpected Daydream default eye offsets: %+v", presets[0].Settings)
+	}
 }
 
 func TestNativePresetPersistenceKeepsOnlyUserPresets(t *testing.T) {

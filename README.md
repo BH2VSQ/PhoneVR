@@ -1,6 +1,6 @@
 # PhoneVRStream
 
-Repository revision: **0.5.31**. Windows Host: **0.5.31**. Android client: **0.5.31**. Control protocol: **v1**; video packet protocol: **v1**.
+Repository revision: **0.5.33**. Windows Host: **0.5.33**. Android client: **0.5.33**. Control protocol: **v1**; video packet protocol: **v1**.
 
 PhoneVRStream is a multi-component project for using an Android phone as a PC VR streaming HMD. Both applications live in one repository and use independent build/test pipelines.
 
@@ -22,7 +22,7 @@ PhoneVRStream/
 └── dist/                       # Local build output (git-ignored)
 ```
 
-## Windows Host 0.5.31 bundled SteamVR driver
+## Windows Host 0.5.33 bundled SteamVR driver
 
 The virtual display timing is fixed at 72 Hz in this revision. Stream resolution is selected independently using the **Stream Resolution** dialog. The chosen SBS profile changes the driver's recommended target size and capture output, Host raw-frame buffers and H.264 encoder dimensions, plus the Android decoder capability negotiation. SteamVR's own resolution scale controls supersampling before capture and does not replace the PhoneVR stream profile.
 
@@ -50,7 +50,7 @@ The normal `PhoneVRHost.exe` is built with the Windows GUI subsystem and opens t
 
 All helper processes launched by the GUI Host use `CREATE_NO_WINDOW`, including Steam registry discovery, SteamVR driver registration and FFmpeg inventory/preflight/streaming. Their captured output remains available in the Host log. See `docs/2026-11-22-silent-host-child-processes.md`.
 
-## Android client 0.5.31
+## Android client 0.5.33
 
 - Landscape immersive display with OpenGL ES 3.0 stereo rendering.
 - Locally stored optical preset selector with Daydream View v1.0 (2016), Daydream View v2.0 (2017) and Generic Cardboard built-in presets.
@@ -71,7 +71,7 @@ All helper processes launched by the GUI Host use `CREATE_NO_WINDOW`, including 
 
 Audio transport is not implemented in 0.5.26. The current build has no WASAPI capture/render workers, Android `AudioRecord`/`AudioTrack` path, audio packet protocol or virtual headset audio endpoints. The SteamVR input/output selectors therefore cannot provide end-to-end phone audio by themselves. The proposed two-way architecture and Windows endpoint requirements are documented in `docs/audio-streaming-architecture.md`.
 
-## SteamVR driver 0.5.31
+## SteamVR driver 0.5.33
 
 The PhoneVR Host contains its own Windows x64 OpenVR driver inside the Host executable. The normal build compiles `steamvr-driver/`, embeds the resulting manifest, DLL and resources into both Host executables, and no longer asks users to download or select a ZIP. On startup, the Host checks whether SteamVR is installed and whether the user has disabled automatic deployment. When enabled, it copies the embedded driver into a content-versioned directory under `%LOCALAPPDATA%\PhoneVR\SteamVRDriver` and registers it with SteamVR's own `vrpathreg.exe`.
 

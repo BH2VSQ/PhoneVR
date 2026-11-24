@@ -113,13 +113,70 @@ inline DaydreamQuaternion DaydreamToOpenVR(const DaydreamQuaternion& input) {
     return NormalizeQuaternion({-input.x, -input.y, input.z, input.w});
 }
 
+struct DaydreamButtonGestureResult {
+    bool pressedEdge = false;
+    bool releasedEdge = false;
+    bool longPressTriggered = false;
+    bool shortPressTriggered = false;
+    bool suppressMenuPulse = false;
+};
+
+/** Detects controller button gestures from fresh BLE input, independent of HMD tracking validity. */
+class DaydreamButtonGesture {
+public:
+    static constexpr uint64_t kLongPressNs = 800000000ULL;
+
+    DaydreamButtonGestureResult Update(bool inputFresh, bool pressed, uint64_t nowNs) {
+        DaydreamButtonGestureResult result{};
+        if (!inputFresh) {
+            if (m_wasPressed) {
+                result.releasedEdge = true;
+                result.suppressMenuPulse = m_longPressConsumed;
+            }
+            Reset();
+            return result;
+        }
+
+        if (pressed && !m_wasPressed) {
+            m_pressedAtNs = nowNs;
+            m_longPressConsumed = false;
+            result.pressedEdge = true;
+        }
+        if (pressed && !m_longPressConsumed && m_pressedAtNs != 0 &&
+            nowNs >= m_pressedAtNs && nowNs - m_pressedAtNs >= kLongPressNs) {
+            m_longPressConsumed = true;
+            result.longPressTriggered = true;
+        }
+        if (!pressed && m_wasPressed) {
+            result.releasedEdge = true;
+            result.suppressMenuPulse = m_longPressConsumed;
+            result.shortPressTriggered = !m_longPressConsumed;
+            m_pressedAtNs = 0;
+            m_longPressConsumed = false;
+        } else {
+            result.suppressMenuPulse = pressed && m_longPressConsumed;
+        }
+        m_wasPressed = pressed;
+        return result;
+    }
+
+private:
+    void Reset() {
+        m_wasPressed = false;
+        m_longPressConsumed = false;
+        m_pressedAtNs = 0;
+    }
+
+    bool m_wasPressed = false;
+    bool m_longPressConsumed = false;
+    uint64_t m_pressedAtNs = 0;
+};
+
 struct DaydreamPoseOutput {
     DaydreamQuaternion orientation{};
     std::array<double, 3> position{};
     std::array<double, 3> velocity{};
     std::array<double, 3> angularVelocity{};
-    bool menuPressed = false;
-    bool recentered = false;
 };
 
 /**
@@ -128,48 +185,36 @@ struct DaydreamPoseOutput {
  */
 class DaydreamArmModel {
 public:
-    static constexpr uint64_t kAppRecenterHoldNs = 800000000ULL;
-    static constexpr uint64_t kMenuPulseNs = 140000000ULL;
+    void Recenter(const DaydreamQuaternion& rawDaydreamOrientation,
+                  const DaydreamQuaternion& headOrientation) {
+        const DaydreamQuaternion rawOpenVr = DaydreamToOpenVR(rawDaydreamOrientation);
+        const DaydreamQuaternion headQ = NormalizeQuaternion(headOrientation);
+        m_orientationAlignment = MultiplyQuaternion(headQ, InverseQuaternion(rawOpenVr));
+        m_hasOrientationAlignment = true;
+        m_torsoRotation = HorizontalHeadRotation(headQ);
+        m_torsoInitialized = true;
+        m_positionInitialized = false;
+        m_lastUpdateNs = 0;
+        m_lastPoseNs = 0;
+        m_smoothedVelocity = {};
+        m_smoothedAngularVelocity = {};
+    }
 
     DaydreamPoseOutput Update(const DaydreamQuaternion& rawDaydreamOrientation,
                               const std::array<double, 3>& headPosition,
                               const DaydreamQuaternion& headOrientation,
-                              const std::array<double, 3>& headAngularVelocity,
+                              const std::array<double, 3>& controllerGyroscope,
                               uint64_t nowNs,
-                              bool appButtonPressed,
                               bool isLeftHand) {
         DaydreamPoseOutput output{};
         const DaydreamQuaternion rawOpenVr = DaydreamToOpenVR(rawDaydreamOrientation);
         const DaydreamQuaternion headQ = NormalizeQuaternion(headOrientation);
 
         if (!m_hasOrientationAlignment) {
-            // Establish an intuitive forward reference on first connection. The user can
-            // repeat this at any time by holding the App button while aiming forward.
-            m_orientationAlignment = MultiplyQuaternion(headQ, InverseQuaternion(rawOpenVr));
-            m_hasOrientationAlignment = true;
-            m_torsoRotation = HorizontalHeadRotation(headQ);
-            m_torsoInitialized = true;
+            // Establish an intuitive initial reference; a deliberate App long-press can
+            // recalibrate it later without depending on this first-packet assumption.
+            Recenter(rawDaydreamOrientation, headQ);
         }
-
-        if (appButtonPressed && !m_appWasPressed) {
-            m_appPressedAtNs = nowNs;
-            m_appLongPressConsumed = false;
-        }
-        if (appButtonPressed && !m_appLongPressConsumed && m_appPressedAtNs != 0 &&
-            nowNs >= m_appPressedAtNs && nowNs - m_appPressedAtNs >= kAppRecenterHoldNs) {
-            m_orientationAlignment = MultiplyQuaternion(headQ, InverseQuaternion(rawOpenVr));
-            m_appLongPressConsumed = true;
-            m_torsoRotation = HorizontalHeadRotation(headQ);
-            m_torsoInitialized = true;
-            output.recentered = true;
-        }
-        if (!appButtonPressed && m_appWasPressed) {
-            if (!m_appLongPressConsumed) m_menuPulseUntilNs = nowNs + kMenuPulseNs;
-            m_appPressedAtNs = 0;
-            m_appLongPressConsumed = false;
-        }
-        m_appWasPressed = appButtonPressed;
-        output.menuPressed = nowNs < m_menuPulseUntilNs;
 
         const DaydreamQuaternion controllerWorldQ =
             MultiplyQuaternion(m_orientationAlignment, rawOpenVr);
@@ -180,12 +225,13 @@ public:
             m_torsoRotation = targetTorsoQ;
             m_torsoInitialized = true;
         } else {
-            const double angularSpeedRad = std::sqrt(
-                headAngularVelocity[0] * headAngularVelocity[0] +
-                headAngularVelocity[1] * headAngularVelocity[1] +
-                headAngularVelocity[2] * headAngularVelocity[2]);
-            const double angularSpeedDeg = angularSpeedRad * 180.0 / kPi;
-            const double gazeFilterStrength = std::clamp((angularSpeedDeg - 0.2) / 45.0, 0.0, 0.1);
+            // Match Google's GvrArmModel: torso direction follows horizontal HMD gaze,
+            // with filter strength driven by the controller's gyro magnitude in rad/s.
+            const double gyroMagnitude = std::sqrt(
+                controllerGyroscope[0] * controllerGyroscope[0] +
+                controllerGyroscope[1] * controllerGyroscope[1] +
+                controllerGyroscope[2] * controllerGyroscope[2]);
+            const double gazeFilterStrength = std::clamp((gyroMagnitude - 0.2) / 45.0, 0.0, 0.1);
             m_torsoRotation = Slerp(m_torsoRotation, targetTorsoQ, gazeFilterStrength);
         }
 
@@ -245,7 +291,7 @@ public:
         m_lastUpdateNs = nowNs;
         output.position = m_smoothedPosition;
 
-        if (!output.recentered && previousPoseNs != 0 && nowNs > previousPoseNs) {
+        if (previousPoseNs != 0 && nowNs > previousPoseNs) {
             const double dt = std::clamp(static_cast<double>(nowNs - previousPoseNs) / 1.0e9, 1.0e-4, 0.1);
             const double velocityAlpha = 1.0 - std::exp(-dt / 0.035);
             for (size_t index = 0; index < output.velocity.size(); ++index) {
@@ -333,11 +379,7 @@ private:
     DaydreamQuaternion m_torsoRotation{};
     bool m_hasOrientationAlignment = false;
     bool m_torsoInitialized = false;
-    bool m_appWasPressed = false;
-    bool m_appLongPressConsumed = false;
     bool m_positionInitialized = false;
-    uint64_t m_appPressedAtNs = 0;
-    uint64_t m_menuPulseUntilNs = 0;
     uint64_t m_lastUpdateNs = 0;
     uint64_t m_lastPoseNs = 0;
     DaydreamQuaternion m_previousOrientation{};

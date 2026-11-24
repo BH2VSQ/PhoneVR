@@ -1,4 +1,4 @@
-# PhoneVR Host 0.5.31 bundled SteamVR driver and live SBS video
+# PhoneVR Host 0.5.33 bundled SteamVR driver and live SBS video
 
 Executable version is injected from the repository root `VERSION` file during builds.
 
@@ -40,7 +40,7 @@ Network Settings provides the listener address and discovery/control/pose ports,
 
 ## Daydream controller bridge
 
-The main TCP control session accepts optional `controller_state` snapshots from Android. The Host validates each left/right state and sends fixed-size `PVSC` v1 packets to `127.0.0.1:48108`; it does not expose this controller bridge on the LAN. The separate SteamVR driver owns the UDP receiver and publishes the two OpenVR controller devices. The Android HMD pose channel remains unchanged.
+The main TCP control session accepts optional `controller_state` snapshots from Android. The Host validates each left/right state and sends fixed-size `PVSC` v2 packets including the gyroscope vector to `127.0.0.1:48108`; it does not expose this controller bridge on the LAN. The separate SteamVR driver owns the UDP receiver and publishes the two OpenVR controller devices. The Android HMD pose channel remains unchanged.
 
 ## Run
 

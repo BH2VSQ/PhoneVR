@@ -44,18 +44,44 @@ data class OpticalPreset(
             presets.forEach { put(it.toJson()) }
         }
 
+        private fun withDefaultEyeOffsets(settings: DisplaySettings): DisplaySettings = settings.copy(
+            leftEyeOffsetX = 0.09f,
+            leftEyeOffsetY = 0.09f,
+            rightEyeOffsetX = -0.09f,
+            rightEyeOffsetY = 0.09f,
+        ).normalized()
+
+        /**
+         * Upgrades untouched built-in presets created before the default eye
+         * alignment values were introduced. Any preset with a manually changed
+         * eye offset is retained exactly as stored.
+         */
+        fun migrateLegacyZeroEyeOffsets(presets: List<OpticalPreset>): List<OpticalPreset> {
+            val builtInIds = defaults().filter { it.builtin }.mapTo(mutableSetOf()) { it.id }
+            return presets.map { preset ->
+                val value = preset.settings
+                val offsetsAreZero = value.leftEyeOffsetX == 0f && value.leftEyeOffsetY == 0f &&
+                    value.rightEyeOffsetX == 0f && value.rightEyeOffsetY == 0f
+                if (preset.builtin && preset.id in builtInIds && offsetsAreZero) {
+                    preset.copy(settings = withDefaultEyeOffsets(value))
+                } else {
+                    preset
+                }
+            }
+        }
+
         fun defaults(): List<OpticalPreset> = listOf(
             OpticalPreset(
                 id = "builtin-daydream-2016",
                 name = "Daydream View 2016",
                 builtin = true,
-                settings = DisplaySettings(
+                settings = withDefaultEyeOffsets(DisplaySettings(
                     ipdMm = 63f,
                     lensCenterX = .5f,
                     lensCenterY = .5f,
                     blur = 0f,
                     sharpness = .15f,
-                ).withDaydreamView2016Profile(),
+                ).withDaydreamView2016Profile()),
             ),
             OpticalPreset(
                 id = "builtin-daydream-2017",
@@ -75,13 +101,13 @@ data class OpticalPreset(
                     blur = 0f,
                     sharpness = .15f,
                     fovDegrees = 90f,
-                ).normalized(),
+                ).let(::withDefaultEyeOffsets),
             ),
             OpticalPreset(
                 id = "builtin-cardboard",
                 name = "通用 Cardboard",
                 builtin = true,
-                settings = DisplaySettings().normalized(),
+                settings = withDefaultEyeOffsets(DisplaySettings()),
             ),
         )
     }

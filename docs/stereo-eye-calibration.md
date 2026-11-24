@@ -31,7 +31,7 @@ Four controls adjust the source image independently for each physical display ey
 
 Positive values move the displayed source image right/down. The range is ±0.20 normalized units of one eye image in 0.5.19 (expanded from ±0.08). These are image-sampling translations, not changes to the viewer lens spacing or the user's IPD. Offsets are stored in the active optical preset and are included in display-settings JSON. The Windows Host optical preset editor exposes all four values and provides **Apply Position Live**, allowing adjustments while the headset is worn without saving the preset after every change.
 
-Start with all offsets at zero. First confirm the L/R labels and single-eye routing. Then use **双眼同图** to compare the center crosshair and rings. Adjust only the eye that visibly needs correction, and use small changes. The **重置左右眼偏移** action returns all four values to zero.
+The built-in Daydream View 2016, Daydream View 2017 and Generic Cardboard presets start with these per-eye offsets: left horizontal `+0.09`, left vertical `+0.09`, right horizontal `-0.09`, and right vertical `+0.09`. These are normalized translations within each eye image. First confirm the L/R labels and single-eye routing, then use **双眼同图** to compare the center crosshair and rings. Adjust only the eye that visibly needs correction. The **重置左右眼偏移** action remains available and returns all four values to zero.
 
 ## Vertical image tilt (0.5.19)
 

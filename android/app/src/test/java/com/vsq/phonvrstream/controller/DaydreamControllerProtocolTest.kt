@@ -52,6 +52,52 @@ class DaydreamControllerProtocolTest {
     }
 
     @Test
+    fun decodesOrientationYAndZUsingWireAxisOrderXZy() {
+        val quarterTurn = 1024
+        val packetY = ByteArray(19).apply {
+            // The third 13-bit field in XKF3 is Y, carried by bytes 5 and 6.
+            this[5] = (quarterTurn ushr 5).toByte()
+            this[6] = ((quarterTurn and 0x1f) shl 3).toByte()
+        }
+        val stateY = DaydreamControllerProtocol.decode(packetY, 322L)!!.state
+        val halfAngle = (quarterTurn * 2.0 * Math.PI / 4095.0) * 0.5
+        assertEquals(0f, stateY.orientationX, 1e-6f)
+        assertEquals(kotlin.math.sin(halfAngle).toFloat(), stateY.orientationY, 1e-4f)
+        assertEquals(0f, stateY.orientationZ, 1e-6f)
+
+        val packetZ = ByteArray(19).apply {
+            // The second 13-bit field in XKF3 is Z, carried by byte 3 low bits and byte 4.
+            this[3] = (quarterTurn ushr 8).toByte()
+            this[4] = quarterTurn.toByte()
+        }
+        val stateZ = DaydreamControllerProtocol.decode(packetZ, 323L)!!.state
+        assertEquals(0f, stateZ.orientationX, 1e-6f)
+        assertEquals(0f, stateZ.orientationY, 1e-6f)
+        assertEquals(kotlin.math.sin(halfAngle).toFloat(), stateZ.orientationZ, 1e-4f)
+    }
+
+    @Test
+    fun mapsAccelerometerAndGyroscopeWireAxesIntoXyzOrder() {
+        val packet = ByteArray(19).apply {
+            // accel wire order X, Z, Y: encode 1024 only in Y and Z.
+            this[8] = 0x08
+            this[10] = 0x40
+            // gyro wire order X, Z, Y: encode 1024 only in Y and Z.
+            this[13] = 0x10
+            this[15] = 0x80.toByte()
+        }
+        val state = DaydreamControllerProtocol.decode(packet, 324L)!!.state
+        val expectedAcceleration = (1024.0 * 8.0 * 9.8 / 4095.0).toFloat()
+        val expectedGyroscope = (1024.0 * (2048.0 / 180.0 * Math.PI / 4095.0)).toFloat()
+        assertEquals(0f, state.accelerometerX, 1e-6f)
+        assertEquals(expectedAcceleration, state.accelerometerY, 1e-4f)
+        assertEquals(expectedAcceleration, state.accelerometerZ, 1e-4f)
+        assertEquals(0f, state.gyroscopeX, 1e-6f)
+        assertEquals(expectedGyroscope, state.gyroscopeY, 1e-4f)
+        assertEquals(expectedGyroscope, state.gyroscopeZ, 1e-4f)
+    }
+
+    @Test
     fun decodesSequenceAndPackedTouchCoordinates() {
         val packet = ByteArray(19)
         packet[0] = 0x2a

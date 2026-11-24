@@ -34,7 +34,7 @@
 namespace phonevr {
 constexpr uint16_t kPoseBridgePort = 48103;
 constexpr uint16_t kControllerBridgePort = 48108;
-constexpr uint32_t kControllerPacketSize = 44;
+constexpr uint32_t kControllerPacketSize = 56;
 constexpr uint32_t kPosePacketSize = 36;
 constexpr uint16_t kVideoCapturePort = 48106;
 constexpr uint32_t kVideoFrameRate = 60;
@@ -1788,6 +1788,7 @@ struct DaydreamControllerSnapshot {
     uint64_t receivedAtNs = 0;
     double x = 0.0, y = 0.0, z = 0.0, w = 1.0;
     double touchX = 0.0, touchY = 0.0;
+    double gyroX = 0.0, gyroY = 0.0, gyroZ = 0.0;
 };
 
 class DaydreamControllerReceiver {
@@ -1849,7 +1850,7 @@ public:
 private:
     static bool Decode(const uint8_t* data, int length, DaydreamControllerSnapshot* output) {
         if (!data || !output || length != static_cast<int>(kControllerPacketSize) ||
-            std::memcmp(data, "PVSC", 4) != 0 || data[4] != 1 || data[5] > 1) return false;
+            std::memcmp(data, "PVSC", 4) != 0 || data[4] != 2 || data[5] > 1) return false;
         DaydreamControllerSnapshot next{};
         const uint8_t flags = data[6];
         const uint8_t buttons = data[7];
@@ -1869,7 +1870,11 @@ private:
         next.w = ReadBEFloat(data + 32);
         next.touchX = ReadBEFloat(data + 36);
         next.touchY = ReadBEFloat(data + 40);
-        const double values[] = {next.x, next.y, next.z, next.w, next.touchX, next.touchY};
+        next.gyroX = ReadBEFloat(data + 44);
+        next.gyroY = ReadBEFloat(data + 48);
+        next.gyroZ = ReadBEFloat(data + 52);
+        const double values[] = {next.x, next.y, next.z, next.w, next.touchX, next.touchY,
+                                 next.gyroX, next.gyroY, next.gyroZ};
         for (double value : values) if (!std::isfinite(value)) return false;
         next.touchX = std::clamp(next.touchX, 0.0, 1.0);
         next.touchY = std::clamp(next.touchY, 0.0, 1.0);
@@ -2009,27 +2014,76 @@ public:
         const uint64_t nowNs = MonotonicNowNs();
         const bool connected = state.connected && state.receivedAtNs != 0 &&
             nowNs >= state.receivedAtNs && nowNs - state.receivedAtNs <= 3000000000ULL;
-        const bool trackingValid = connected && state.hasOrientation &&
-            hmdPose.deviceIsConnected && hmdPose.poseIsValid &&
-            nowNs - state.receivedAtNs <= 500000000ULL;
+        const bool controllerFresh = connected && state.hasOrientation &&
+            nowNs >= state.receivedAtNs && nowNs - state.receivedAtNs <= 500000000ULL;
+        const bool trackingValid = controllerFresh &&
+            hmdPose.deviceIsConnected && hmdPose.poseIsValid;
         const double x = state.touching ? state.touchX * 2.0 - 1.0 : 0.0;
         const double y = state.touching ? (0.5 - state.touchY) * 2.0 : 0.0;
         DaydreamPoseOutput modeledPose{};
+        const DaydreamButtonGestureResult appGesture =
+            m_appGesture.Update(controllerFresh, state.app, nowNs);
+        const DaydreamButtonGestureResult homeGesture =
+            m_homeGesture.Update(controllerFresh, state.home, nowNs);
+        if (appGesture.pressedEdge && vr::VRDriverLog()) {
+            vr::VRDriverLog()->Log(m_isLeft
+                ? "PhoneVR: left Daydream App button press received"
+                : "PhoneVR: right Daydream App button press received");
+        }
+        if (homeGesture.pressedEdge && vr::VRDriverLog()) {
+            vr::VRDriverLog()->Log(m_isLeft
+                ? "PhoneVR: left Daydream Home button press received"
+                : "PhoneVR: right Daydream Home button press received");
+        }
+        if (appGesture.longPressTriggered || homeGesture.longPressTriggered) {
+            m_pendingRecenter = true;
+            const char* buttonName = appGesture.longPressTriggered ? "App" : "Home";
+            if (vr::VRDriverLog()) {
+                char line[192]{};
+                std::snprintf(line, sizeof(line), "PhoneVR: %s Daydream %s long-press recognized; recenter queued",
+                              m_isLeft ? "left" : "right", buttonName);
+                vr::VRDriverLog()->Log(line);
+            }
+        }
+        if (appGesture.shortPressTriggered) {
+            m_appMenuPulseUntilNs = nowNs + kAppMenuPulseNs;
+            if (vr::VRDriverLog()) {
+                vr::VRDriverLog()->Log(m_isLeft
+                    ? "PhoneVR: left Daydream App short-press mapped to menu"
+                    : "PhoneVR: right Daydream App short-press mapped to menu");
+            }
+        }
+        if (homeGesture.shortPressTriggered) {
+            m_systemPulseUntilNs = nowNs + kSystemButtonPulseNs;
+        }
+        if ((appGesture.releasedEdge && appGesture.suppressMenuPulse) ||
+            (homeGesture.releasedEdge && homeGesture.suppressMenuPulse)) {
+            if (vr::VRDriverLog()) {
+                vr::VRDriverLog()->Log(m_isLeft
+                    ? "PhoneVR: left Daydream long-press button released"
+                    : "PhoneVR: right Daydream long-press button released");
+            }
+        }
+
         if (trackingValid) {
             const DaydreamQuaternion headQ{
                 hmdPose.qRotation.x, hmdPose.qRotation.y, hmdPose.qRotation.z, hmdPose.qRotation.w};
             const std::array<double, 3> headPosition{
                 hmdPose.vecPosition[0], hmdPose.vecPosition[1], hmdPose.vecPosition[2]};
-            const std::array<double, 3> headAngularVelocity{
-                hmdPose.vecAngularVelocity[0], hmdPose.vecAngularVelocity[1], hmdPose.vecAngularVelocity[2]};
-            modeledPose = m_armModel.Update(
-                DaydreamQuaternion{state.x, state.y, state.z, state.w},
-                headPosition, headQ, headAngularVelocity, nowNs, state.app, m_isLeft);
-            if (modeledPose.recentered && vr::VRDriverLog()) {
-                vr::VRDriverLog()->Log(m_isLeft
-                    ? "PhoneVR: left Daydream controller pose recentered by long-pressing App button"
-                    : "PhoneVR: right Daydream controller pose recentered by long-pressing App button");
+            const std::array<double, 3> controllerGyroscope{
+                state.gyroX, state.gyroY, state.gyroZ};
+            const DaydreamQuaternion controllerQ{state.x, state.y, state.z, state.w};
+            if (m_pendingRecenter) {
+                m_armModel.Recenter(controllerQ, headQ);
+                m_pendingRecenter = false;
+                if (vr::VRDriverLog()) {
+                    vr::VRDriverLog()->Log(m_isLeft
+                        ? "PhoneVR: left Daydream controller software recenter applied using current HMD forward"
+                        : "PhoneVR: right Daydream controller software recenter applied using current HMD forward");
+                }
             }
+            modeledPose = m_armModel.Update(
+                controllerQ, headPosition, headQ, controllerGyroscope, nowNs, m_isLeft);
         }
         (void)input->UpdateScalarComponent(m_joystickX, static_cast<float>(x), 0.0);
         (void)input->UpdateScalarComponent(m_joystickY, static_cast<float>(y), 0.0);
@@ -2038,8 +2092,9 @@ public:
         (void)input->UpdateBooleanComponent(m_triggerClick, connected && state.click, 0.0);
         (void)input->UpdateScalarComponent(m_triggerValue, connected && state.click ? 1.0f : 0.0f, 0.0);
         (void)input->UpdateBooleanComponent(m_menuClick,
-            connected && (trackingValid ? modeledPose.menuPressed : false), 0.0);
-        (void)input->UpdateBooleanComponent(m_systemClick, connected && state.home, 0.0);
+            connected && nowNs < m_appMenuPulseUntilNs, 0.0);
+        (void)input->UpdateBooleanComponent(m_systemClick,
+            connected && nowNs < m_systemPulseUntilNs, 0.0);
         (void)input->UpdateBooleanComponent(m_volumeUpClick, connected && state.volumeUp, 0.0);
         (void)input->UpdateBooleanComponent(m_volumeDownClick, connected && state.volumeDown, 0.0);
 
@@ -2073,6 +2128,9 @@ public:
     }
 
 private:
+    static constexpr uint64_t kAppMenuPulseNs = 140000000ULL;
+    static constexpr uint64_t kSystemButtonPulseNs = 140000000ULL;
+
     static vr::DriverPose_t MakeUntrackedPose() {
         vr::DriverPose_t pose{};
         pose.poseTimeOffset = 0.0;
@@ -2089,6 +2147,11 @@ private:
 
     bool m_isLeft = false;
     DaydreamArmModel m_armModel;
+    DaydreamButtonGesture m_appGesture;
+    DaydreamButtonGesture m_homeGesture;
+    bool m_pendingRecenter = false;
+    uint64_t m_appMenuPulseUntilNs = 0;
+    uint64_t m_systemPulseUntilNs = 0;
     std::atomic<uint32_t> m_objectId{vr::k_unTrackedDeviceIndexInvalid};
     mutable std::mutex m_poseMutex;
     vr::DriverPose_t m_pose = MakeUntrackedPose();
@@ -2150,7 +2213,7 @@ public:
         if (!host->TrackedDeviceAdded("PHONEVR-DAYDREAM-RIGHT", vr::TrackedDeviceClass_Controller, m_rightController)) {
             Cleanup(); return vr::VRInitError_Driver_Unknown;
         }
-        if (vr::VRDriverLog()) vr::VRDriverLog()->Log("PhoneVR 0.5.31 DisplayRedirect and dual Daydream controller devices registered");
+        if (vr::VRDriverLog()) vr::VRDriverLog()->Log("PhoneVR 0.5.33 DisplayRedirect and dual Daydream controller devices registered");
         return vr::VRInitError_None;
     }
     void Cleanup() override {

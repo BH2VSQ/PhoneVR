@@ -138,20 +138,20 @@ The Host advertises `daydream-controller-ble-v1` and `steamvr-dual-controller-v1
 {
   "type": "controller_state",
   "controllers": {
-    "left": {"connected": true, "timestampNs": 123, "packetSequence": 4, "touching": true, "touchX": 0.5, "touchY": 0.5, "click": false, "app": false, "home": false, "volumeUp": false, "volumeDown": false, "orientationX": 0.0, "orientationY": 0.0, "orientationZ": 0.0, "orientationW": 1.0, "hasOrientation": true},
-    "right": {"connected": false, "timestampNs": 124, "packetSequence": 0, "touching": false, "touchX": 0.0, "touchY": 0.0, "click": false, "app": false, "home": false, "volumeUp": false, "volumeDown": false, "orientationX": 0.0, "orientationY": 0.0, "orientationZ": 0.0, "orientationW": 1.0, "hasOrientation": false}
+    "left": {"connected": true, "timestampNs": 123, "packetSequence": 4, "touching": true, "touchX": 0.5, "touchY": 0.5, "click": false, "app": false, "home": false, "volumeUp": false, "volumeDown": false, "orientationX": 0.0, "orientationY": 0.0, "orientationZ": 0.0, "orientationW": 1.0, "hasOrientation": true, "gyroscopeX": 0.0, "gyroscopeY": 0.0, "gyroscopeZ": 0.0},
+    "right": {"connected": false, "timestampNs": 124, "packetSequence": 0, "touching": false, "touchX": 0.0, "touchY": 0.0, "click": false, "app": false, "home": false, "volumeUp": false, "volumeDown": false, "orientationX": 0.0, "orientationY": 0.0, "orientationZ": 0.0, "orientationW": 1.0, "hasOrientation": false, "gyroscopeX": 0.0, "gyroscopeY": 0.0, "gyroscopeZ": 0.0}
   }
 }
 ```
 
 The Android sender updates at up to 50 Hz while at least one remote is connected. `timestampNs` is in Android's monotonic clock domain and is diagnostic only; it must not be compared directly with Host monotonic time. A missing BLE report for 750 ms causes Android to publish a neutral disconnected state to release held inputs. The message is optional, so older protocol-v1 clients and Hosts that do not use the controller capability can ignore it.
 
-The Windows Host forwards one 44-byte packet per hand to the SteamVR driver using a loopback-only UDP connection to `127.0.0.1:48108`. The fixed `PVSC` version-1 layout uses big-endian multibyte values:
+The Windows Host forwards one 56-byte packet per hand to the SteamVR driver using a loopback-only UDP connection to `127.0.0.1:48108`. The fixed `PVSC` version-2 layout uses big-endian multibyte values. This internal loopback protocol version is independent of the outer TCP control protocol version:
 
 | Offset | Size | Field |
 |---:|---:|---|
 | 0 | 4 | ASCII magic `PVSC` |
-| 4 | 1 | Version, value `1` |
+| 4 | 1 | Version, value `2` |
 | 5 | 1 | Hand, `0` left or `1` right |
 | 6 | 1 | Flags: connected, touching, has orientation (bits 0..2) |
 | 7 | 1 | Buttons: click, App, Home, volume up, volume down (bits 0..4) |
@@ -159,5 +159,6 @@ The Windows Host forwards one 44-byte packet per hand to the SteamVR driver usin
 | 12 | 8 | Android monotonic timestamp (`uint64`, diagnostic only) |
 | 20 | 16 | Quaternion X/Y/Z/W (`float32`) |
 | 36 | 8 | Touch X/Y (`float32`, 0..1) |
+| 44 | 12 | Controller gyroscope X/Y/Z (`float32`, radians per second) |
 
-HMD orientation remains on the original 36-byte `PVSP` UDP packet at port `48102`. Controller packets never replace, enlarge or delay the HMD pose datagrams. The 3DoF controller position is estimated in the driver using fixed head-relative offsets and is not room-scale tracking.
+HMD orientation remains on the original 36-byte `PVSP` UDP packet at port `48102`. Controller packets never replace, enlarge or delay the HMD pose datagrams. The 3DoF controller position is estimated in the driver using a GvrArmModel-style head-relative arm model. Controller gyro data is included so torso-following matches the Google model's input. This remains an inferred position and is not room-scale tracking.

@@ -12,12 +12,13 @@ func TestEncodeControllerPacketLayout(t *testing.T) {
 		Touching: true, TouchX: 0.25, TouchY: 0.75,
 		Click: true, App: true, Home: true, VolumeUp: true, VolumeDown: true,
 		OrientationY: 0.70710677, OrientationW: 0.70710677, HasOrientation: true,
+		GyroscopeX: 1.25, GyroscopeY: -2.5, GyroscopeZ: 0.75,
 	}
 	packet, err := EncodeControllerPacket(ControllerHandRight, state)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(packet) != ControllerPacketSize || string(packet[:4]) != "PVSC" || packet[4] != 1 || packet[5] != 1 {
+	if len(packet) != ControllerPacketSize || string(packet[:4]) != "PVSC" || packet[4] != 2 || packet[5] != 1 {
 		t.Fatalf("unexpected header: %v", packet[:6])
 	}
 	if packet[6] != 0x07 || packet[7] != 0x1f {
@@ -32,6 +33,11 @@ func TestEncodeControllerPacketLayout(t *testing.T) {
 	if got := math.Float32frombits(binary.BigEndian.Uint32(packet[40:44])); got != 0.75 {
 		t.Fatalf("touchY=%v", got)
 	}
+	for offset, want := range map[int]float32{44: 1.25, 48: -2.5, 52: 0.75} {
+		if got := math.Float32frombits(binary.BigEndian.Uint32(packet[offset : offset+4])); got != want {
+			t.Fatalf("gyro@%d=%v want %v", offset, got, want)
+		}
+	}
 }
 
 func TestEncodeControllerPacketRejectsInvalidHandAndQuaternion(t *testing.T) {
@@ -43,8 +49,11 @@ func TestEncodeControllerPacketRejectsInvalidHandAndQuaternion(t *testing.T) {
 	}
 }
 
-func TestEncodeControllerPacketRejectsNonFiniteTouch(t *testing.T) {
+func TestEncodeControllerPacketRejectsNonFiniteTouchOrGyro(t *testing.T) {
 	if _, err := EncodeControllerPacket(ControllerHandLeft, ControllerState{TouchX: float32(math.NaN())}); err == nil {
-		t.Fatal("expected non-finite input error")
+		t.Fatal("expected non-finite touch error")
+	}
+	if _, err := EncodeControllerPacket(ControllerHandLeft, ControllerState{GyroscopeY: float32(math.Inf(1))}); err == nil {
+		t.Fatal("expected non-finite gyro error")
 	}
 }

@@ -5,6 +5,14 @@ import (
 	"testing"
 )
 
+func TestDefaultPhoneDisplaySettingsUsesRequestedEyeOffsets(t *testing.T) {
+	settings := DefaultPhoneDisplaySettings()
+	if settings.LeftEyeOffsetX != .09 || settings.LeftEyeOffsetY != .09 ||
+		settings.RightEyeOffsetX != -.09 || settings.RightEyeOffsetY != .09 {
+		t.Fatalf("unexpected default per-eye offsets: %+v", settings)
+	}
+}
+
 func TestNormalizeOpticalPresetsDropsInvalidAndDuplicateIDs(t *testing.T) {
 	presets := []OpticalPreset{
 		{ID: " preset-a ", Name: " First ", Settings: DefaultPhoneDisplaySettings()},

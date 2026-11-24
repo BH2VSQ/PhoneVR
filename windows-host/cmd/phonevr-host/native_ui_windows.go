@@ -240,6 +240,7 @@ const (
 	idDriverManager     = 108
 	idTransport         = 109
 	idVideoProfile      = 110
+	idAudioManager      = 111
 	idProfile           = 200
 	idApply             = 201
 	idLiveApply         = 204
@@ -1034,6 +1035,7 @@ func (app *nativeUI) mainMenuItems() []nativeMenuItem {
 		{ID: idDriverManager, Chinese: "SteamVR 驱动管理", English: "SteamVR Driver"},
 		{ID: idTransport, Chinese: "视频传输模式", English: "Video Transport"},
 		{ID: idVideoProfile, Chinese: "串流分辨率", English: "Stream Resolution"},
+		{ID: idAudioManager, Chinese: "音频与麦克风", English: "Audio & Microphone"},
 		{ID: idLanguage, Chinese: "切换为 English", English: "Switch to 中文"},
 	}
 }
@@ -1054,7 +1056,7 @@ func (app *nativeUI) toggleMainMenu() {
 
 	var mainRect nativeRect
 	pGetWindowRect.Call(app.mainHWnd, uintptr(unsafe.Pointer(&mainRect)))
-	const menuWidth, menuHeight = 292, 540
+	const menuWidth, menuHeight = 292, 588
 	x := int(mainRect.Right) - menuWidth - 14
 	y := int(mainRect.Top) + 54
 	screenWidth, _, _ := pGetSystemMetrics.Call(0)
@@ -1118,6 +1120,8 @@ func (app *nativeUI) handleMainCommand(id int) {
 		app.openDialog("transport")
 	case idVideoProfile:
 		app.openDialog("videoProfile")
+	case idAudioManager:
+		app.openAudioManager()
 	case idLogs:
 		app.openDialog("logs")
 	case idDriverManager:

@@ -31,12 +31,58 @@ type audioBridgeRuntime struct {
 }
 
 type audioEndpointStatus struct {
-	Version                int    `json:"version"`
-	SampleRate             int    `json:"sampleRate"`
-	RenderEndpointID       string `json:"renderEndpointId"`
-	RenderFriendlyName     string `json:"renderFriendlyName"`
-	MicrophoneEndpointID   string `json:"microphoneEndpointId"`
-	MicrophoneFriendlyName string `json:"microphoneFriendlyName"`
+	Version                      int    `json:"version"`
+	SampleRate                   int    `json:"sampleRate"`
+	RenderEndpointID             string `json:"renderEndpointId"`
+	RenderFriendlyName           string `json:"renderFriendlyName"`
+	MicrophoneEndpointID         string `json:"microphoneEndpointId"`
+	MicrophoneFriendlyName       string `json:"microphoneFriendlyName"`
+	MicrophoneRenderEndpointID   string `json:"microphoneRenderEndpointId"`
+	MicrophoneRenderFriendlyName string `json:"microphoneRenderFriendlyName"`
+	MicrophoneRouteProvider      string `json:"microphoneRouteProvider"`
+	MicrophoneRouteActive        bool   `json:"microphoneRouteActive"`
+}
+
+// decodeAudioEndpointStatusRecord decodes the helper's standalone PVRS record.
+// It is also used by the one-shot endpoint probe when HostService is stopped.
+func decodeAudioEndpointStatusRecord(record []byte) (audioEndpointStatus, error) {
+	if len(record) < 8 || string(record[:4]) != "PVRS" {
+		return audioEndpointStatus{}, errors.New("invalid audio endpoint status record header")
+	}
+	size := binary.LittleEndian.Uint32(record[4:8])
+	if size == 0 || size > audioBridgeMaxStatusBytes || int(size) != len(record)-8 {
+		return audioEndpointStatus{}, fmt.Errorf("invalid audio endpoint status record size %d", size)
+	}
+	var status audioEndpointStatus
+	if err := json.Unmarshal(record[8:], &status); err != nil {
+		return audioEndpointStatus{}, fmt.Errorf("decode audio endpoint status record: %w", err)
+	}
+	if status.Version != 1 || status.SampleRate != phonevraudio.SampleRate {
+		return audioEndpointStatus{}, fmt.Errorf("unsupported audio endpoint status version=%d sampleRate=%d", status.Version, status.SampleRate)
+	}
+	return status, nil
+}
+
+// isCompatibleVirtualCableStatus confirms that Host has both sides of a
+// virtual playback/recording pair. It is platform-independent so endpoint
+// pairing policy can be unit-tested without Windows MMDevice APIs.
+func isCompatibleVirtualCableStatus(status audioEndpointStatus) bool {
+	if status.MicrophoneEndpointID == "" || status.MicrophoneRenderEndpointID == "" {
+		return false
+	}
+	provider := strings.ToLower(strings.TrimSpace(status.MicrophoneRouteProvider))
+	if provider == "vb-cable" || provider == "vac" {
+		return true
+	}
+	return (strings.Contains(strings.ToLower(status.MicrophoneFriendlyName), "cable output") &&
+		strings.Contains(strings.ToLower(status.MicrophoneRenderFriendlyName), "cable input")) ||
+		isVACFriendlyName(status.MicrophoneFriendlyName, status.MicrophoneRenderFriendlyName)
+}
+
+func isVACFriendlyName(captureName, renderName string) bool {
+	capture := strings.ToLower(strings.TrimSpace(captureName))
+	render := strings.ToLower(strings.TrimSpace(renderName))
+	return capture != "" && capture == render && strings.Contains(capture, "virtual audio cable")
 }
 
 // audioEndpointWorker owns the Windows bridge process for exactly the same
@@ -77,7 +123,7 @@ func (s *HostService) audioEndpointWorker(ctx context.Context) {
 		}
 		loggedUnavailable = false
 		startedAt := time.Now()
-		s.addLog("Windows audio bridge process started; WASAPI loopback is active and PhoneVR microphone IPC is waiting for the virtual endpoint")
+		s.addLog("Windows audio bridge process started; WASAPI loopback and existing virtual-cable microphone route supervision are active")
 
 		readErr := make(chan error, 1)
 		writeErr := make(chan error, 1)
@@ -199,10 +245,14 @@ func (s *HostService) readAudioBridgeOutput(ctx context.Context, output io.Reade
 				s.addLog("Unable to publish Windows audio endpoint IDs to SteamVR: " + err.Error())
 			}
 			s.addLog(fmt.Sprintf("WASAPI loopback endpoint: %s", status.RenderFriendlyName))
-			if status.MicrophoneEndpointID != "" {
-				s.addLog("PhoneVR Microphone endpoint found and active")
+			if status.MicrophoneEndpointID != "" && status.MicrophoneRenderEndpointID != "" {
+				provider := strings.TrimSpace(status.MicrophoneRouteProvider)
+				if provider == "" {
+					provider = "existing virtual cable"
+				}
+				s.addLog(fmt.Sprintf("Phone microphone route active via %s: %s -> %s", provider, status.MicrophoneRenderFriendlyName, status.MicrophoneFriendlyName))
 			} else {
-				s.addLog("PhoneVR Microphone endpoint not found; install the PhoneVR virtual microphone driver to expose the phone mic to Windows apps")
+				s.addLog("No supported virtual microphone cable detected. Existing VAC/VB-CABLE drivers are left untouched; install VB-CABLE only if you do not already have a compatible virtual cable.")
 			}
 		default:
 			return fmt.Errorf("unknown Windows audio bridge record %q", string(tag[:]))
@@ -280,6 +330,7 @@ func clearAudioEndpointStatus() error {
 		"audio-endpoints.json",
 		"audio-render-endpoint.txt",
 		"audio-record-endpoint.txt",
+		"audio-microphone-render-endpoint.txt",
 	} {
 		if removeErr := os.Remove(filepath.Join(base, name)); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
 			failures = append(failures, fmt.Errorf("remove %s: %w", name, removeErr))
@@ -312,8 +363,9 @@ func saveAudioEndpointStatus(status audioEndpointStatus) error {
 	// parser and can refresh them while SteamVR is already running.
 	base := filepath.Dir(path)
 	for name, value := range map[string]string{
-		"audio-render-endpoint.txt": status.RenderEndpointID,
-		"audio-record-endpoint.txt": status.MicrophoneEndpointID,
+		"audio-render-endpoint.txt":            status.RenderEndpointID,
+		"audio-record-endpoint.txt":            status.MicrophoneEndpointID,
+		"audio-microphone-render-endpoint.txt": status.MicrophoneRenderEndpointID,
 	} {
 		endpointPath := filepath.Join(base, name)
 		if value == "" {

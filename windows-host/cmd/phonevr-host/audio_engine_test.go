@@ -42,7 +42,10 @@ func TestSaveAudioEndpointStatusPublishesOpenVRIDs(t *testing.T) {
 	status := audioEndpointStatus{
 		Version: 1, SampleRate: 48000,
 		RenderEndpointID: "{render-device-id}", RenderFriendlyName: "Speakers",
-		MicrophoneEndpointID: "{phonevr-mic-id}", MicrophoneFriendlyName: "PhoneVR Microphone",
+		MicrophoneEndpointID: "{phonevr-mic-id}", MicrophoneFriendlyName: "Line 1 (Virtual Audio Cable)",
+		MicrophoneRenderEndpointID: "{phonevr-mic-render-id}", MicrophoneRenderFriendlyName: "Line 1 (Virtual Audio Cable)",
+		MicrophoneRouteProvider: "VAC",
+		MicrophoneRouteActive:   true,
 	}
 	if err := saveAudioEndpointStatus(status); err != nil {
 		t.Fatalf("saveAudioEndpointStatus: %v", err)
@@ -70,6 +73,9 @@ func TestSaveAudioEndpointStatusPublishesOpenVRIDs(t *testing.T) {
 	}
 	if decoded.MicrophoneEndpointID != status.MicrophoneEndpointID {
 		t.Fatalf("recording endpoint was not persisted: %#v", decoded)
+	}
+	if decoded.MicrophoneRouteProvider != "VAC" {
+		t.Fatalf("virtual cable provider was not persisted: %#v", decoded)
 	}
 
 	status.MicrophoneEndpointID = ""
@@ -110,7 +116,10 @@ func TestReadAudioBridgeOutputParsesEndpointStatusAndFrames(t *testing.T) {
 	status := audioEndpointStatus{
 		Version: 1, SampleRate: 48000,
 		RenderEndpointID: "render-1", RenderFriendlyName: "Default Speakers",
-		MicrophoneEndpointID: "mic-1", MicrophoneFriendlyName: "PhoneVR Microphone",
+		MicrophoneEndpointID: "mic-1", MicrophoneFriendlyName: "Line 1 (Virtual Audio Cable)",
+		MicrophoneRenderEndpointID: "mic-render-1", MicrophoneRenderFriendlyName: "Line 1 (Virtual Audio Cable)",
+		MicrophoneRouteProvider: "VAC",
+		MicrophoneRouteActive:   true,
 	}
 	encoded, err := json.Marshal(status)
 	if err != nil {
@@ -160,5 +169,106 @@ func TestWaitAudioRetryStopsOnContextCancellation(t *testing.T) {
 	cancel()
 	if waitAudioRetry(ctx, time.Hour) {
 		t.Fatal("waitAudioRetry returned true after cancellation")
+	}
+}
+
+func TestCompatibleVirtualCableStatusAcceptsMuzychenkoVACPair(t *testing.T) {
+	status := audioEndpointStatus{
+		Version: 1, SampleRate: 48000,
+		MicrophoneEndpointID:         "vac-capture-line-1",
+		MicrophoneFriendlyName:       "Line 1 (Virtual Audio Cable)",
+		MicrophoneRenderEndpointID:   "vac-render-line-1",
+		MicrophoneRenderFriendlyName: "Line 1 (Virtual Audio Cable)",
+		MicrophoneRouteProvider:      "VAC",
+		MicrophoneRouteActive:        true,
+	}
+	if !isCompatibleVirtualCableStatus(status) {
+		t.Fatal("installed VAC paired endpoints should be reused")
+	}
+	if !isVACFriendlyName(status.MicrophoneFriendlyName, status.MicrophoneRenderFriendlyName) {
+		t.Fatal("standard VAC endpoint names should pair")
+	}
+}
+
+func TestCompatibleVirtualCableStatusAcceptsVBCablePair(t *testing.T) {
+	status := audioEndpointStatus{
+		Version: 1, SampleRate: 48000,
+		MicrophoneEndpointID:         "vb-capture",
+		MicrophoneFriendlyName:       "CABLE Output (VB-Audio Virtual Cable)",
+		MicrophoneRenderEndpointID:   "vb-render",
+		MicrophoneRenderFriendlyName: "CABLE Input (VB-Audio Virtual Cable)",
+		MicrophoneRouteProvider:      "VB-CABLE",
+	}
+	if !isCompatibleVirtualCableStatus(status) {
+		t.Fatal("installed VB-CABLE paired endpoints should be reused")
+	}
+}
+
+func TestCompatibleVirtualCableStatusRejectsUnpairedOrIncompleteEndpoints(t *testing.T) {
+	cases := []audioEndpointStatus{
+		{MicrophoneEndpointID: "capture-only", MicrophoneFriendlyName: "Line 1 (Virtual Audio Cable)"},
+		{MicrophoneEndpointID: "capture", MicrophoneFriendlyName: "Microphone", MicrophoneRenderEndpointID: "render", MicrophoneRenderFriendlyName: "Speakers"},
+		{MicrophoneEndpointID: "capture", MicrophoneFriendlyName: "Line 1 (Virtual Audio Cable)", MicrophoneRenderEndpointID: "render", MicrophoneRenderFriendlyName: "Line 2 (Virtual Audio Cable)"},
+	}
+	for index, status := range cases {
+		if isCompatibleVirtualCableStatus(status) {
+			t.Fatalf("case %d should not be treated as a compatible cable: %#v", index, status)
+		}
+	}
+}
+
+func TestDecodeAudioEndpointStatusRecordForStoppedHostProbe(t *testing.T) {
+	status := audioEndpointStatus{
+		Version: 1, SampleRate: 48000,
+		MicrophoneEndpointID:         "vac-capture-line-1",
+		MicrophoneFriendlyName:       "Line 1 (Virtual Audio Cable)",
+		MicrophoneRenderEndpointID:   "vac-render-line-1",
+		MicrophoneRenderFriendlyName: "Line 1 (Virtual Audio Cable)",
+		MicrophoneRouteProvider:      "VAC",
+		MicrophoneRouteActive:        true,
+	}
+	payload, err := json.Marshal(status)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := make([]byte, 8+len(payload))
+	copy(record[:4], "PVRS")
+	binary.LittleEndian.PutUint32(record[4:8], uint32(len(payload)))
+	copy(record[8:], payload)
+
+	decoded, err := decodeAudioEndpointStatusRecord(record)
+	if err != nil {
+		t.Fatalf("decodeAudioEndpointStatusRecord: %v", err)
+	}
+	if !isCompatibleVirtualCableStatus(decoded) {
+		t.Fatalf("one-shot probe did not recognize VAC route: %#v", decoded)
+	}
+	decoded.MicrophoneRouteActive = false
+	if !isCompatibleVirtualCableStatus(decoded) {
+		t.Fatalf("disabled installed VAC pair was mistaken for a missing installation: %#v", decoded)
+	}
+	inactivePayload, err := json.Marshal(decoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inactiveRecord := make([]byte, 8+len(inactivePayload))
+	copy(inactiveRecord[:4], "PVRS")
+	binary.LittleEndian.PutUint32(inactiveRecord[4:8], uint32(len(inactivePayload)))
+	copy(inactiveRecord[8:], inactivePayload)
+	inactiveDecoded, err := decodeAudioEndpointStatusRecord(inactiveRecord)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inactiveDecoded.MicrophoneRouteActive || !isCompatibleVirtualCableStatus(inactiveDecoded) {
+		t.Fatalf("inactive endpoint state was not preserved by the PVRS record: %#v", inactiveDecoded)
+	}
+
+	if _, err := decodeAudioEndpointStatusRecord(record[:len(record)-1]); err == nil {
+		t.Fatal("truncated probe record was accepted")
+	}
+	invalidTag := append([]byte(nil), record...)
+	copy(invalidTag[:4], "NOPE")
+	if _, err := decodeAudioEndpointStatusRecord(invalidTag); err == nil {
+		t.Fatal("unexpected probe record tag was accepted")
 	}
 }

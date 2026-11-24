@@ -1,73 +1,77 @@
 # PhoneVR audio streaming architecture
 
-Status: 0.5.35 now contains the Windows WASAPI loopback bridge, Host lifecycle supervision, Android PCM playback/recording, and a SysVAD WaveRT patch for the `PhoneVR Microphone` capture endpoint. The Windows user-mode and kernel components still require a native Windows MSVC/WDK build, test-signing, installation and hardware validation before the Windows microphone endpoint can be considered operational on a target PC.
+Status: 0.5.35 contains the Android PCM audio engine, independent LAN/USB audio transport, Windows WASAPI loopback bridge, Host lifecycle supervision, virtual-cable microphone routing and a native Host Audio & Microphone manager. Windows WASAPI native compilation and real-device full-duplex validation still require a Windows build machine.
 
-## 0.5.35 implementation
+## Transport and isolation
 
-PhoneVR uses one independent 48 kHz PCM audio path over LAN UDP `48110` and USB AOA channels `4/5`. The existing video UDP port `48104`, pose UDP port `48102`, control TCP port `48101`, H.264 queues and AOA video channel are unchanged.
+PhoneVR uses one independent 48 kHz PCM audio path over LAN UDP `48110` and USB AOA channels `4/5`. The existing video UDP port `48104`, pose UDP port `48102`, control TCP port `48101`, H.264 queues and AOA video framing are unchanged. Audio capture, playback, buffering and restart handling stay outside the video and pose worker paths.
 
-The Windows Host starts a separately supervised `PhoneVRAudioBridge.exe` with the Host service. The bridge uses WASAPI shared-mode loopback on the current default console render endpoint, converts the device mix to signed 16-bit stereo PCM at 48 kHz, and emits exact 20 ms frames. A second bridge thread receives mono PCM frames from the Host pipe and writes them into the `PhoneVR Microphone` driver's shared ring. The Host cancels, closes and reaps the bridge process and both pipe workers during `HostService.Stop`; endpoint invalidation causes a bounded automatic restart.
-
-The Android audio engine remains independent of video decode and pose processing. It uses `AudioTrack` for stereo playback and `AudioRecord` for mono microphone capture. It sends a silent registration frame at session start so the Host learns the ephemeral UDP return address even when Android microphone permission is denied. LAN and AOA continue to use the same 24-byte audio packet header and fixed 20 ms PCM frames.
+The Windows Host starts a separately supervised `PhoneVRAudioBridge.exe` with the Host service. `HostService.Stop` cancels the helper, closes both pipes, waits for both I/O workers and reaps the process. Device invalidation causes a bounded automatic restart. The Android audio engine uses `AudioTrack` for stereo playback and `AudioRecord` for mono microphone capture.
 
 ## PC playback to phone
 
-1. `PhoneVRAudioBridge.exe` opens the Windows default console render endpoint with `AUDCLNT_SHAREMODE_SHARED` and `AUDCLNT_STREAMFLAGS_LOOPBACK | AUDCLNT_STREAMFLAGS_EVENTCALLBACK`.
-2. `IAudioCaptureClient` packets are converted to 48 kHz stereo PCM16, grouped into 960-sample/channel frames.
+1. The helper opens the Windows default console render endpoint in WASAPI shared-mode loopback.
+2. WASAPI packets are converted to 48 kHz stereo PCM16 and grouped into 960-sample-per-channel, 20 ms frames.
 3. The Host reads `PVRA` records from the helper's stdout and calls `PublishAudioPCM`.
-4. LAN sends the audio frame to the phone's registered UDP source port on the independent audio socket. USB sends over AOA channel `4`.
-5. Android validates the packet, keeps a bounded jitter queue, prebuffers two frames and writes to a low-latency stereo `AudioTrack`.
+4. LAN sends the audio frame through UDP `48110`; USB sends it over AOA channel `4`.
+5. Android validates the packet, keeps a bounded jitter queue and writes it to a low-latency stereo `AudioTrack`.
 
-The first version captures the Windows default console render mix. Applications forced to a different per-app render endpoint are not included unless that endpoint is made the default or a later endpoint-selection feature is added. WASAPI loopback requires a shared-mode render endpoint; Microsoft's event-driven loopback support is available on Windows 10 version 1703 and newer. On older Windows releases an additional render-event workaround would be required.
+A virtual microphone cable must never become the loopback source for this path. Some virtual cable installers can make their own playback endpoint the Windows default. The helper therefore detects VAC/VB-CABLE render endpoints and chooses an active non-virtual playback endpoint for game-audio loopback if the Windows default points to the microphone cable. This avoids capturing the phone microphone and feeding it back to the phone.
+
+The first version captures the effective default physical render mix. Applications forced to a different per-app render endpoint are not included unless that endpoint becomes the effective default. Shared-mode WASAPI loopback and the helper's current endpoint selection are independent from the virtual microphone route.
 
 ## Phone microphone to Windows applications
 
-1. Android `AudioRecord` captures 48 kHz mono PCM16 in 20 ms frames. The platform AEC and noise suppressor are enabled when available.
+1. Android `AudioRecord` captures 48 kHz mono PCM16 in 20 ms frames. Platform AEC and noise suppression are enabled when available.
 2. LAN sends frames to Host UDP `48110`; USB sends over AOA channel `5`.
-3. The Host validates packets and publishes them to a bounded 16-frame queue. When full, the oldest frame is discarded to limit latency.
-4. The Windows Host writes PCM frames to the helper's stdin. The helper opens the kernel-created `Global\PhoneVR.Audio.UplinkV1` section and acts as the single producer of a bounded 64-slot SPSC ring.
-5. The SysVAD `PhoneVR Microphone` WaveRT capture miniport creates the named section with an ACL for SYSTEM and interactive users. A PASSIVE_LEVEL system thread consumes shared-ring packets into a bounded nonpaged queue. WaveRT's capture-buffer worker reads aligned PCM bytes from that queue and zero-fills underruns.
-6. Windows applications select **PhoneVR Microphone** in their recording-device settings. The SteamVR driver also publishes the discovered playback and recording endpoint IDs using the OpenVR audio properties.
+3. The Host validates packets and publishes them to a bounded queue. When full, the oldest frame is discarded to limit latency.
+4. The Windows Host writes PCM frames to the helper's stdin.
+5. The helper opens the selected virtual cable's playback/render endpoint in WASAPI shared mode and writes the phone microphone samples into it. The paired recording/capture endpoint is then available to VRChat, SteamVR and other Windows recording applications.
+6. The helper publishes the actual capture endpoint ID to the Host. The Host writes it to `%LOCALAPPDATA%\PhoneVR\audio-record-endpoint.txt`; the SteamVR driver refreshes OpenVR's default recording endpoint property at runtime.
 
-The SysVAD patcher is pinned to Microsoft's `Windows-driver-samples` commit `d49bb7d72f3651952b2b6e4ad28d14fe2247eb69`. It adapts the `TabletAudioSample` capture miniport, disables unrelated sample endpoints in the produced package, restricts the capture pin to exactly one mono 48 kHz PCM16 format and one underlying capture stream, and sets the endpoint friendly name to `PhoneVR Microphone`. It creates the global memory section from kernel mode so the normal desktop Host process only has to open the existing mapping and does not need `SeCreateGlobalPrivilege`. The WaveRT DPC uses DPC-level spin-lock operations because the sample updates the capture DMA buffer from a DISPATCH_LEVEL timer callback.
+### Existing Virtual Audio Cable (VAC)
 
-## Build on Windows
+Eugene Muzychenko's Virtual Audio Cable exposes paired playback and recording endpoints. A standard pair uses the same friendly name on both sides, for example `Line 1 (Virtual Audio Cable)`. The Windows helper enumerates active render and capture endpoints, matches the full normalized friendly name and uses the matching pair. It does not reinstall, rename, patch, update or uninstall an existing VAC driver.
 
-Build the virtual microphone endpoint on a Windows development PC with Visual Studio 2022, Desktop development with C++, Windows 10/11 SDK, matching WDK and Git. Clone and check out the pinned Microsoft sample revision:
+When both VAC and VB-CABLE are present, the current automatic policy prefers VAC. When multiple VAC lines are active, the first complete pair returned by Windows endpoint enumeration is selected. If a VAC pair exists but either endpoint is disabled, Host reports the installed pair and asks the user to enable it rather than offering to install another virtual cable. The detected provider and both endpoint friendly names are shown in Host logs and in **Audio & Microphone**.
 
-```powershell
-git clone https://github.com/microsoft/Windows-driver-samples.git C:\src\Windows-driver-samples
-git -C C:\src\Windows-driver-samples checkout d49bb7d72f3651952b2b6e4ad28d14fe2247eb69
-git -C C:\src\Windows-driver-samples submodule update --init
-.\windows-audio-driver\Build-PhoneVRMicrophone.ps1 `
-  -WindowsDriverSamplesRoot C:\src\Windows-driver-samples -Configuration Debug
-```
+### VB-Audio VB-CABLE fallback
 
-To install a development-signed package, enable Windows test signing, reboot, then run the same script from an elevated PowerShell window with `-Install`. The script verifies the pinned source commit and checks that test-signing is enabled, then uses WDK DevCon to create the componentized root device `Root\sysvad_ComponentizedAudioSample`. Passing `-DevconPath` is supported when DevCon is not discoverable in the normal WDK tools directories. For production distribution, the driver must be signed through the appropriate Microsoft Hardware Dev Center workflow.
+If no supported VAC or VB-CABLE pair is active, the Host Audio & Microphone manager offers the official VB-Audio VB-CABLE package as a fallback. The Host downloads the original vendor package from `https://vb-audio.com/Cable/`, extracts it without modifying its contents, validates the installer Authenticode signature and expected VB-Audio publisher, then starts the original installer through Windows UAC. The Host never changes the signed INF, CAT or SYS files.
 
-Build the Host and the native WASAPI bridge together from the PhoneVR repository root:
+With VB-CABLE, phone microphone audio is rendered to `CABLE Input` and Windows applications record from `CABLE Output`. VB-CABLE remains identifiable as a VB-Audio product and follows the vendor's donationware/licensing conditions. For professional deployments where end users cannot independently identify or support the donationware, obtain the appropriate VB-Audio license. See the current [VB-Audio distribution and licensing terms](https://vb-audio.com/Services/licensing.htm).
+
+A VAC installation and a VB-CABLE installation are both independent Windows audio devices. PhoneVR reuses an installed compatible pair before offering the fallback installer. If the pair is installed but disabled, PhoneVR asks the user to enable it instead of installing a duplicate driver. It does not create a custom kernel audio driver or claim that the third-party endpoint is renamed to `PhoneVR Microphone`; Windows recording applications display the endpoint's original vendor name.
+
+## Host user interface
+
+Open **Menu → Audio & Microphone**.
+
+- If a compatible VAC or VB-CABLE pair is active, Host displays the provider and the selected playback/recording endpoint names. It does not offer a redundant driver installation.
+- Endpoint detection works even when Host streaming is stopped. The menu starts the embedded helper once with `--probe`, which enumerates Windows MMDevice endpoints without opening audio streams. The probe includes disabled endpoint records, so an installed-but-disabled VAC/VB-CABLE is reported as installed and the user is asked to enable its paired endpoints. PhoneVR does not offer a second driver installation in that state.
+- If an installed pair is present but disabled, Host shows its endpoint names and asks the user to enable both endpoints without offering another installation.
+- If no compatible pair is installed, Host offers the official signed VB-CABLE fallback installer.
+- Installation runs outside the UI thread. The result and Authenticode publisher are reported in Runtime Logs.
+
+After a route is active, select its capture endpoint as the microphone in VRChat or another Windows application. For standard VAC this is the matching `Line N (Virtual Audio Cable)` recording endpoint. For VB-CABLE it is `CABLE Output (VB-Audio Virtual Cable)`.
+
+## Formats, buffering and latency
+
+- PC downlink: 48,000 Hz, stereo, signed 16-bit little-endian PCM, 960 samples per channel per 20 ms frame.
+- Phone uplink: 48,000 Hz, mono, signed 16-bit little-endian PCM, 960 samples per 20 ms frame. The bridge duplicates the mono stream to stereo when writing to the virtual cable render endpoint.
+- Host uplink queue: bounded to 16 frames. Android capture queue: four frames. Android playback queue: 12 frames with two-frame startup prebuffer. The native render helper uses a bounded 12-frame queue and drops the oldest frame on overflow.
+- PCM transport bandwidth before packet overhead: approximately 1.536 Mbit/s downlink and 0.768 Mbit/s uplink.
+
+Opus encoding, configurable endpoint selection when multiple virtual cable pairs are installed, clock-drift correction and measured end-to-end latency remain future optimizations.
+
+## Build and validation
+
+Build the Host and the native WASAPI bridge together on Windows with Go, CMake and Visual Studio C++ x64 tools:
 
 ```powershell
 .\scripts\build-windows-host.ps1
 ```
 
-That script builds `PhoneVRAudioBridge.exe` with CMake/MSVC, embeds it into both Host executables, runs Go tests and `go vet`, and creates the Windows x64 Host binaries. The SysVAD driver is installed separately because it has an independent kernel signing and installation lifecycle.
+This builds `PhoneVRAudioBridge.exe`, embeds it into both Host executables and builds the Windows Host package. The third-party virtual cable driver is installed through its original signed vendor installer only when Host does not detect a compatible existing pair.
 
-## Formats and latency
-
-- PC downlink: 48,000 Hz, stereo, signed 16-bit little-endian PCM, 960 samples per channel per 20 ms frame.
-- Phone uplink: 48,000 Hz, mono, signed 16-bit little-endian PCM, 960 samples per 20 ms frame.
-- Shared ring: 64 fixed 20 ms slots, single producer and single consumer. WaveRT has an additional eight-frame nonpaged queue. On overflow, it drops complete audio frames to preserve 16-bit PCM sample alignment. The capture miniport accepts only 48 kHz mono PCM16, matching the 1,920-byte phone uplink frame size.
-- Host uplink queue: 16 frames. Android capture queue: four frames. Android playback queue: 12 frames with two-frame startup prebuffer.
-- PCM transport bandwidth before packet overhead: approximately 1.536 Mbit/s downlink and 0.768 Mbit/s uplink.
-
-Opus encoding, an adjustable jitter buffer, clock-drift correction and measured end-to-end latency remain future optimizations. PCM is used so the first Windows and Android implementation does not depend on a device-specific codec extension.
-
-## Validation boundary
-
-The Host Go lifecycle and packet routing are covered by Go tests, race tests and `go vet`; Windows amd64 cross-compilation validates the Host package. The SysVAD patcher has fixture tests for all source transformations and idempotence, and the shared-memory ABI header is compiled independently. This Linux build environment does not provide MSVC, Windows SDK, WDK, PowerShell, a target Windows audio stack or physical Android hardware. Consequently, it cannot produce or install the `.sys` package or compile the WASAPI helper here. A Windows native build, test-signing/install, microphone capture test, loopback playback test and simultaneous video/pose/audio load test remain required before production use.
-
-
-## UDP datagram sizing
-
-PCM access units are kept unchanged for USB AOA. On LAN, each 20 ms PVRA access unit is split into checksummed PVAF datagrams no larger than 1,200 bytes. The receiver accepts out-of-order fragments, discards incomplete assemblies after 180 ms, and caps concurrent assemblies at 16. This avoids relying on IP fragmentation across Wi-Fi, VPN and IPv6 paths.
+The Go Host lifecycle and packet routing are covered by Go tests, race tests and `go vet`; Windows amd64 cross-compilation validates the Host package. Endpoint matching policy is covered by tests for standard VAC pairs, VB-CABLE pairs and incomplete/mismatched pairs. This Linux build environment does not provide MSVC, Windows SDK, PowerShell, a Windows audio stack or physical Android hardware. Consequently it cannot compile the native WASAPI helper or perform UAC installation. A Windows native build, signature check of the downloaded vendor installer, microphone capture test, loopback playback test and simultaneous video/pose/audio load test remain required before production use.

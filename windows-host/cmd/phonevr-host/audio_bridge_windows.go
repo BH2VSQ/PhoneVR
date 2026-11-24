@@ -22,21 +22,21 @@ import (
 //go:embed embedded-audio
 var embeddedPhoneVRAudio embed.FS
 
-func startAudioBridgeProcess(parent context.Context, service *HostService) (*audioBridgeRuntime, error) {
+func embeddedAudioBridgeExecutable() (string, error) {
 	data, err := embeddedPhoneVRAudio.ReadFile("embedded-audio/PhoneVRAudioBridge.exe")
 	if err != nil || len(data) < 1024 {
-		return nil, errors.New("PhoneVRAudioBridge.exe is not embedded; rebuild with scripts/build-windows-host.ps1")
+		return "", errors.New("PhoneVRAudioBridge.exe is not embedded; rebuild with scripts/build-windows-host.ps1")
 	}
 	base := strings.TrimSpace(os.Getenv("LOCALAPPDATA"))
 	if base == "" {
 		base, err = os.UserConfigDir()
 		if err != nil {
-			return nil, err
+			return "", err
 		}
 	}
 	directory := filepath.Join(base, "PhoneVR", "AudioBridge")
 	if err := os.MkdirAll(directory, 0o700); err != nil {
-		return nil, fmt.Errorf("create audio bridge directory: %w", err)
+		return "", fmt.Errorf("create audio bridge directory: %w", err)
 	}
 	digest := sha256.Sum256(data)
 	// A content-addressed executable path avoids replacing an image that may
@@ -56,33 +56,41 @@ func startAudioBridgeProcess(parent context.Context, service *HostService) (*aud
 		}
 		staged, err := os.CreateTemp(directory, "PhoneVRAudioBridge-*.tmp")
 		if err != nil {
-			return nil, fmt.Errorf("stage Windows audio bridge: %w", err)
+			return "", fmt.Errorf("stage Windows audio bridge: %w", err)
 		}
 		temp := staged.Name()
 		if err := staged.Chmod(0o700); err != nil {
 			_ = staged.Close()
 			_ = os.Remove(temp)
-			return nil, fmt.Errorf("set Windows audio bridge permissions: %w", err)
+			return "", fmt.Errorf("set Windows audio bridge permissions: %w", err)
 		}
 		if _, err := staged.Write(data); err != nil {
 			_ = staged.Close()
 			_ = os.Remove(temp)
-			return nil, fmt.Errorf("write staged Windows audio bridge: %w", err)
+			return "", fmt.Errorf("write staged Windows audio bridge: %w", err)
 		}
 		if err := staged.Close(); err != nil {
 			_ = os.Remove(temp)
-			return nil, fmt.Errorf("close staged Windows audio bridge: %w", err)
+			return "", fmt.Errorf("close staged Windows audio bridge: %w", err)
 		}
 		if err := os.Rename(temp, path); err != nil {
 			_ = os.Remove(temp)
 			// Another Host instance may have published the same content-addressed
 			// image concurrently. Accept it only after verifying the exact digest.
 			if existing, readErr := os.ReadFile(path); readErr != nil || sha256.Sum256(existing) != digest {
-				return nil, fmt.Errorf("publish Windows audio bridge: %w", err)
+				return "", fmt.Errorf("publish Windows audio bridge: %w", err)
 			}
 		}
 	}
 
+	return path, nil
+}
+
+func startAudioBridgeProcess(parent context.Context, service *HostService) (*audioBridgeRuntime, error) {
+	path, err := embeddedAudioBridgeExecutable()
+	if err != nil {
+		return nil, err
+	}
 	// Use explicit OS pipes instead of StdoutPipe/StdinPipe. Cmd.Wait closes
 	// the latter as soon as the child exits, which can race the Host's reader
 	// while it drains the final complete PVRA/PVRS record.

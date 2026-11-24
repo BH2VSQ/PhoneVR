@@ -114,6 +114,20 @@ inline DaydreamQuaternion DaydreamToOpenVR(const DaydreamQuaternion& input) {
     return NormalizeQuaternion(input);
 }
 
+// Daydream's normalized touch coordinates increase left-to-right and bottom-to-top.
+// SteamVR trackpad coordinates use +X right and +Y up, so no axis reflection is
+// required. The untouched state is deliberately centered instead of retaining the
+// last finger position.
+inline std::array<double, 2> DaydreamTouchpadToOpenVR(double touchX,
+                                                       double touchY,
+                                                       bool touching) {
+    if (!touching) return {0.0, 0.0};
+    return {
+        std::clamp(touchX * 2.0 - 1.0, -1.0, 1.0),
+        std::clamp(touchY * 2.0 - 1.0, -1.0, 1.0),
+    };
+}
+
 struct DaydreamButtonGestureResult {
     bool pressedEdge = false;
     bool releasedEdge = false;
@@ -190,9 +204,15 @@ public:
                   const DaydreamQuaternion& headOrientation) {
         const DaydreamQuaternion rawOpenVr = DaydreamToOpenVR(rawDaydreamOrientation);
         const DaydreamQuaternion headQ = NormalizeQuaternion(headOrientation);
-        m_orientationAlignment = MultiplyQuaternion(headQ, InverseQuaternion(rawOpenVr));
+        // Recenter yaw only. A full head/controller quaternion match also cancels
+        // controller pitch and roll, which makes pointing directions appear to flip
+        // whenever the user tilts their head or holds the remote at an angle.
+        const DaydreamQuaternion controllerHeading = HorizontalHeadRotation(rawOpenVr);
+        const DaydreamQuaternion headHeading = HorizontalHeadRotation(headQ);
+        m_orientationAlignment = MultiplyQuaternion(
+            headHeading, InverseQuaternion(controllerHeading));
         m_hasOrientationAlignment = true;
-        m_torsoRotation = HorizontalHeadRotation(headQ);
+        m_torsoRotation = headHeading;
         m_torsoInitialized = true;
         m_positionInitialized = false;
         m_lastUpdateNs = 0;

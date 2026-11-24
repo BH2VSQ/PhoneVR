@@ -1,4 +1,4 @@
-# PhoneVR SteamVR Driver — 0.5.34 (Synchronized stream profile handoff)
+# PhoneVR SteamVR Driver — 0.5.35 (Synchronized stream profile handoff)
 
 Windows x64 OpenVR server driver foundation for the PhoneVR wireless HMD.
 
@@ -146,4 +146,4 @@ The driver now pre-initializes the DisplayRedirect D3D11 device and registers th
 
 ## Daydream View controllers
 
-The driver registers `PHONEVR-DAYDREAM-LEFT` and `PHONEVR-DAYDREAM-RIGHT` as separate `TrackedDeviceClass_Controller` devices. It receives validated 56-byte `PVSC` v2 state packets on loopback UDP `127.0.0.1:48108`, assigns `TrackedControllerRole_LeftHand` and `TrackedControllerRole_RightHand`, and updates touchpad, click, trigger-compatibility, menu, system and volume components. Controller orientation is 3DoF. Position is estimated with a GvrArmModel-style head-relative arm model using the controller gyro to adapt torso following; it is an inferred pose and does not provide real hand translation or room-scale tracking. The SteamVR profile and default legacy binding are in `resources/input/`.
+The driver registers `PHONEVR-DAYDREAM-LEFT` and `PHONEVR-DAYDREAM-RIGHT` as separate `TrackedDeviceClass_Controller` devices. It receives validated 56-byte `PVSC` v2 state packets on loopback UDP `127.0.0.1:48108`, assigns `TrackedControllerRole_LeftHand` and `TrackedControllerRole_RightHand`, and updates the Daydream touchpad, click, App/Menu, Home/System and volume components. The touch surface is declared as a SteamVR `trackpad`, with normalized coordinates mapped to X-right/Y-up. Controller orientation is 3DoF. Position is estimated with a GvrArmModel-style head-relative arm model using the controller gyro to adapt torso following; it is an inferred pose and does not provide real hand translation or room-scale tracking. Software recenter aligns horizontal yaw only and preserves controller pitch and roll. The input profile, default legacy binding and VRChat SteamVR Input 2.0 binding for app `steam.app.438100` are in `resources/input/`. See `../docs/vrchat-daydream-controller-binding.md` for the two-hand and one-hand layouts.

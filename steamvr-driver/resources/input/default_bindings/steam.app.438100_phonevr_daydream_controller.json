@@ -1,0 +1,345 @@
+{
+  "action_manifest_version": 0,
+  "app_key": "steam.app.438100",
+  "bindings": {
+    "/actions/global": {
+      "chords": [],
+      "haptics": [],
+      "poses": [
+        {
+          "path": "/user/hand/left/pose/tip",
+          "output": "/actions/global/in/pose"
+        },
+        {
+          "path": "/user/hand/right/pose/tip",
+          "output": "/actions/global/in/pose"
+        }
+      ],
+      "skeleton": [],
+      "sources": [
+        {
+          "path": "/user/hand/left/input/joystick",
+          "mode": "trackpad",
+          "parameters": {
+            "maxzone_pct": "95"
+          },
+          "inputs": {
+            "position": {
+              "output": "/actions/global/in/move"
+            },
+            "click": {
+              "output": "/actions/global/in/interact"
+            }
+          }
+        },
+        {
+          "path": "/user/hand/left/input/menu",
+          "mode": "button",
+          "parameters": {
+            "haptic_amplitude": "0"
+          },
+          "inputs": {
+            "click": {
+              "output": "/actions/global/in/menu"
+            },
+            "held": {
+              "output": "/actions/global/in/menu"
+            },
+            "double": {
+              "output": "/actions/global/in/main_menu"
+            }
+          }
+        },
+        {
+          "path": "/user/hand/left/input/volume_down",
+          "mode": "button",
+          "parameters": {
+            "haptic_amplitude": "0"
+          },
+          "inputs": {
+            "click": {
+              "output": "/actions/global/in/grab"
+            }
+          }
+        },
+        {
+          "path": "/user/hand/left/input/volume_up",
+          "mode": "button",
+          "parameters": {
+            "haptic_amplitude": "0"
+          },
+          "inputs": {
+            "click": {
+              "output": "/actions/global/in/jump"
+            }
+          }
+        },
+        {
+          "path": "/user/hand/right/input/joystick",
+          "mode": "trackpad",
+          "parameters": {
+            "maxzone_pct": "95"
+          },
+          "inputs": {
+            "position": {
+              "output": "/actions/global/in/rotate"
+            },
+            "click": {
+              "output": "/actions/global/in/interact"
+            }
+          }
+        },
+        {
+          "path": "/user/hand/right/input/menu",
+          "mode": "button",
+          "parameters": {
+            "haptic_amplitude": "0"
+          },
+          "inputs": {
+            "click": {
+              "output": "/actions/global/in/menu"
+            },
+            "held": {
+              "output": "/actions/global/in/menu"
+            },
+            "double": {
+              "output": "/actions/global/in/main_menu"
+            }
+          }
+        },
+        {
+          "path": "/user/hand/right/input/volume_down",
+          "mode": "button",
+          "parameters": {
+            "haptic_amplitude": "0"
+          },
+          "inputs": {
+            "click": {
+              "output": "/actions/global/in/grab"
+            }
+          }
+        },
+        {
+          "path": "/user/hand/right/input/volume_up",
+          "mode": "button",
+          "parameters": {
+            "haptic_amplitude": "0"
+          },
+          "inputs": {
+            "click": {
+              "output": "/actions/global/in/jump"
+            }
+          }
+        }
+      ]
+    },
+    "/actions/one_hand": {
+      "chords": [],
+      "haptics": [],
+      "poses": [],
+      "skeleton": [],
+      "sources": [
+        {
+          "path": "/user/hand/left/input/joystick",
+          "mode": "trackpad",
+          "parameters": {
+            "maxzone_pct": "95"
+          },
+          "inputs": {
+            "position": {
+              "output": "/actions/one_hand/in/move_rotate"
+            },
+            "click": {
+              "output": "/actions/one_hand/in/interact"
+            }
+          }
+        },
+        {
+          "path": "/user/hand/left/input/menu",
+          "mode": "button",
+          "parameters": {
+            "haptic_amplitude": "0"
+          },
+          "inputs": {
+            "click": {
+              "output": "/actions/one_hand/in/menu"
+            },
+            "held": {
+              "output": "/actions/one_hand/in/menu"
+            },
+            "double": {
+              "output": "/actions/one_hand/in/main_menu"
+            }
+          }
+        },
+        {
+          "path": "/user/hand/left/input/volume_down",
+          "mode": "button",
+          "parameters": {
+            "haptic_amplitude": "0"
+          },
+          "inputs": {
+            "click": {
+              "output": "/actions/one_hand/in/grab"
+            }
+          }
+        },
+        {
+          "path": "/user/hand/left/input/volume_up",
+          "mode": "button",
+          "parameters": {
+            "haptic_amplitude": "0"
+          },
+          "inputs": {
+            "click": {
+              "output": "/actions/one_hand/in/jump"
+            }
+          }
+        },
+        {
+          "path": "/user/hand/right/input/joystick",
+          "mode": "trackpad",
+          "parameters": {
+            "maxzone_pct": "95"
+          },
+          "inputs": {
+            "position": {
+              "output": "/actions/one_hand/in/move_rotate"
+            },
+            "click": {
+              "output": "/actions/one_hand/in/interact"
+            }
+          }
+        },
+        {
+          "path": "/user/hand/right/input/menu",
+          "mode": "button",
+          "parameters": {
+            "haptic_amplitude": "0"
+          },
+          "inputs": {
+            "click": {
+              "output": "/actions/one_hand/in/menu"
+            },
+            "held": {
+              "output": "/actions/one_hand/in/menu"
+            },
+            "double": {
+              "output": "/actions/one_hand/in/main_menu"
+            }
+          }
+        },
+        {
+          "path": "/user/hand/right/input/volume_down",
+          "mode": "button",
+          "parameters": {
+            "haptic_amplitude": "0"
+          },
+          "inputs": {
+            "click": {
+              "output": "/actions/one_hand/in/grab"
+            }
+          }
+        },
+        {
+          "path": "/user/hand/right/input/volume_up",
+          "mode": "button",
+          "parameters": {
+            "haptic_amplitude": "0"
+          },
+          "inputs": {
+            "click": {
+              "output": "/actions/one_hand/in/jump"
+            }
+          }
+        }
+      ]
+    },
+    "/actions/menu": {
+      "chords": [],
+      "haptics": [],
+      "poses": [],
+      "skeleton": [],
+      "sources": [
+        {
+          "path": "/user/hand/left/input/joystick",
+          "mode": "trackpad",
+          "parameters": {
+            "maxzone_pct": "95"
+          },
+          "inputs": {
+            "position": {
+              "output": "/actions/menu/in/scroll"
+            },
+            "click": {
+              "output": "/actions/menu/in/confirm"
+            }
+          }
+        },
+        {
+          "path": "/user/hand/right/input/joystick",
+          "mode": "trackpad",
+          "parameters": {
+            "maxzone_pct": "95"
+          },
+          "inputs": {
+            "position": {
+              "output": "/actions/menu/in/scroll"
+            },
+            "click": {
+              "output": "/actions/menu/in/confirm"
+            }
+          }
+        }
+      ]
+    },
+    "/actions/action_menu": {
+      "chords": [],
+      "haptics": [],
+      "poses": [],
+      "skeleton": [],
+      "sources": [
+        {
+          "path": "/user/hand/left/input/joystick",
+          "mode": "trackpad",
+          "parameters": {
+            "maxzone_pct": "95"
+          },
+          "inputs": {
+            "position": {
+              "output": "/actions/action_menu/in/axis"
+            },
+            "click": {
+              "output": "/actions/action_menu/in/select"
+            }
+          }
+        },
+        {
+          "path": "/user/hand/right/input/joystick",
+          "mode": "trackpad",
+          "parameters": {
+            "maxzone_pct": "95"
+          },
+          "inputs": {
+            "position": {
+              "output": "/actions/action_menu/in/axis"
+            },
+            "click": {
+              "output": "/actions/action_menu/in/select"
+            }
+          }
+        }
+      ]
+    }
+  },
+  "category": "gamepad",
+  "controller_type": "phonevr_daydream_controller",
+  "description": "PhoneVR Daydream mapping for two-hand and VRChat one-hand play. Left pad moves, right pad rotates, either pad drives one-hand move and rotate.",
+  "name": "PhoneVR Daydream VRChat Default",
+  "options": {
+    "mirror_actions": false,
+    "simulated_controller_type": "none"
+  },
+  "simulated_actions": [],
+  "alias_info": {}
+}

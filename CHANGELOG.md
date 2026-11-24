@@ -1,3 +1,14 @@
+## 0.5.35 - VRChat Daydream controls and axis/recenter correction
+
+- Correct the Daydream touchpad Y direction. Normalized BLE coordinates now map directly to SteamVR trackpad X-right/Y-up, with the untouched pad returning to center.
+- Change the SteamVR input profile from joystick to trackpad and ship a VRChat default binding for app `steam.app.438100`.
+- Preconfigure VRChat two-controller movement: left trackpad moves, right trackpad rotates. The `one_hand` action set maps either available controller to combined Move & Rotate, with Menu, Interact, Grab and Jump still available.
+- Map App as a normal holdable VRChat Menu input. Keep Home short press as System and Home long press as software recenter, preventing App long-press from stealing the Action Menu gesture.
+- Change software recenter to align horizontal yaw only. Preserve controller pitch and roll, and avoid importing HMD pitch/roll into the aim alignment.
+- Bind the physical trackpad click to Interact, menu Confirm and Action Menu Select. App short press opens Quick Menu, App hold opens Action Menu, App double press opens Main Menu; Home short press opens SteamVR System and Home hold for 800 ms recenters. Volume Down maps to Grab and Volume Up maps to Jump.
+- Add touchpad-axis and yaw-only recenter regression tests, SteamVR binding contract checks and `docs/vrchat-daydream-controller-binding.md`.
+- Android metadata is `versionName 0.5.35`, `versionCode 70`; repository, Host, SteamVR driver and AOA metadata are synchronized to `0.5.35`.
+
 ## 0.5.34 - Daydream controller coordinate and paired render-model correction
 
 - Remove the incorrect quaternion reflection between Daydream and OpenVR. Google's Daydream Controller Space and OpenVR both use +X right, +Y up and +Z backward, so the physical controller's forward axis is -Z in both spaces. Preserve the decoded quaternion instead of flipping X/Y signs.

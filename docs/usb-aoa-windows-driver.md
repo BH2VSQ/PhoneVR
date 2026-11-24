@@ -1,6 +1,6 @@
 # PhoneVR USB AOA Bulk transport
 
-PhoneVR 0.5.34 provides a direct USB transport built on Android Open Accessory (AOA). The Windows Host switches the connected Android device into accessory mode, then exchanges a framed byte stream through the AOA interface's Bulk IN and Bulk OUT endpoints.
+PhoneVR 0.5.35 provides a direct USB transport built on Android Open Accessory (AOA). The Windows Host switches the connected Android device into accessory mode, then exchanges a framed byte stream through the AOA interface's Bulk IN and Bulk OUT endpoints.
 
 The USB mode does not use USB tethering, RNDIS, an IP address, ADB commands, ADB bulk data endpoints, or an ADB server. During initial AOA negotiation, Windows may expose the endpoint-zero control handle through a function labelled `Android ADB Interface`; PhoneVR uses that handle only for AOA control requests. After switching, the Host opens AOA accessory interface 0. For product ID `18D1:2D01`, which exposes an additional ADB data interface, PhoneVR leaves that second interface unopened. `18D1:2D00` is the accessory-only product ID.
 
@@ -32,7 +32,7 @@ If Device Manager shows the accessory interface without a WinUSB driver, the Hos
 6. If Windows has not already bound WinUSB to the new AOA accessory interface, bind it once. For `18D1:2D01`, select `MI_00` (Android Accessory Interface), not `MI_01` (Android ADB Interface). The Host then opens interface 0 and the Android app receives the accessory permission prompt. Grant it.
 7. The PhoneVR status should report that USB AOA Bulk is connected. Control, HMD pose and H.264 video then use the same full-duplex USB stream.
 
-The accessory filter descriptors are `VSQ Studio` / `PhoneVR` / `0.5.34`. The accessory mode attach intent can launch the Android app when it is not already running.
+The accessory filter descriptors are `VSQ Studio` / `PhoneVR` / `0.5.35`. The accessory mode attach intent can launch the Android app when it is not already running.
 
 ## Transport framing
 

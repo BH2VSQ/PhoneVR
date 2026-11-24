@@ -14,7 +14,7 @@
   },
   "input_source": {
     "/input/joystick": {
-      "type": "joystick",
+      "type": "trackpad",
       "click": true,
       "touch": true,
       "order": 1
@@ -58,5 +58,11 @@
       "order": 11
     }
   },
-  "legacy_binding": "{phonevr}/input/phonevr_daydream_legacy_bindings.json"
+  "legacy_binding": "{phonevr}/input/phonevr_daydream_legacy_bindings.json",
+  "default_bindings": [
+    {
+      "app_key": "steam.app.438100",
+      "binding_url": "default_bindings/steam.app.438100_phonevr_daydream_controller.json"
+    }
+  ]
 }

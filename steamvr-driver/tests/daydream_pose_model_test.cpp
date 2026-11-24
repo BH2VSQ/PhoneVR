@@ -13,6 +13,14 @@ DaydreamQuaternion Yaw(double radians) {
     return {0.0, std::sin(radians * 0.5), 0.0, std::cos(radians * 0.5)};
 }
 
+DaydreamQuaternion Pitch(double radians) {
+    return {std::sin(radians * 0.5), 0.0, 0.0, std::cos(radians * 0.5)};
+}
+
+DaydreamQuaternion Roll(double radians) {
+    return {0.0, 0.0, std::sin(radians * 0.5), std::cos(radians * 0.5)};
+}
+
 bool Near(double actual, double expected, double epsilon = 1.0e-4) {
     return std::abs(actual - expected) <= epsilon;
 }
@@ -50,6 +58,17 @@ int main() {
     CHECK(Near(rolledUp.x, -1.0));
     CHECK(Near(rolledUp.y, 0.0));
     CHECK(Near(rolledUp.z, 0.0));
+
+    // Daydream BLE touch coordinates are normalized bottom-left to top-right.
+    // SteamVR's trackpad +X/+Y must therefore follow right/up finger movement.
+    const auto untouchedPad = DaydreamTouchpadToOpenVR(0.9, 0.1, false);
+    CHECK(Near(untouchedPad[0], 0.0) && Near(untouchedPad[1], 0.0));
+    const auto padCenter = DaydreamTouchpadToOpenVR(0.5, 0.5, true);
+    CHECK(Near(padCenter[0], 0.0) && Near(padCenter[1], 0.0));
+    const auto padUpperRight = DaydreamTouchpadToOpenVR(1.0, 1.0, true);
+    CHECK(Near(padUpperRight[0], 1.0) && Near(padUpperRight[1], 1.0));
+    const auto padLowerLeft = DaydreamTouchpadToOpenVR(0.0, 0.0, true);
+    CHECK(Near(padLowerLeft[0], -1.0) && Near(padLowerLeft[1], -1.0));
 
     // The arm model places the left/right estimates symmetrically around the head.
     DaydreamArmModel leftModel;
@@ -124,42 +143,29 @@ int main() {
     CHECK(Near(pose.velocity[1], 0.0));
     CHECK(Near(pose.velocity[2], 0.0));
 
-    // App short press remains a menu action.
-    DaydreamButtonGesture shortGesture;
-    auto gesture = shortGesture.Update(true, true, 4000000000ULL);
-    CHECK(gesture.pressedEdge);
-    CHECK(!gesture.longPressTriggered);
-    gesture = shortGesture.Update(true, false, 4200000000ULL);
-    CHECK(gesture.releasedEdge);
-    CHECK(gesture.shortPressTriggered);
-    CHECK(!gesture.suppressMenuPulse);
+    // Recenter corrects horizontal heading only. Controller pitch and roll are
+    // preserved, and HMD pitch/roll do not leak into the controller's aim axis.
+    DaydreamArmModel yawOnlyRecenterModel;
+    const DaydreamQuaternion controllerTilt = MultiplyQuaternion(
+        MultiplyQuaternion(Yaw(kPi / 4.0), Pitch(kPi / 6.0)), Roll(kPi / 9.0));
+    const DaydreamQuaternion tiltedHead = MultiplyQuaternion(
+        MultiplyQuaternion(Yaw(-kPi / 6.0), Pitch(-kPi / 12.0)), Roll(kPi / 18.0));
+    yawOnlyRecenterModel.Recenter(controllerTilt, tiltedHead);
+    const auto yawOnlyPose = yawOnlyRecenterModel.Update(
+        controllerTilt, headPosition, tiltedHead, noControllerGyroscope,
+        3030000000ULL, false);
+    const DaydreamQuaternion expectedYawOnly = MultiplyQuaternion(
+        MultiplyQuaternion(Yaw(-kPi / 6.0), Pitch(kPi / 6.0)), Roll(kPi / 9.0));
+    CHECK(Near(yawOnlyPose.orientation.x, expectedYawOnly.x));
+    CHECK(Near(yawOnlyPose.orientation.y, expectedYawOnly.y));
+    CHECK(Near(yawOnlyPose.orientation.z, expectedYawOnly.z));
+    CHECK(Near(yawOnlyPose.orientation.w, expectedYawOnly.w));
 
-    // An 800 ms App hold triggers exactly one software-recenter request and suppresses the menu.
-    DaydreamButtonGesture longGesture;
-    gesture = longGesture.Update(true, true, 5000000000ULL);
-    CHECK(gesture.pressedEdge);
-    gesture = longGesture.Update(true, true, 5799999999ULL);
-    CHECK(!gesture.longPressTriggered);
-    gesture = longGesture.Update(true, true, 5800000000ULL);
-    CHECK(gesture.longPressTriggered);
-    CHECK(gesture.suppressMenuPulse);
-    gesture = longGesture.Update(true, true, 5900000000ULL);
-    CHECK(!gesture.longPressTriggered);
-    gesture = longGesture.Update(true, false, 5910000000ULL);
-    CHECK(gesture.releasedEdge);
-    CHECK(gesture.suppressMenuPulse);
-    CHECK(!gesture.shortPressTriggered);
-
-    // Gesture timing continues while HMD tracking is unavailable, as long as BLE input is fresh.
-    DaydreamButtonGesture noHmdGesture;
-    gesture = noHmdGesture.Update(true, true, 6000000000ULL);
-    CHECK(gesture.pressedEdge);
-    gesture = noHmdGesture.Update(true, true, 6800000000ULL);
-    CHECK(gesture.longPressTriggered);
-
+    // App is now exposed as a normal held boolean menu input. Home alone keeps
+    // the 800 ms long-press gesture for software recenter.
     // Home short press remains a system-button click; Home long press is also a recenter fallback.
     DaydreamButtonGesture homeGesture;
-    gesture = homeGesture.Update(true, true, 7000000000ULL);
+    auto gesture = homeGesture.Update(true, true, 7000000000ULL);
     CHECK(gesture.pressedEdge);
     gesture = homeGesture.Update(true, false, 7100000000ULL);
     CHECK(gesture.shortPressTriggered);

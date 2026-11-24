@@ -16,7 +16,7 @@
       "sources": [
         {
           "path": "/user/hand/left/input/joystick",
-          "mode": "joystick",
+          "mode": "trackpad",
           "inputs": {
             "click": {
               "output": "/actions/legacy/in/left_axis0_press"
@@ -58,7 +58,7 @@
         },
         {
           "path": "/user/hand/right/input/joystick",
-          "mode": "joystick",
+          "mode": "trackpad",
           "inputs": {
             "click": {
               "output": "/actions/legacy/in/right_axis0_press"
@@ -104,7 +104,7 @@
   "category": "legacy",
   "controller_type": "phonevr_daydream_controller",
   "name": "Default binding for PhoneVR Daydream Controller",
-  "description": "Touchpad click and direction, App and Home buttons",
+  "description": "Daydream touchpad position and click, App menu, Home system button",
   "options": {
     "mirror_actions": false,
     "simulated_controller_type": "none"

@@ -1,5 +1,6 @@
 from pathlib import Path
 import unittest
+import json
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -37,8 +38,39 @@ class DaydreamControllerBuildContractTests(unittest.TestCase):
         self.assertIn('"/pose/tip"', profile)
         self.assertIn('/user/hand/left/pose/tip', legacy)
         self.assertIn('/user/hand/right/pose/tip', legacy)
+        self.assertIn('"type": "trackpad"', profile)
+        binding = json.loads((ROOT / "steamvr-driver/resources/input/default_bindings/steam.app.438100_phonevr_daydream_controller.json").read_text(encoding="utf-8"))
+        self.assertEqual(binding["app_key"], "steam.app.438100")
+        self.assertIn("/actions/global", binding["bindings"])
+        self.assertIn("/actions/one_hand", binding["bindings"])
+        self.assertIn("/actions/menu", binding["bindings"])
+        self.assertIn("/actions/action_menu", binding["bindings"])
+        global_sources = binding["bindings"]["/actions/global"]["sources"]
+        one_hand_sources = binding["bindings"]["/actions/one_hand"]["sources"]
+        self.assertTrue(any(source["path"] == "/user/hand/left/input/joystick" and source["inputs"].get("position", {}).get("output") == "/actions/global/in/move" for source in global_sources))
+        self.assertTrue(any(source["path"] == "/user/hand/right/input/joystick" and source["inputs"].get("position", {}).get("output") == "/actions/global/in/rotate" for source in global_sources))
+        self.assertTrue(all(any(source["path"] == f"/user/hand/{hand}/input/joystick" and source["inputs"].get("position", {}).get("output") == "/actions/one_hand/in/move_rotate" for source in one_hand_sources) for hand in ("left", "right")))
+        menu_sources = binding["bindings"]["/actions/menu"]["sources"]
+        action_menu_sources = binding["bindings"]["/actions/action_menu"]["sources"]
+        for hand in ("left", "right"):
+            self.assertTrue(any(source["path"] == f"/user/hand/{hand}/input/joystick" and source["inputs"].get("position", {}).get("output") == "/actions/menu/in/scroll" for source in menu_sources))
+            self.assertTrue(any(source["path"] == f"/user/hand/{hand}/input/joystick" and source["inputs"].get("click", {}).get("output") == "/actions/menu/in/confirm" for source in menu_sources))
+            self.assertTrue(any(source["path"] == f"/user/hand/{hand}/input/joystick" and source["inputs"].get("position", {}).get("output") == "/actions/action_menu/in/axis" for source in action_menu_sources))
+            self.assertTrue(any(source["path"] == f"/user/hand/{hand}/input/joystick" and source["inputs"].get("click", {}).get("output") == "/actions/action_menu/in/select" for source in action_menu_sources))
+        cmake = (ROOT / "steamvr-driver/CMakeLists.txt").read_text(encoding="utf-8")
+        self.assertIn("install(DIRECTORY resources/ DESTINATION resources OPTIONAL)", cmake)
+        self.assertTrue((ROOT / "steamvr-driver/resources/input/default_bindings/steam.app.438100_phonevr_daydream_controller.json").is_file())
+        for action_set in ("/actions/global", "/actions/one_hand"):
+            for hand in ("left", "right"):
+                app_source = next(source for source in binding["bindings"][action_set]["sources"] if source["path"] == f"/user/hand/{hand}/input/menu")
+                self.assertIn("click", app_source["inputs"])
+                self.assertIn("held", app_source["inputs"])
+                self.assertEqual(app_source["inputs"].get("double", {}).get("output"), f"{action_set}/in/main_menu")
         self.assertIn("class DaydreamButtonGesture", model)
         self.assertIn("kLongPressNs = 800000000ULL", model)
+        self.assertIn("DaydreamTouchpadToOpenVR", model)
+        self.assertIn("controllerHeading = HorizontalHeadRotation(rawOpenVr)", model)
+        self.assertIn("headHeading = HorizontalHeadRotation(headQ)", model)
         self.assertIn(".put(\"gyroscopeX\", state.gyroscopeX.toDouble())", (ROOT / "android/app/src/main/java/com/vsq/phonvrstream/network/NetworkClient.kt").read_text(encoding="utf-8"))
         self.assertIn("GyroscopeX", (ROOT / "windows-host/internal/protocol/controller.go").read_text(encoding="utf-8"))
         self.assertIn("controllerGyroscope", model)
@@ -47,21 +79,21 @@ class DaydreamControllerBuildContractTests(unittest.TestCase):
         self.assertIn("data[4] != 2", driver)
         self.assertIn("state.gyroX", driver)
 
-    def test_app_long_press_is_detected_independent_of_hmd_tracking(self):
+    def test_app_is_holdable_menu_and_home_long_press_recenters(self):
         manager = (ROOT / "android/app/src/main/java/com/vsq/phonvrstream/controller/DaydreamControllerManager.kt").read_text(encoding="utf-8")
         driver = (ROOT / "steamvr-driver/src/driver.cpp").read_text(encoding="utf-8")
         protocol = (ROOT / "android/app/src/main/java/com/vsq/phonvrstream/controller/DaydreamControllerProtocol.kt").read_text(encoding="utf-8")
         self.assertIn("Daydream App button", manager)
         self.assertNotIn("requestHardwareRecenter", manager)
         self.assertNotIn("byteArrayOf(0x00)", manager)
-        self.assertIn("m_appGesture.Update(controllerFresh, state.app, nowNs)", driver)
+        self.assertNotIn("m_appGesture", driver)
         self.assertIn("m_homeGesture.Update(controllerFresh, state.home, nowNs)", driver)
         self.assertIn("m_pendingRecenter = true", driver)
-        self.assertIn("DaydreamButtonGesture m_appGesture", driver)
         self.assertIn("DaydreamButtonGesture m_homeGesture", driver)
+        self.assertIn("connected && state.app", driver)
         self.assertIn("m_systemPulseUntilNs", driver)
-        self.assertLess(driver.index("m_appGesture.Update(controllerFresh, state.app, nowNs)"), driver.index("if (trackingValid) {", driver.index("void Update(const DaydreamControllerSnapshot&")))
         self.assertIn("m_armModel.Recenter(controllerQ, headQ)", driver)
+        self.assertIn("DaydreamTouchpadToOpenVR(state.touchX, state.touchY, state.touching)", driver)
         self.assertIn("CONTROL_CHARACTERISTIC_UUID", protocol)
 
     def test_controller_panel_scroll_view_uses_frame_layout_params(self):

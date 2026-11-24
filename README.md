@@ -1,6 +1,6 @@
 # PhoneVRStream
 
-Repository revision: **0.5.34**. Windows Host: **0.5.34**. Android client: **0.5.34**. Control protocol: **v1**; video packet protocol: **v1**.
+Repository revision: **0.5.35**. Windows Host: **0.5.35**. Android client: **0.5.35**. Control protocol: **v1**; video packet protocol: **v1**.
 
 PhoneVRStream is a multi-component project for using an Android phone as a PC VR streaming HMD. Both applications live in one repository and use independent build/test pipelines.
 
@@ -22,7 +22,7 @@ PhoneVRStream/
 └── dist/                       # Local build output (git-ignored)
 ```
 
-## Windows Host 0.5.34 bundled SteamVR driver
+## Windows Host 0.5.35 bundled SteamVR driver
 
 The virtual display timing is fixed at 72 Hz in this revision. Stream resolution is selected independently using the **Stream Resolution** dialog. The chosen SBS profile changes the driver's recommended target size and capture output, Host raw-frame buffers and H.264 encoder dimensions, plus the Android decoder capability negotiation. SteamVR's own resolution scale controls supersampling before capture and does not replace the PhoneVR stream profile.
 
@@ -50,7 +50,7 @@ The normal `PhoneVRHost.exe` is built with the Windows GUI subsystem and opens t
 
 All helper processes launched by the GUI Host use `CREATE_NO_WINDOW`, including Steam registry discovery, SteamVR driver registration and FFmpeg inventory/preflight/streaming. Their captured output remains available in the Host log. See `docs/2026-11-22-silent-host-child-processes.md`.
 
-## Android client 0.5.34
+## Android client 0.5.35
 
 - Landscape immersive display with OpenGL ES 3.0 stereo rendering.
 - Locally stored optical preset selector with Daydream View v1.0 (2016), Daydream View v2.0 (2017) and Generic Cardboard built-in presets.
@@ -61,7 +61,7 @@ All helper processes launched by the GUI Host use `CREATE_NO_WINDOW`, including 
 - On normal startup, the app discovers the Host over LAN while independently monitoring for an AOA accessory session. The AOA auxiliary session feeds USB video into the same receiver as LAN UDP video and sends pose only when the network control session is unavailable. The explicit **USB AOA 直连** action remains available for USB-only operation. Duplicate AOA startup notifications are coalesced into one connection worker, and Android re-resolves the accessory after permission is granted before opening its descriptor.
 - The connection page and quick menu show whether network control, USB AOA, both paths or neither path are currently connected.
 - Android-owned optical preset synchronization and preset-ID application, plus recenter operations over the TCP control channel.
-- Daydream Controller input provider interface is prepared; actual pairing and input forwarding remain future work.
+- Dual Daydream View BLE controller pairing and input forwarding are implemented, with independent left/right SteamVR controller devices and a bundled VRChat two-hand/one-hand input profile.
 - `CodecCapabilityProbe` enumerates device MediaCodec decoders and advertises hardware H.264 support for the 1280×576, 1600×720, 1920×864 and 2400×1080 SBS profiles at 60 FPS only when the codec reports each exact size/rate combination. `MediaCodec` decodes the negotiated H.264 SBS stream to a `SurfaceTexture`; the OpenGL stereo renderer applies the optical warp independently to the left and right halves.
 - USB AOA video packets are handed from the accessory reader to a dedicated bounded asynchronous dispatcher before local decoder forwarding. This keeps loopback forwarding work off the USB Bulk IN reader and exposes queue/drop/forwarding timing diagnostics.
 - The AOA reader uses 16 KiB raw reads before parsing PVRU headers. The stream decoder reassembles frames split across reads or coalesced by the USB stack; it does not issue 16-byte reads directly to the accessory file descriptor. Android raw-read sizes and PVRU CRC32 values are logged for diagnosis.
@@ -71,7 +71,7 @@ All helper processes launched by the GUI Host use `CREATE_NO_WINDOW`, including 
 
 Audio transport is not implemented in 0.5.26. The current build has no WASAPI capture/render workers, Android `AudioRecord`/`AudioTrack` path, audio packet protocol or virtual headset audio endpoints. The SteamVR input/output selectors therefore cannot provide end-to-end phone audio by themselves. The proposed two-way architecture and Windows endpoint requirements are documented in `docs/audio-streaming-architecture.md`.
 
-## SteamVR driver 0.5.34
+## SteamVR driver 0.5.35
 
 The PhoneVR Host contains its own Windows x64 OpenVR driver inside the Host executable. The normal build compiles `steamvr-driver/`, embeds the resulting manifest, DLL and resources into both Host executables, and no longer asks users to download or select a ZIP. On startup, the Host checks whether SteamVR is installed and whether the user has disabled automatic deployment. When enabled, it copies the embedded driver into a content-versioned directory under `%LOCALAPPDATA%\PhoneVR\SteamVRDriver` and registers it with SteamVR's own `vrpathreg.exe`.
 
@@ -102,7 +102,7 @@ The real-time video path captures the final SteamVR SBS backbuffer at up to 60 F
 
 ## Daydream View dual-controller input
 
-The Android controller panel scans for Daydream Controller BLE devices and assigns one remote to the left hand and one to the right hand. Each assignment is saved separately and restored on later launches. The 19-byte BLE report is decoded locally, then controller snapshots travel on the TCP control channel. Windows Host forwards separate validated `PVSC` packets to the SteamVR driver over loopback UDP `48108`. SteamVR registers two controller devices with touchpad axes/click, trigger compatibility alias, App/Menu, Home/System and volume buttons. HMD pose continues on the independent `PVSP` channel. See `docs/daydream-controller-integration.md` for protocol, mapping and limitations.
+The Android controller panel scans for Daydream Controller BLE devices and assigns one remote to the left hand and one to the right hand. Each assignment is saved separately and restored on later launches. The 19-byte BLE report is decoded locally, then controller snapshots travel on the TCP control channel. Windows Host forwards separate validated `PVSC` packets to the SteamVR driver over loopback UDP `48108`. SteamVR registers independent left/right controller devices with a Daydream touchpad, App/Menu, Home/System and volume buttons. The VRChat SteamVR Input 2.0 default binding maps left touchpad to movement and right touchpad to smooth rotation. VRChat's `one_hand` action set maps either surviving controller to combined movement and rotation. See `docs/vrchat-daydream-controller-binding.md` for the complete layout and limitations.
 
 ## Current limitations
 

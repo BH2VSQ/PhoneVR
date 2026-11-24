@@ -1,21 +1,25 @@
-# PhoneVR 0.5.34 build status
+# PhoneVR 0.5.35 build status
 
-## This revision (0.5.34)
+## This revision (0.5.35)
 
-- Daydream Start Space and OpenVR share the same right-handed coordinate basis (+X right, +Y up, +Z backward). Removed the prior X/Y quaternion sign reflection that inverted pitch and yaw direction. Local controller forward remains -Z.
-- Preserve the raw Daydream orientation on first connection. An HMD-relative alignment is now applied only after an explicit software recenter request, avoiding an unrequested first-frame aim snap.
-- Set `Prop_RenderModelName_String` independently for left and right devices to `oculus_quest2_controller_left` and `oculus_quest2_controller_right`. The input profile remains `controller_handed`, with independent left/right binding artwork.
-- Add `/pose/tip` to the input profile and route legacy left/right pose actions through the model tip component. `/pose/raw` remains available for diagnostics and raw-pose consumers.
-- Android metadata is `versionName 0.5.34`, `versionCode 69`; repository, Host, SteamVR driver and AOA metadata are synchronized to `0.5.34`.
+- Fix Daydream touchpad axis mapping. BLE normalized X/Y now map to SteamVR trackpad X-right/Y-up, and the no-touch state is centered.
+- Declare `/input/joystick` as a `trackpad` source in the SteamVR input profile and legacy bindings.
+- Ship a SteamVR default binding for VRChat (`steam.app.438100`): left pad Move, right pad Rotate, trackpad click Interact, App Menu, Volume Down Grab and Volume Up Jump. The VRChat `one_hand` action set maps either hand's pad to Move & Rotate and retains Menu, Interact, Grab and Jump.
+- Bind physical trackpad clicks to Interact, Menu Confirm and Action Menu Select. App short/held/double actions map to Quick Menu, Action Menu and Main Menu; Home short press remains System and Home long press remains the recenter gesture. Volume Down maps to Grab and Volume Up maps to Jump.
+- Change software recenter from full-quaternion alignment to horizontal-yaw alignment. Preserve controller pitch/roll, and do not fold headset pitch/roll into the controller aim reference.
+- Add C++ regression checks for trackpad directions and yaw-only recenter, Python release-contract checks for the VRChat default binding, and `docs/vrchat-daydream-controller-binding.md`.
+- Android metadata is `versionName 0.5.35`, `versionCode 70`; repository, Host, SteamVR driver and AOA metadata are synchronized to `0.5.35`.
 
-## 0.5.34 validation status
+## 0.5.35 validation status
 
-- `steamvr-driver/tests/daydream_pose_model_test.cpp` compiled with `c++ -std=c++17 -Wall -Wextra -Werror -pedantic` and passed. Tests cover yaw direction, pitch-up direction, roll direction, direct startup quaternion preservation, arm-model behavior and explicit recenter.
-- `python3 -m unittest discover -s tools/release -p 'test_*.py'`: passed, 72 tests.
-- `cd windows-host && go test ./...`: passed. `go test -race ./...` and `go vet ./...`: passed.
-- `GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build ./cmd/phonevr-host`: passed.
-- Both SteamVR input-profile JSON files parsed successfully. `git diff --check`: passed.
-- Windows MSVC SteamVR driver build, Android Gradle APK build and physical SteamVR render-model/aim verification are not available in this Linux environment and remain pending.
+- `steamvr-driver/tests/daydream_pose_model_test.cpp`: compiled with `c++ -std=c++17 -Wall -Wextra -Werror -pedantic` and passed, including trackpad X/Y direction and yaw-only recenter tests.
+- `python -m unittest discover -v -s tools/release -p 'test_*.py'`: passed, 72 tests.
+- `cd windows-host && go test ./...`: passed.
+- `cd windows-host && go test -race ./...`: passed.
+- `cd windows-host && go vet ./...`: passed.
+- `cd windows-host && GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -o /tmp/PhoneVRHost-0.5.35.exe ./cmd/phonevr-host`: passed.
+- VRChat default binding, SteamVR input profile and recursive CMake resource installation are validated by the release contract test.
+- Windows MSVC SteamVR driver compilation and physical SteamVR/VRChat play tests are not available in this Linux environment and remain pending. Android APK packaging was not run because this revision changes no Android runtime source and no Android SDK is configured.
 
 ## Previous build status: 0.5.25
 
@@ -66,7 +70,7 @@
 - Add SteamVR virtual-display timing telemetry for maximum `Present` callback interval, intervals exceeding 1.5 and 3 nominal 72 Hz periods, pending-Present overwrites, actual `WaitForPresent` wake overshoot, missed virtual VSync ticks, and keyed-mutex acquisition failures.
 - Emit the counters in the existing five-second `virtual display` driver diagnostic line. The new counters are observational only. The 72 Hz clock, 60 FPS capture ceiling, pose prediction, D3D11 capture behavior and H.264 encoder configuration are unchanged.
 - Keep the 800x720 per-eye render target, 1600x720 SBS stream and 8 Mbps H.264 target unchanged. A higher-resolution profile needs end-to-end capability negotiation and runtime performance validation.
-- Android metadata is `versionName 0.5.29`, `versionCode 64`; repository, Host, SteamVR driver and AOA accessory metadata are synchronized to `0.5.29`.
+- Android metadata is `versionName 0.5.35`, `versionCode 70`; repository, Host, SteamVR driver and AOA accessory metadata are synchronized to `0.5.35`.
 
 ## 0.5.23 validation status
 

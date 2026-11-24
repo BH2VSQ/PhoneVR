@@ -108,9 +108,10 @@ inline DaydreamQuaternion NlerpIdentity(const DaydreamQuaternion& target, double
 }
 
 inline DaydreamQuaternion DaydreamToOpenVR(const DaydreamQuaternion& input) {
-    // Daydream's controller-local +Z is forward; OpenVR's controller-local -Z is forward.
-    // This basis conversion preserves a right-handed rotation while changing the forward axis.
-    return NormalizeQuaternion({-input.x, -input.y, input.z, input.w});
+    // Google Daydream Controller Space and OpenVR use the same right-handed basis:
+    // +X right, +Y up, +Z backward. Therefore the physical controller's forward
+    // direction is -Z in both APIs and the quaternion must not be reflected.
+    return NormalizeQuaternion(input);
 }
 
 struct DaydreamButtonGestureResult {
@@ -209,12 +210,6 @@ public:
         DaydreamPoseOutput output{};
         const DaydreamQuaternion rawOpenVr = DaydreamToOpenVR(rawDaydreamOrientation);
         const DaydreamQuaternion headQ = NormalizeQuaternion(headOrientation);
-
-        if (!m_hasOrientationAlignment) {
-            // Establish an intuitive initial reference; a deliberate App long-press can
-            // recalibrate it later without depending on this first-packet assumption.
-            Recenter(rawDaydreamOrientation, headQ);
-        }
 
         const DaydreamQuaternion controllerWorldQ =
             MultiplyQuaternion(m_orientationAlignment, rawOpenVr);
@@ -377,7 +372,9 @@ private:
 
     DaydreamQuaternion m_orientationAlignment{};
     DaydreamQuaternion m_torsoRotation{};
-    bool m_hasOrientationAlignment = false;
+    // Google defines Daydream Start Space to coincide with headset space when
+    // tracking starts. Keep the raw quaternion until the user explicitly recenters.
+    bool m_hasOrientationAlignment = true;
     bool m_torsoInitialized = false;
     bool m_positionInitialized = false;
     uint64_t m_lastUpdateNs = 0;

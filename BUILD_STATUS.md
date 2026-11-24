@@ -1,26 +1,21 @@
-# PhoneVR 0.5.33 build status
+# PhoneVR 0.5.34 build status
 
-## This revision (0.5.33)
+## This revision (0.5.34)
 
-- Correct Daydream XKF3 packed sensor axis mapping. Orientation, accelerometer and gyroscope fields are decoded from wire order X/Z/Y into logical X/Y/Z.
-- Remove the undocumented FE55 Control Characteristic `0x00` write. The reverse-engineered reference only identifies this characteristic as write-only and does not define that payload as a recenter command.
-- Detect App and Home button short/long gestures in a SteamVR-side state machine driven by fresh BLE input, independently of HMD tracking validity. Short App remains Menu, short Home remains System, and holding either for approximately 800 ms queues a software recenter until a valid HMD pose is available.
-- Add Android Logcat and SteamVR `vrserver.txt` diagnostics for button edges, long-press recognition and recenter application.
-- Implement a Google GvrArmModel-style head-relative arm estimate. Feed the Daydream controller gyro vector through Android JSON, Host validation and a version-2 56-byte `PVSC` loopback packet so torso-following uses controller gyro magnitude as in Google's reference model.
-- Reset arm-model smoothing and linear/angular velocity history on recenter to avoid carrying stale motion into the recalibrated pose.
-- Android metadata is `versionName 0.5.33`, `versionCode 68`; repository, Host, SteamVR driver and AOA accessory metadata are synchronized to `0.5.33`.
+- Daydream Start Space and OpenVR share the same right-handed coordinate basis (+X right, +Y up, +Z backward). Removed the prior X/Y quaternion sign reflection that inverted pitch and yaw direction. Local controller forward remains -Z.
+- Preserve the raw Daydream orientation on first connection. An HMD-relative alignment is now applied only after an explicit software recenter request, avoiding an unrequested first-frame aim snap.
+- Set `Prop_RenderModelName_String` independently for left and right devices to `oculus_quest2_controller_left` and `oculus_quest2_controller_right`. The input profile remains `controller_handed`, with independent left/right binding artwork.
+- Add `/pose/tip` to the input profile and route legacy left/right pose actions through the model tip component. `/pose/raw` remains available for diagnostics and raw-pose consumers.
+- Android metadata is `versionName 0.5.34`, `versionCode 69`; repository, Host, SteamVR driver and AOA metadata are synchronized to `0.5.34`.
 
-## 0.5.33 validation status
+## 0.5.34 validation status
 
+- `steamvr-driver/tests/daydream_pose_model_test.cpp` compiled with `c++ -std=c++17 -Wall -Wextra -Werror -pedantic` and passed. Tests cover yaw direction, pitch-up direction, roll direction, direct startup quaternion preservation, arm-model behavior and explicit recenter.
 - `python3 -m unittest discover -s tools/release -p 'test_*.py'`: passed, 72 tests.
-- `steamvr-driver/tests/daydream_pose_model_test.cpp` compiled with `c++ -std=c++17 -Wall -Wextra -Werror -pedantic` and passed, covering arm-model position, controller-gyro torso response, App/Home short and long gestures, and recenter state reset.
-- Kotlin Daydream parser sources compiled with `kotlinc`; direct packed-axis checks passed. Android Gradle unit tests and APK packaging were not run because no Android SDK is configured in this environment.
-- `cd windows-host && go test ./...`: passed.
-- `cd windows-host && go test -race ./...`: passed.
-- `cd windows-host && go vet ./...`: passed.
-- The Windows AMD64 Host cross-compile is checked separately during release packaging. Full SteamVR Windows/MSVC driver build and physical Daydream controller testing remain unverified.
-- Runtime verification required: Android Logcat should show App/Home button down/up, then SteamVR `vrserver.txt` should show receipt and long-press recognition. After HMD tracking becomes valid, the driver should log that software recenter was applied.
-- The position remains a 3DoF kinematic estimate. Real hand translation, user-specific arm dimensions and shoulder geometry cannot be recovered from the Daydream remote alone.
+- `cd windows-host && go test ./...`: passed. `go test -race ./...` and `go vet ./...`: passed.
+- `GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build ./cmd/phonevr-host`: passed.
+- Both SteamVR input-profile JSON files parsed successfully. `git diff --check`: passed.
+- Windows MSVC SteamVR driver build, Android Gradle APK build and physical SteamVR render-model/aim verification are not available in this Linux environment and remain pending.
 
 ## Previous build status: 0.5.25
 

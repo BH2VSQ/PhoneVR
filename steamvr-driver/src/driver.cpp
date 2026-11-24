@@ -1937,11 +1937,17 @@ public:
         const auto container = properties->TrackedDeviceToPropertyContainer(objectId);
         const char* serial = m_isLeft ? "PHONEVR-DAYDREAM-LEFT" : "PHONEVR-DAYDREAM-RIGHT";
         properties->SetStringProperty(container, vr::Prop_TrackingSystemName_String, "phonevr");
-        properties->SetStringProperty(container, vr::Prop_ModelNumber_String, "Google Daydream Controller");
+        properties->SetStringProperty(container, vr::Prop_ModelNumber_String,
+                                       m_isLeft ? "PhoneVR Daydream Left Controller" : "PhoneVR Daydream Right Controller");
         properties->SetStringProperty(container, vr::Prop_SerialNumber_String, serial);
         properties->SetStringProperty(container, vr::Prop_ManufacturerName_String, "Google");
-        properties->SetStringProperty(container, vr::Prop_RegisteredDeviceType_String, "phonevr/phonevr_daydream_controller");
+        properties->SetStringProperty(container, vr::Prop_RegisteredDeviceType_String,
+                                       m_isLeft ? "phonevr/phonevr_daydream_controller_left" : "phonevr/phonevr_daydream_controller_right");
         properties->SetStringProperty(container, vr::Prop_ControllerType_String, "phonevr_daydream_controller");
+        // Use SteamVR's native left/right Quest 2 render models so the pair is
+        // rendered as two handed controllers instead of the generic fallback.
+        properties->SetStringProperty(container, vr::Prop_RenderModelName_String,
+                                       m_isLeft ? "oculus_quest2_controller_left" : "oculus_quest2_controller_right");
         properties->SetStringProperty(container, vr::Prop_ResourceRoot_String, "phonevr");
         properties->SetStringProperty(container, vr::Prop_InputProfilePath_String,
                                        "{phonevr}/input/phonevr_daydream_controller_profile.json");
@@ -1985,9 +1991,10 @@ public:
         if (auto* host = vr::VRServerDriverHost())
             host->TrackedDevicePoseUpdated(objectId, pose, sizeof(pose));
         if (vr::VRDriverLog()) {
-            char line[200]{};
-            std::snprintf(line, sizeof(line), "PhoneVR: registered Daydream %s controller device objectId=%u (3DoF)",
-                          m_isLeft ? "left" : "right", objectId);
+            char line[256]{};
+            std::snprintf(line, sizeof(line), "PhoneVR: registered Daydream %s controller device objectId=%u renderModel=%s (3DoF)",
+                          m_isLeft ? "left" : "right", objectId,
+                          m_isLeft ? "oculus_quest2_controller_left" : "oculus_quest2_controller_right");
             vr::VRDriverLog()->Log(line);
         }
         return vr::VRInitError_None;
@@ -2213,7 +2220,7 @@ public:
         if (!host->TrackedDeviceAdded("PHONEVR-DAYDREAM-RIGHT", vr::TrackedDeviceClass_Controller, m_rightController)) {
             Cleanup(); return vr::VRInitError_Driver_Unknown;
         }
-        if (vr::VRDriverLog()) vr::VRDriverLog()->Log("PhoneVR 0.5.33 DisplayRedirect and dual Daydream controller devices registered");
+        if (vr::VRDriverLog()) vr::VRDriverLog()->Log("PhoneVR 0.5.34 DisplayRedirect and dual Daydream controller devices registered");
         return vr::VRInitError_None;
     }
     void Cleanup() override {

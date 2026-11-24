@@ -31,12 +31,25 @@ int main() {
     const std::array<double, 3> headPosition{0.0, 1.65, 0.0};
     const std::array<double, 3> noControllerGyroscope{0.0, 0.0, 0.0};
 
-    // Daydream and OpenVR use different local forward-axis conventions.
+    // Google Daydream Start/Controller Space and OpenVR share the same basis:
+    // +X right, +Y up, +Z backward. The physical controller points along local -Z.
     const auto convertedYaw = DaydreamToOpenVR(Yaw(kPi / 2.0));
-    const auto convertedForward = RotateVector(convertedYaw, {0.0, 0.0, -1.0});
-    CHECK(Near(convertedForward.x, 1.0));
-    CHECK(Near(convertedForward.y, 0.0));
-    CHECK(Near(convertedForward.z, 0.0));
+    const auto yawForward = RotateVector(convertedYaw, {0.0, 0.0, -1.0});
+    CHECK(Near(yawForward.x, -1.0)); // Positive Y yaw turns the forward vector to the left.
+    CHECK(Near(yawForward.y, 0.0));
+    CHECK(Near(yawForward.z, 0.0));
+
+    const DaydreamQuaternion qPitchUp{std::sin(kPi / 4.0), 0.0, 0.0, std::cos(kPi / 4.0)};
+    const auto pitchForward = RotateVector(DaydreamToOpenVR(qPitchUp), {0.0, 0.0, -1.0});
+    CHECK(Near(pitchForward.x, 0.0));
+    CHECK(Near(pitchForward.y, 1.0));
+    CHECK(Near(pitchForward.z, 0.0));
+
+    const DaydreamQuaternion rollLeft{0.0, 0.0, std::sin(kPi / 4.0), std::cos(kPi / 4.0)};
+    const auto rolledUp = RotateVector(DaydreamToOpenVR(rollLeft), {0.0, 1.0, 0.0});
+    CHECK(Near(rolledUp.x, -1.0));
+    CHECK(Near(rolledUp.y, 0.0));
+    CHECK(Near(rolledUp.z, 0.0));
 
     // The arm model places the left/right estimates symmetrically around the head.
     DaydreamArmModel leftModel;
@@ -56,7 +69,7 @@ int main() {
     const auto neutralPose = raisingModel.Update({}, headPosition, {}, noControllerGyroscope,
                                                   2000000000ULL, false);
     const double halfPitch = kPi / 8.0;
-    const DaydreamQuaternion pitchUp{-std::sin(halfPitch), 0.0, 0.0, std::cos(halfPitch)};
+    const DaydreamQuaternion pitchUp{std::sin(halfPitch), 0.0, 0.0, std::cos(halfPitch)};
     const auto raisedPose = raisingModel.Update(pitchUp, headPosition, {}, noControllerGyroscope,
                                                  2010000000ULL, false);
     CHECK(raisedPose.position[1] > neutralPose.position[1]);
@@ -83,6 +96,15 @@ int main() {
         std::pow(lowGyroPose.position[1] - highGyroPose.position[1], 2.0) +
         std::pow(lowGyroPose.position[2] - highGyroPose.position[2], 2.0));
     CHECK(gyroDrivenPositionDelta > 0.009);
+
+    // Initial tracking preserves Google's Start Space orientation without an implicit HMD snap.
+    DaydreamArmModel directOrientationModel;
+    const auto directOrientationPose = directOrientationModel.Update(
+        qPitchUp, headPosition, {}, noControllerGyroscope, 2900000000ULL, false);
+    CHECK(Near(directOrientationPose.orientation.x, qPitchUp.x));
+    CHECK(Near(directOrientationPose.orientation.y, qPitchUp.y));
+    CHECK(Near(directOrientationPose.orientation.z, qPitchUp.z));
+    CHECK(Near(directOrientationPose.orientation.w, qPitchUp.w));
 
     // An explicit software recenter aligns the controller's current aim with HMD forward.
     DaydreamArmModel recenterModel;

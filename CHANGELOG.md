@@ -1,3 +1,12 @@
+## 0.5.34 - Daydream controller coordinate and paired render-model correction
+
+- Remove the incorrect quaternion reflection between Daydream and OpenVR. Google's Daydream Controller Space and OpenVR both use +X right, +Y up and +Z backward, so the physical controller's forward axis is -Z in both spaces. Preserve the decoded quaternion instead of flipping X/Y signs.
+- Stop implicitly snapping the first controller sample to the HMD forward direction. Preserve Daydream Start Space at startup; only an explicit App/Home long-press applies a software recenter offset.
+- Set explicit SteamVR left/right render-model properties to the native Oculus Quest 2 left and right controller models. This prevents SteamVR from selecting a generic fallback model for both tracked devices.
+- Expose `/pose/tip` in the controller input profile and map legacy left/right pose actions to the model's tip component, while keeping `/pose/raw` available for raw tracking.
+- Add axis-direction regression tests for positive yaw, pitch-up and roll, plus checks for independent left/right render models and handed binding UI.
+- Android versionName/versionCode are `0.5.34`/`69`; repository, Host, SteamVR driver and AOA metadata are synchronized to `0.5.34`.
+
 ## 0.5.33 - Daydream controller tracking and recenter fixes
 
 - Fix XKF3 orientation, accelerometer and gyroscope axis assignment from wire order X/Z/Y to logical X/Y/Z.

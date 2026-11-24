@@ -52,6 +52,10 @@
     "/pose/raw": {
       "type": "pose",
       "order": 10
+    },
+    "/pose/tip": {
+      "type": "pose",
+      "order": 11
     }
   },
   "legacy_binding": "{phonevr}/input/phonevr_daydream_legacy_bindings.json"

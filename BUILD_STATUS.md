@@ -1,4 +1,4 @@
-# PhoneVR 0.5.35 build status
+# PhoneVR 1.0.0 build status
 
 
 ## Current implementation status (0.5.35)
@@ -78,7 +78,7 @@
 - Add SteamVR virtual-display timing telemetry for maximum `Present` callback interval, intervals exceeding 1.5 and 3 nominal 72 Hz periods, pending-Present overwrites, actual `WaitForPresent` wake overshoot, missed virtual VSync ticks, and keyed-mutex acquisition failures.
 - Emit the counters in the existing five-second `virtual display` driver diagnostic line. The new counters are observational only. The 72 Hz clock, 60 FPS capture ceiling, pose prediction, D3D11 capture behavior and H.264 encoder configuration are unchanged.
 - Keep the 800x720 per-eye render target, 1600x720 SBS stream and 8 Mbps H.264 target unchanged. A higher-resolution profile needs end-to-end capability negotiation and runtime performance validation.
-- Android metadata is `versionName 0.5.35`, `versionCode 70`; repository, Host, SteamVR driver and AOA accessory metadata are synchronized to `0.5.35`.
+- Android metadata is `versionName 1.0.0`, `versionCode 71`; repository, Host, SteamVR driver and AOA accessory metadata are synchronized to `1.0.0`.
 
 ## 0.5.23 validation status
 

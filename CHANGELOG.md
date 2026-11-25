@@ -1,3 +1,8 @@
+## 1.0.0 - Automated release
+
+- Android versionName and versionCode bumped by the manual release workflow.
+- Windows Host version metadata updated from the repository VERSION file.
+
 ## 0.5.35 - Daydream continuous movement, orientation and recenter correction
 
 - Remove the PC-to-phone audio playback and phone-microphone audio uplink transport from LAN and USB AOA paths. PhoneVR now streams video, head pose and controller state only.

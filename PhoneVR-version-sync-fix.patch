@@ -1,0 +1,110 @@
+diff --git a/.github/workflows/release.yml b/.github/workflows/release.yml
+index 48594e4..cac1e94 100644
+--- a/.github/workflows/release.yml
++++ b/.github/workflows/release.yml
+@@ -13,7 +13,7 @@ on:
+           - major
+         default: patch
+       release_tag:
+-        description: Existing tag to rebuild and publish without creating a new version
++        description: Repoint this existing tag to the selected branch commit and rebuild without bumping the version
+         required: false
+         type: string
+         default: ""
+@@ -77,21 +77,24 @@ jobs:
+             echo "Release tag does not exist in this repository: $tag" >&2
+             exit 1
+           fi
+-          version="$(git show "${tag}:VERSION" | tr -d '\r\n')"
++          version="$(tr -d '\r\n' < VERSION)"
+           if [[ "v${version}" != "$tag" ]]; then
+-            echo "Tag and VERSION file do not match: $tag / $version" >&2
++            echo "Selected branch VERSION does not match requested tag: $tag / $version" >&2
+             exit 1
+           fi
+-          version_code="$(git show "${tag}:android/app/build.gradle.kts" | sed -nE 's/^[[:space:]]*versionCode[[:space:]]*=[[:space:]]*([0-9]+).*$/\1/p' | head -n1)"
++          version_code="$(sed -nE 's/^[[:space:]]*versionCode[[:space:]]*=[[:space:]]*([0-9]+).*$/\1/p' android/app/build.gradle.kts | head -n1)"
+           if [[ ! "$version_code" =~ ^[0-9]+$ ]]; then
+-            echo "Could not read Android versionCode from $tag" >&2
++            echo "Could not read Android versionCode from current branch" >&2
+             exit 1
+           fi
++          # Repoint the existing release tag to this synchronized branch commit.
++          git tag --force --annotate "$tag" --message "PhoneVRStream ${version}"
++          git push --force origin "refs/tags/${tag}"
+           echo "version=${version}" >> "$GITHUB_OUTPUT"
+           echo "version_code=${version_code}" >> "$GITHUB_OUTPUT"
+           echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+-          echo "release_sha=$(git rev-list -n1 "$tag")" >> "$GITHUB_OUTPUT"
+-          echo "Reusing existing release tag: $tag (Android versionCode $version_code)"
++          echo "release_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
++          echo "Repointed release tag: $tag (Android versionCode $version_code)"
+ 
+       - name: Commit version bump and push release tag
+         id: commit
+@@ -100,9 +103,7 @@ jobs:
+         run: |
+           git config user.name "github-actions[bot]"
+           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+-          git add VERSION CHANGELOG.md BUILD_STATUS.md README.md .gitignore android/app/build.gradle.kts \
+-            android/app/src/main/java/com/vsq/phonvrstream/network/NetworkClient.kt \
+-            windows-host scripts steamvr-driver tools .github/workflows/ci.yml .github/workflows/release.yml
++          git add -A
+           git commit -m "chore(release): ${{ steps.version.outputs.tag }}"
+           git tag -a "${{ steps.version.outputs.tag }}" -m "PhoneVRStream ${{ steps.version.outputs.version }}"
+           git push origin "HEAD:${GITHUB_REF_NAME}"
+diff --git a/android/app/src/main/res/xml/accessory_filter.xml b/android/app/src/main/res/xml/accessory_filter.xml
+index ae198c6..d2215b0 100644
+--- a/android/app/src/main/res/xml/accessory_filter.xml
++++ b/android/app/src/main/res/xml/accessory_filter.xml
+@@ -1,4 +1,4 @@
+ <?xml version="1.0" encoding="utf-8"?>
+ <resources>
+-    <usb-accessory manufacturer="VSQ Studio" model="PhoneVR" version="0.5.35" />
++    <usb-accessory manufacturer="VSQ Studio" model="PhoneVR" version="1.0.0" />
+ </resources>
+diff --git a/docs/usb-aoa-windows-driver.md b/docs/usb-aoa-windows-driver.md
+index 247b3da..1614c8d 100644
+--- a/docs/usb-aoa-windows-driver.md
++++ b/docs/usb-aoa-windows-driver.md
+@@ -1,6 +1,6 @@
+ # PhoneVR USB AOA Bulk transport
+ 
+-PhoneVR 0.5.35 provides a direct USB transport built on Android Open Accessory (AOA). The Windows Host switches the connected Android device into accessory mode, then exchanges a framed byte stream through the AOA interface's Bulk IN and Bulk OUT endpoints.
++PhoneVR 1.0.0 provides a direct USB transport built on Android Open Accessory (AOA). The Windows Host switches the connected Android device into accessory mode, then exchanges a framed byte stream through the AOA interface's Bulk IN and Bulk OUT endpoints.
+ 
+ The USB mode does not use USB tethering, RNDIS, an IP address, ADB commands, ADB bulk data endpoints, or an ADB server. During initial AOA negotiation, Windows may expose the endpoint-zero control handle through a function labelled `Android ADB Interface`; PhoneVR uses that handle only for AOA control requests. After switching, the Host opens AOA accessory interface 0. For product ID `18D1:2D01`, which exposes an additional ADB data interface, PhoneVR leaves that second interface unopened. `18D1:2D00` is the accessory-only product ID.
+ 
+@@ -32,7 +32,7 @@ If Device Manager shows the accessory interface without a WinUSB driver, the Hos
+ 6. If Windows has not already bound WinUSB to the new AOA accessory interface, bind it once. For `18D1:2D01`, select `MI_00` (Android Accessory Interface), not `MI_01` (Android ADB Interface). The Host then opens interface 0 and the Android app receives the accessory permission prompt. Grant it.
+ 7. The PhoneVR status should report that USB AOA Bulk is connected. Control, HMD pose and H.264 video then use the same full-duplex USB stream.
+ 
+-The accessory filter descriptors are `VSQ Studio` / `PhoneVR` / `0.5.35`. The accessory mode attach intent can launch the Android app when it is not already running.
++The accessory filter descriptors are `VSQ Studio` / `PhoneVR` / `1.0.0`. The accessory mode attach intent can launch the Android app when it is not already running.
+ 
+ ## Transport framing
+ 
+diff --git a/tools/release/test_network_discovery.py b/tools/release/test_network_discovery.py
+index e5aa95c..762c7d9 100644
+--- a/tools/release/test_network_discovery.py
++++ b/tools/release/test_network_discovery.py
+@@ -61,6 +61,8 @@ class NetworkDiscoveryTests(unittest.TestCase):
+         aoa = (ROOT / "windows-host/internal/aoa/aoa_windows.go").read_text(encoding="utf-8")
+         accessory_filter = (ROOT / "android/app/src/main/res/xml/accessory_filter.xml").read_text(encoding="utf-8")
+         driver = (ROOT / "steamvr-driver/src/driver.cpp").read_text(encoding="utf-8")
++        aoa_doc = (ROOT / "docs/usb-aoa-windows-driver.md").read_text(encoding="utf-8")
++        release_workflow = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
+         self.assertRegex(version, r"^\d+\.\d+\.\d+$")
+         self.assertIn(f'versionName = "{version}"', gradle)
+         self.assertRegex(gradle, r"versionCode\s*=\s*\d+")
+@@ -70,6 +72,10 @@ class NetworkDiscoveryTests(unittest.TestCase):
+         self.assertIn(f'version="{version}"', accessory_filter)
+         self.assertIn(f"VERSION {version} LANGUAGES CXX", cmake)
+         self.assertIn(f"PhoneVR {version} DisplayRedirect", driver)
++        self.assertIn(f"PhoneVR {version} provides a direct USB transport", aoa_doc)
++        self.assertIn(f"`VSQ Studio` / `PhoneVR` / `{version}`", aoa_doc)
++        self.assertRegex(release_workflow, r"(?m)^\s+git add -A$")
++        self.assertIn('git push --force origin "refs/tags/${tag}"', release_workflow)
+ 
+ 
+ if __name__ == "__main__":

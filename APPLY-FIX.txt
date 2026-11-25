@@ -1,0 +1,24 @@
+PhoneVR 1.0.0 version metadata synchronization fix
+
+Apply from the PhoneVR repository root, on the main branch:
+
+  git apply --check PhoneVR-version-sync-fix.patch
+  git apply PhoneVR-version-sync-fix.patch
+  python -m unittest discover -s tools/release -p "test_*.py"
+  git diff --check
+  git add -A
+  git commit -m "fix(release): synchronize version metadata"
+  git push origin main
+
+Then open GitHub Actions > PhoneVR Release and run it with:
+  Branch: main
+  Existing tag to rebuild: v1.0.0
+
+The existing-tag recovery step checks that VERSION matches v1.0.0, then force-updates
+that tag to the synchronized main commit before the Android and Windows build jobs
+check out the tag. This is intentional because the old v1.0.0 tag contains stale
+accessory_filter.xml and AOA documentation.
+
+The release workflow now stages all version script changes with git add -A. The
+version bump script already updates the accessory XML and AOA documentation; this
+change ensures those changes are included in the release commit and tag.

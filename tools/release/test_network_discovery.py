@@ -61,6 +61,8 @@ class NetworkDiscoveryTests(unittest.TestCase):
         aoa = (ROOT / "windows-host/internal/aoa/aoa_windows.go").read_text(encoding="utf-8")
         accessory_filter = (ROOT / "android/app/src/main/res/xml/accessory_filter.xml").read_text(encoding="utf-8")
         driver = (ROOT / "steamvr-driver/src/driver.cpp").read_text(encoding="utf-8")
+        aoa_doc = (ROOT / "docs/usb-aoa-windows-driver.md").read_text(encoding="utf-8")
+        release_workflow = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
         self.assertRegex(version, r"^\d+\.\d+\.\d+$")
         self.assertIn(f'versionName = "{version}"', gradle)
         self.assertRegex(gradle, r"versionCode\s*=\s*\d+")
@@ -70,6 +72,10 @@ class NetworkDiscoveryTests(unittest.TestCase):
         self.assertIn(f'version="{version}"', accessory_filter)
         self.assertIn(f"VERSION {version} LANGUAGES CXX", cmake)
         self.assertIn(f"PhoneVR {version} DisplayRedirect", driver)
+        self.assertIn(f"PhoneVR {version} provides a direct USB transport", aoa_doc)
+        self.assertIn(f"`VSQ Studio` / `PhoneVR` / `{version}`", aoa_doc)
+        self.assertRegex(release_workflow, r"(?m)^\s+git add -A$")
+        self.assertIn('git push --force origin "refs/tags/${tag}"', release_workflow)
 
 
 if __name__ == "__main__":

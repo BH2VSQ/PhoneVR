@@ -13,7 +13,7 @@ on:
           - major
         default: patch
       release_tag:
-        description: Existing tag to rebuild and publish without creating a new version
+        description: Repoint this existing tag to the selected branch commit and rebuild without bumping the version
         required: false
         type: string
         default: ""
@@ -77,21 +77,24 @@ jobs:
             echo "Release tag does not exist in this repository: $tag" >&2
             exit 1
           fi
-          version="$(git show "${tag}:VERSION" | tr -d '\r\n')"
+          version="$(tr -d '\r\n' < VERSION)"
           if [[ "v${version}" != "$tag" ]]; then
-            echo "Tag and VERSION file do not match: $tag / $version" >&2
+            echo "Selected branch VERSION does not match requested tag: $tag / $version" >&2
             exit 1
           fi
-          version_code="$(git show "${tag}:android/app/build.gradle.kts" | sed -nE 's/^[[:space:]]*versionCode[[:space:]]*=[[:space:]]*([0-9]+).*$/\1/p' | head -n1)"
+          version_code="$(sed -nE 's/^[[:space:]]*versionCode[[:space:]]*=[[:space:]]*([0-9]+).*$/\1/p' android/app/build.gradle.kts | head -n1)"
           if [[ ! "$version_code" =~ ^[0-9]+$ ]]; then
-            echo "Could not read Android versionCode from $tag" >&2
+            echo "Could not read Android versionCode from current branch" >&2
             exit 1
           fi
+          # Repoint the existing release tag to this synchronized branch commit.
+          git tag --force --annotate "$tag" --message "PhoneVRStream ${version}"
+          git push --force origin "refs/tags/${tag}"
           echo "version=${version}" >> "$GITHUB_OUTPUT"
           echo "version_code=${version_code}" >> "$GITHUB_OUTPUT"
           echo "tag=${tag}" >> "$GITHUB_OUTPUT"
-          echo "release_sha=$(git rev-list -n1 "$tag")" >> "$GITHUB_OUTPUT"
-          echo "Reusing existing release tag: $tag (Android versionCode $version_code)"
+          echo "release_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "Repointed release tag: $tag (Android versionCode $version_code)"
 
       - name: Commit version bump and push release tag
         id: commit
@@ -100,9 +103,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add VERSION CHANGELOG.md BUILD_STATUS.md README.md .gitignore android/app/build.gradle.kts \
-            android/app/src/main/java/com/vsq/phonvrstream/network/NetworkClient.kt \
-            windows-host scripts steamvr-driver tools .github/workflows/ci.yml .github/workflows/release.yml
+          git add -A
           git commit -m "chore(release): ${{ steps.version.outputs.tag }}"
           git tag -a "${{ steps.version.outputs.tag }}" -m "PhoneVRStream ${{ steps.version.outputs.version }}"
           git push origin "HEAD:${GITHUB_REF_NAME}"

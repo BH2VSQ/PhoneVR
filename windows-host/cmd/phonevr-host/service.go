@@ -19,7 +19,6 @@ import (
 	"time"
 
 	"github.com/vsq-studio/phonevr-host/internal/aoa"
-	phonevraudio "github.com/vsq-studio/phonevr-host/internal/audio"
 	"github.com/vsq-studio/phonevr-host/internal/encoder"
 	"github.com/vsq-studio/phonevr-host/internal/protocol"
 	"github.com/vsq-studio/phonevr-host/internal/usbmux"
@@ -39,7 +38,6 @@ const (
 	steamVRVideoCapturePort     = 48106
 	steamVRControllerBridgePort = 48108
 	androidVideoPort            = 48104
-	audioUplinkPort             = 48110
 	videoInputQueueDepth        = 2 // one frame may be written to FFmpeg while two newer frames wait
 	videoOutputQueueDepth       = 8 // isolate FFmpeg stdout from potentially blocking USB Bulk writes
 	videoUSBQueueDepth          = 4 // bounded independent queue for striped AOA writes
@@ -162,9 +160,6 @@ type welcomeMessage struct {
 	VideoReorderGraceMS int      `json:"videoReorderGraceMs,omitempty"`
 	VideoDecoderName    string   `json:"videoDecoderName,omitempty"`
 	VideoReason         string   `json:"videoReason,omitempty"`
-	AudioUplinkPort     int      `json:"audioUplinkPort,omitempty"`
-	AudioSampleRate     int      `json:"audioSampleRate,omitempty"`
-	AudioFrameDuration  int      `json:"audioFrameDurationMs,omitempty"`
 }
 
 type controlMessage struct {
@@ -196,7 +191,6 @@ type activeDevice struct {
 	Ready        bool
 	VideoEnabled bool
 	VideoOnly    bool
-	AudioUDP     *net.UDPAddr
 	LastPingAt   time.Time
 }
 
@@ -271,13 +265,6 @@ type HostService struct {
 	steamVRStatus               *net.UDPConn
 	videoCaptureListener        net.Listener
 	videoUDP                    *net.UDPConn
-	audioUDP                    *net.UDPConn
-	audioUplink                 chan phonevraudio.Packet
-	audioConfigChanged          chan struct{}
-	audioSequence               atomic.Uint32
-	audioClockStartedAt         time.Time
-	audioUplinkPackets          atomic.Uint64
-	audioDownlinkPackets        atomic.Uint64
 	videoFFmpegPath             string
 	videoEncoderProbeDone       chan struct{}
 	videoEncoderProbeProfileID  string
@@ -465,19 +452,6 @@ func (s *HostService) Start(config HostConfig) error {
 	// large stale backlogs before they reach the local SteamVR driver socket.
 	_ = udpPose.SetReadBuffer(16 * 1024)
 
-	// Audio has its own datagram socket and bounded queue. It never shares the
-	// pose socket or the H.264 fragment sender, preserving their scheduling.
-	udpAudio, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.ParseIP(config.ListenAddress), Port: audioUplinkPort})
-	if err != nil {
-		_ = tcpListener.Close()
-		_ = udpDiscovery.Close()
-		_ = udpPose.Close()
-		s.mu.Unlock()
-		return fmt.Errorf("start UDP audio listener on %d: %w", audioUplinkPort, err)
-	}
-	_ = udpAudio.SetReadBuffer(256 * 1024)
-	_ = udpAudio.SetWriteBuffer(256 * 1024)
-
 	// The SteamVR server driver runs in vrserver.exe, not in this Host process.
 	// A loopback-only heartbeat is the authoritative signal that the driver is
 	// loaded and its RunFrame callback is still being serviced by the runtime.
@@ -486,7 +460,6 @@ func (s *HostService) Start(config HostConfig) error {
 		_ = tcpListener.Close()
 		_ = udpDiscovery.Close()
 		_ = udpPose.Close()
-		_ = udpAudio.Close()
 		s.mu.Unlock()
 		return fmt.Errorf("start SteamVR status listener on 127.0.0.1:%d: %w", steamVRStatusPort, err)
 	}
@@ -498,7 +471,6 @@ func (s *HostService) Start(config HostConfig) error {
 		_ = udpDiscovery.Close()
 		_ = udpPose.Close()
 		_ = udpSteamVRStatus.Close()
-		_ = udpAudio.Close()
 		s.mu.Unlock()
 		return fmt.Errorf("start loopback video capture bridge on 127.0.0.1:%d: %w", steamVRVideoCapturePort, err)
 	}
@@ -509,7 +481,6 @@ func (s *HostService) Start(config HostConfig) error {
 		_ = udpPose.Close()
 		_ = udpSteamVRStatus.Close()
 		_ = videoCaptureListener.Close()
-		_ = udpAudio.Close()
 		s.mu.Unlock()
 		return fmt.Errorf("open video UDP sender: %w", err)
 	}
@@ -523,19 +494,12 @@ func (s *HostService) Start(config HostConfig) error {
 	s.serverName = serverName
 	s.localIPv4 = append([]string(nil), localIPs...)
 	s.startedAt = time.Now()
-	s.audioClockStartedAt = s.startedAt
 	s.listener = tcpListener
 	s.discovery = udpDiscovery
 	s.pose = udpPose
 	s.steamVRStatus = udpSteamVRStatus
 	s.videoCaptureListener = videoCaptureListener
 	s.videoUDP = videoUDP
-	s.audioUDP = udpAudio
-	s.audioUplink = make(chan phonevraudio.Packet, 16)
-	s.audioConfigChanged = make(chan struct{}, 1)
-	s.audioSequence.Store(0)
-	s.audioUplinkPackets.Store(0)
-	s.audioDownlinkPackets.Store(0)
 	s.videoFrameQueue = make(chan *rawVideoFrame, videoInputQueueDepth)
 	s.videoOutputQueue = make(chan encodedVideoFrame, videoOutputQueueDepth)
 	s.videoUSBQueue = make(chan usbVideoWork, videoUSBQueueDepth)
@@ -578,19 +542,17 @@ func (s *HostService) Start(config HostConfig) error {
 	if !s.usbAOAScanningEnabled() {
 		scannerState = "paused (network-only video transport)"
 	}
-	s.addLog(fmt.Sprintf("Host started on %s | TCP %d | UDP discovery %d | pose %d | audio uplink %d | USB AOA scanner %s", config.ListenAddress, config.ControlPort, config.DiscoveryPort, config.PosePort, audioUplinkPort, scannerState))
+	s.addLog(fmt.Sprintf("Host started on %s | TCP %d | UDP discovery %d | pose %d | USB AOA scanner %s", config.ListenAddress, config.ControlPort, config.DiscoveryPort, config.PosePort, scannerState))
 	s.addLog(fmt.Sprintf("Active SBS stream profile: %s | %dx%d@%d | H.264 target bitrate %d Mbps", activeProfile.ID, activeProfile.Width, activeProfile.Height, activeProfile.FPS, activeProfile.BitrateMbps))
 	for _, address := range networkAddresses {
 		s.addLog(fmt.Sprintf("Host interface [%s] %s: %s", address.Kind, address.Name, address.IP))
 	}
 
-	s.wg.Add(11)
-	go s.audioEndpointWorker(ctx)
+	s.wg.Add(9)
 	go s.acceptLoop(ctx, tcpListener)
 	go s.usbAccessoryLoop(ctx)
 	go s.discoveryLoop(ctx, udpDiscovery, serverName, config.ControlPort)
 	go s.poseLoop(ctx, udpPose)
-	go s.audioLoop(ctx, udpAudio)
 	go s.steamVRStatusLoop(ctx, udpSteamVRStatus)
 	go s.videoCaptureLoop(ctx, videoCaptureListener)
 	go s.videoEncoderLoop(ctx)
@@ -705,7 +667,6 @@ func (s *HostService) Stop() {
 	steamVRStatus := s.steamVRStatus
 	videoCaptureListener := s.videoCaptureListener
 	videoUDP := s.videoUDP
-	audioUDP := s.audioUDP
 	connections := make([]net.Conn, 0, len(s.connections))
 	for conn := range s.connections {
 		connections = append(connections, conn)
@@ -722,9 +683,6 @@ func (s *HostService) Stop() {
 	s.steamVRStatus = nil
 	s.videoCaptureListener = nil
 	s.videoUDP = nil
-	s.audioUDP = nil
-	s.audioUplink = nil
-	s.audioConfigChanged = nil
 	s.steamVRHeartbeatAt = time.Time{}
 	s.steamVRFlags = 0
 	s.steamVRFrameCounter = 0
@@ -750,9 +708,6 @@ func (s *HostService) Stop() {
 	}
 	if videoUDP != nil {
 		_ = videoUDP.Close()
-	}
-	if audioUDP != nil {
-		_ = audioUDP.Close()
 	}
 	for _, conn := range connections {
 		_ = conn.Close()
@@ -989,8 +944,6 @@ func (s *HostService) serveUSBAccessory(ctx context.Context, device *aoa.Device)
 						s.addLog("USB AOA pose forward failed: " + err.Error())
 					}
 				}
-			case usbmux.ChannelAudioUplink:
-				s.acceptAudioUplink(deviceKey, nil, frame.Payload)
 			}
 		}
 	}()
@@ -1421,16 +1374,11 @@ func (s *HostService) handleControlConnection(ctx context.Context, conn net.Conn
 	welcome := welcomeMessage{
 		Type: "welcome", Protocol: protocolVersion, SessionID: newSessionID(),
 		ServerName: s.serverName, PosePort: s.config.PosePort,
-		Capabilities:       []string{"head-pose-3dof-udp-v1", "control-heartbeat-v1", "display-settings-control-v1", "android-optical-presets-v1", "android-media-capabilities-v1", "daydream-controller-ble-v1", "steamvr-dual-controller-v1", "audio-pcm-s16le-48k-v1"},
-		VideoEnabled:       videoEnabled,
-		AudioUplinkPort:    audioUplinkPort,
-		AudioSampleRate:    phonevraudio.SampleRate,
-		AudioFrameDuration: phonevraudio.FrameDurationMs,
+		Capabilities: []string{"head-pose-3dof-udp-v1", "control-heartbeat-v1", "display-settings-control-v1", "android-optical-presets-v1", "android-media-capabilities-v1", "daydream-controller-ble-v1", "steamvr-dual-controller-v1"},
+		VideoEnabled: videoEnabled,
 	}
 	if usbLink != nil {
-		welcome.Capabilities = append(welcome.Capabilities, "usb-aoa-bulk-v1", "usb-multiplex-v1", "audio-duplex-usb-v1")
-	} else {
-		welcome.Capabilities = append(welcome.Capabilities, "audio-duplex-udp-v1")
+		welcome.Capabilities = append(welcome.Capabilities, "usb-aoa-bulk-v1", "usb-multiplex-v1")
 	}
 	if videoEnabled {
 		if usbLink != nil {

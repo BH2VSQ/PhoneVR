@@ -225,8 +225,6 @@ public:
         m_orientationAlignment = MultiplyQuaternion(
             headHeading, InverseQuaternion(controllerHeading));
         m_hasOrientationAlignment = true;
-        m_headYawReference = headHeading;
-        m_hasHeadYawReference = true;
         m_torsoRotation = headHeading;
         m_torsoInitialized = true;
         m_lastHeadUpdateNs = 0;
@@ -249,17 +247,13 @@ public:
         (void)controllerGyroscope; // HMD yaw, not controller motion, drives the reference frame.
 
         const DaydreamQuaternion targetTorsoQ = HorizontalHeadRotation(headQ);
-        if (!m_hasHeadYawReference) {
-            m_headYawReference = targetTorsoQ;
-            m_hasHeadYawReference = true;
-        }
-        // Daydream controller orientation is reported in its original Start Space.
-        // Rotate that reference by the HMD's yaw delta so the estimated hand
-        // remains head-relative even while the controller itself is stationary.
-        const DaydreamQuaternion headYawDelta = MultiplyQuaternion(
-            targetTorsoQ, InverseQuaternion(m_headYawReference));
+        // Controller orientation is already expressed in Daydream Start Space,
+        // which is aligned with the HMD when tracking begins. Do not apply the
+        // current HMD yaw delta here: doing so rotates a stationary controller
+        // whenever the user turns their head and creates visible pointing drift.
+        // The torso frame below follows HMD yaw separately for arm positioning.
         const DaydreamQuaternion controllerWorldQ = MultiplyQuaternion(
-            headYawDelta, MultiplyQuaternion(m_orientationAlignment, rawOpenVr));
+            m_orientationAlignment, rawOpenVr);
         output.orientation = controllerWorldQ;
 
         if (!m_torsoInitialized) {
@@ -419,12 +413,10 @@ private:
     }
 
     DaydreamQuaternion m_orientationAlignment{};
-    DaydreamQuaternion m_headYawReference{};
     DaydreamQuaternion m_torsoRotation{};
     // Google defines Daydream Start Space to coincide with headset space when
     // tracking starts. Keep the raw quaternion until the user explicitly recenters.
     bool m_hasOrientationAlignment = true;
-    bool m_hasHeadYawReference = false;
     bool m_torsoInitialized = false;
     bool m_positionInitialized = false;
     uint64_t m_lastHeadUpdateNs = 0;

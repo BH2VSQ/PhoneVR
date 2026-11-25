@@ -91,7 +91,7 @@ The native UI and model renderer are Windows-specific. CI cross-builds the GUI a
 
 ## Firewall and ports
 
-Allow `PhoneVRHost.exe` through Windows Defender Firewall on Private networks when prompted. LAN audio additionally needs inbound UDP port `48110` available.
+Allow `PhoneVRHost.exe` through Windows Defender Firewall on Private networks when prompted.
 
 | Port | Transport | Purpose |
 |---|---|---|
@@ -101,7 +101,6 @@ Allow `PhoneVRHost.exe` through Windows Defender Firewall on Private networks wh
 | 48103 | UDP loopback | Host-to-SteamVR pose bridge |
 | 48105 | UDP loopback | SteamVR driver health / display-frame heartbeat |
 | 48104 | UDP | Host → Android H.264 video fragments |
-| 48110 | UDP | Bidirectional PhoneVR 48 kHz PCM audio |
 | 48106 | TCP loopback | SteamVR driver → Host raw BGRA capture bridge |
 
 

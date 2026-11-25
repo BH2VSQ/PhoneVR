@@ -42,7 +42,6 @@ class UsbAccessorySession private constructor(
     @Volatile private var currentControlChunk: ByteArray? = null
     @Volatile private var currentControlOffset = 0
     @Volatile var videoPacketListener: ((ByteArray) -> Unit)? = null
-    @Volatile var audioPacketListener: ((ByteArray) -> Unit)? = null
     @Volatile private var readerThread: Thread? = null
     @Volatile private var receiveFailure: String? = null
     private val controlRxLogBudget = AtomicInteger(6)
@@ -141,8 +140,6 @@ class UsbAccessorySession private constructor(
 
     fun sendPose(payload: ByteArray) = writeFrame(CHANNEL_POSE, payload)
 
-    fun sendAudio(payload: ByteArray) = writeFrame(CHANNEL_AUDIO_UPLINK, payload)
-
     private fun writeFrame(channel: Int, payload: ByteArray) {
         val frameSequence: Int
         synchronized(writeLock) {
@@ -208,11 +205,6 @@ class UsbAccessorySession private constructor(
                             // from being drained, otherwise the PC Bulk OUT stalls.
                             if (videoPacketListener != null) videoDispatcher.offer(payload)
                         }
-                        CHANNEL_AUDIO_DOWNLINK -> {
-                            // AudioStreamEngine.acceptDownlinkPacket only validates
-                            // and enqueues a bounded PCM frame; it never blocks.
-                            audioPacketListener?.invoke(payload)
-                        }
                     }
                 }
             }
@@ -267,8 +259,6 @@ class UsbAccessorySession private constructor(
         private const val CHANNEL_CONTROL = UsbMuxProtocol.CHANNEL_CONTROL
         private const val CHANNEL_POSE = UsbMuxProtocol.CHANNEL_POSE
         private const val CHANNEL_VIDEO = UsbMuxProtocol.CHANNEL_VIDEO
-        private const val CHANNEL_AUDIO_DOWNLINK = UsbMuxProtocol.CHANNEL_AUDIO_DOWNLINK
-        private const val CHANNEL_AUDIO_UPLINK = UsbMuxProtocol.CHANNEL_AUDIO_UPLINK
 
         /** Blocks on a worker thread while Android displays the USB permission prompt. */
         fun openFirstAccessory(context: Context): UsbAccessorySession {

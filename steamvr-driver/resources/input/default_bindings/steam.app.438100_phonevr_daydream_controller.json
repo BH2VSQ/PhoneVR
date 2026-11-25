@@ -42,9 +42,6 @@
             "click": {
               "output": "/actions/global/in/menu"
             },
-            "held": {
-              "output": "/actions/global/in/menu"
-            },
             "double": {
               "output": "/actions/global/in/main_menu"
             }
@@ -99,9 +96,6 @@
             "click": {
               "output": "/actions/global/in/menu"
             },
-            "held": {
-              "output": "/actions/global/in/menu"
-            },
             "double": {
               "output": "/actions/global/in/main_menu"
             }
@@ -147,7 +141,7 @@
           },
           "inputs": {
             "position": {
-              "output": "/actions/one_hand/in/move_rotate"
+              "output": "/actions/one_hand/in/move"
             },
             "click": {
               "output": "/actions/one_hand/in/interact"
@@ -162,9 +156,6 @@
           },
           "inputs": {
             "click": {
-              "output": "/actions/one_hand/in/menu"
-            },
-            "held": {
               "output": "/actions/one_hand/in/menu"
             },
             "double": {
@@ -204,7 +195,7 @@
           },
           "inputs": {
             "position": {
-              "output": "/actions/one_hand/in/move_rotate"
+              "output": "/actions/one_hand/in/move"
             },
             "click": {
               "output": "/actions/one_hand/in/interact"
@@ -219,9 +210,6 @@
           },
           "inputs": {
             "click": {
-              "output": "/actions/one_hand/in/menu"
-            },
-            "held": {
               "output": "/actions/one_hand/in/menu"
             },
             "double": {
@@ -334,8 +322,8 @@
   },
   "category": "gamepad",
   "controller_type": "phonevr_daydream_controller",
-  "description": "PhoneVR Daydream one-controller-first VRChat mapping. Either touchpad moves the player; one_hand also receives the combined move and rotate action.",
-  "name": "PhoneVR Daydream VRChat Default",
+  "description": "PhoneVR Daydream VRChat binding. Either touchpad provides continuous two-axis player movement in Global and One_Hand contexts.",
+  "name": "PhoneVR Daydream VRChat Continuous Movement",
   "options": {
     "mirror_actions": false,
     "simulated_controller_type": "none"

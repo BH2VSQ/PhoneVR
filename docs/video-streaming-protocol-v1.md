@@ -93,7 +93,7 @@ decoded video frame, the local test scene remains visible.
 ## Known limits
 
 The PC capture source and Android output are currently fixed to 1600×720 SBS
-at up to 60 FPS. Dynamic bitrate/rate adaptation, HEVC/AV1 transport, audio,
+at up to 60 FPS. Dynamic bitrate/rate adaptation and HEVC/AV1 transport,
 clock synchronization, capture-to-photon measurement and a remote keyframe
 request control message are not yet implemented. The current H.264 encoder
 repeats an IDR at least once per second so the receiver can recover after loss.

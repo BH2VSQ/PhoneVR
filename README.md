@@ -67,10 +67,6 @@ All helper processes launched by the GUI Host use `CREATE_NO_WINDOW`, including 
 - The AOA reader uses 16 KiB raw reads before parsing PVRU headers. The stream decoder reassembles frames split across reads or coalesced by the USB stack; it does not issue 16-byte reads directly to the accessory file descriptor. Android raw-read sizes and PVRU CRC32 values are logged for diagnosis.
 
 
-## Audio streaming status
-
-PhoneVR 0.5.35 includes a dedicated 48 kHz PCM transport over LAN UDP `48110` and USB AOA channels `4/5`, Android `AudioTrack` playback and `AudioRecord` microphone capture, and a Windows WASAPI bridge supervised by the Host lifecycle. **Menu → Audio & Microphone** exposes separate selectors for both signal directions: PC → Phone can capture any Windows playback endpoint with WASAPI Loopback; Phone microphone → PC renders PCM into a user-selected virtual-audio playback endpoint, while Windows applications read from its paired recording endpoint. All Windows render and capture endpoints are listed, including third-party virtual audio drivers. VAC and VB-CABLE automatic pairing are convenience options only. Device IDs are stored independently and applying changes restarts only the audio bridge. The optional signed VB-Audio VB-CABLE installer remains available as a fallback; it is suppressed after a custom microphone route has been configured. The Host never renames or modifies third-party driver packages. See `docs/audio-streaming-architecture.md` for routing details and licensing notes. The native WASAPI helper still requires a Windows MSVC/CMake build and physical end-to-end audio validation.
-
 ## SteamVR driver 0.5.35
 
 The PhoneVR Host contains its own Windows x64 OpenVR driver inside the Host executable. The normal build compiles `steamvr-driver/`, embeds the resulting manifest, DLL and resources into both Host executables, and no longer asks users to download or select a ZIP. On startup, the Host checks whether SteamVR is installed and whether the user has disabled automatic deployment. When enabled, it copies the embedded driver into a content-versioned directory under `%LOCALAPPDATA%\PhoneVR\SteamVRDriver` and registers it with SteamVR's own `vrpathreg.exe`.
@@ -102,7 +98,7 @@ The real-time video path captures the final SteamVR SBS backbuffer at up to 60 F
 
 ## Daydream View dual-controller input
 
-The Android controller panel scans for Daydream Controller BLE devices and assigns one remote to the left hand and one to the right hand. Each assignment is saved separately and restored on later launches. The 19-byte BLE report is decoded locally, then controller snapshots travel on the TCP control channel. Windows Host forwards separate validated `PVSC` packets to the SteamVR driver over loopback UDP `48108`. SteamVR registers independent left/right controller devices with a Daydream touchpad, App/Menu, Home/System and volume buttons. The VRChat SteamVR Input 2.0 default binding maps left touchpad to movement and right touchpad to smooth rotation. VRChat's `one_hand` action set maps either surviving controller to combined movement and rotation. See `docs/vrchat-daydream-controller-binding.md` for the complete layout and limitations.
+The Android controller panel scans for Daydream Controller BLE devices and assigns one remote to the left hand and one to the right hand. Each assignment is saved separately and restored on later launches. The 19-byte BLE report is decoded locally, then controller snapshots travel on the TCP control channel. Windows Host forwards separate validated `PVSC` packets to the SteamVR driver over loopback UDP `48108`. SteamVR registers independent left/right controller devices with a Daydream touchpad, App/Menu, Home/System and volume buttons. The VRChat SteamVR Input 2.0 default binding maps either touchpad to continuous two-axis `Move` in both Global and `one_hand` action sets. App short press opens Quick Menu; App long press (800 ms) triggers yaw recenter. See `docs/vrchat-daydream-controller-binding.md` for the complete layout and limitations.
 
 ## Current limitations
 
@@ -152,7 +148,6 @@ The Windows Host version is injected from the root VERSION file at build time. T
 | 48102 | UDP | HMD quaternion pose |
 | 48103 | UDP loopback only | Go Host -> SteamVR driver pose bridge |
 | 48104 | UDP | Host -> Android H.264 video fragments on LAN; unused by USB AOA sessions |
-| 48110 | UDP | Bidirectional 48 kHz PCM audio on LAN; unused by USB AOA sessions |
 | 48105 | UDP loopback only | SteamVR driver -> Host runtime heartbeat |
 | 48106 | TCP loopback only | SteamVR driver -> Host raw BGRA capture bridge |
 

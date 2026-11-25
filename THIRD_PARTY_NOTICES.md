@@ -216,12 +216,3 @@ Source references:
    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
    See the License for the specific language governing permissions and
    limitations under the License.
-
-
-## VB-Audio VB-CABLE (optional Windows audio endpoint)
-
-PhoneVR may download and launch the original VB-Audio VB-CABLE package from the vendor's official website when no compatible virtual audio cable is already installed. The downloaded vendor package is kept unchanged; PhoneVR checks the installer's Authenticode signature and expected publisher before requesting UAC elevation. VB-CABLE is a VB-Audio donationware product. The vendor requires its origin and donationware nature to remain identifiable, and professional deployments may require a license. See [VB-Audio licensing and distribution terms](https://vb-audio.com/Services/licensing.htm) and [VB-CABLE](https://vb-audio.com/Cable/).
-
-## Virtual Audio Cable by Eugene Muzychenko (existing user installation)
-
-PhoneVR can reuse an already-installed Virtual Audio Cable endpoint pair by enumerating its matching playback and recording endpoints. PhoneVR does not redistribute, modify, rename, install, update or uninstall the VAC driver. Users obtain and license VAC directly from its [official website](https://vac.muzychenko.net/en/).

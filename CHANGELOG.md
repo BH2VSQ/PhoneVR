@@ -1,32 +1,12 @@
-## 0.5.35 - VRChat Daydream controls, audio transport and axis/recenter correction
+## 0.5.35 - Daydream continuous movement, orientation and recenter correction
 
-- Add a separate 48 kHz PCM16 audio protocol over LAN UDP `48110` and USB AOA channels `4/5`, leaving the established video, pose and control transport unchanged.
-- Add Android low-latency stereo `AudioTrack` playback, mono `AudioRecord` microphone capture, runtime recording permission handling, bounded queues and receive-only operation when microphone permission is denied.
-- Add a Windows WASAPI shared-mode loopback bridge that captures the selected Windows playback endpoint (default console render endpoint when left on automatic), converts it to 48 kHz stereo PCM16 and emits 20 ms frames. Build and embed the helper with the Windows Host release script.
-- Supervise the WASAPI bridge as part of `HostService.Start/Stop`, including process/pipe cleanup, endpoint invalidation restart, endpoint ID publication and a bounded phone-microphone uplink queue.
-- Add user-selectable Windows MMDevice routing for both directions: any playback endpoint can be selected as the PC-to-phone WASAPI loopback source; the phone microphone can be rendered to any chosen virtual-audio playback endpoint, with its corresponding capture endpoint selected independently for Windows applications. VAC/VB-CABLE auto-pairing is a convenience only, not a supported-device restriction.
-- Add direction-labelled endpoint selectors to **Menu → Audio & Microphone**, including default playback, every active/disabled render endpoint and every active/disabled capture endpoint. Persist the exact endpoint IDs and restart only the independent audio bridge immediately after applying a change.
-- Display explicit routing guidance: PC → Phone reads a playback endpoint with WASAPI Loopback; Phone → PC writes to the virtual cable playback/input side and Windows apps read from the paired recording/output side. Warn when the loopback source and microphone render target could feed back into one another.
-- Preserve custom third-party virtual audio routes. If the user manually configured a render/capture pair unknown to VAC/VB-CABLE name detection, suppress the optional VB-CABLE fallback installer instead of installing a second virtual device.
-- Route phone microphone PCM through an installed virtual cable playback endpoint and expose its paired capture endpoint to Windows recording applications. Automatically detect Eugene Muzychenko VAC pairs by matching their complete render/capture friendly names (for example, `Line 1 (Virtual Audio Cable)`) and detect VB-Audio `CABLE Input` / `CABLE Output` pairs.
-- Prefer an existing VAC pair before VB-CABLE for automatic pairing. Existing VAC/VB-CABLE drivers and their signed files are reused unchanged. Add the native Host **Audio & Microphone** manager; it enumerates all Windows endpoints and keeps VB-CABLE as an optional fallback.
-- Add a one-shot `PhoneVRAudioBridge.exe --probe` command so the Host can discover an installed VAC/VB-CABLE pair even when Host streaming is stopped and runtime endpoint files have been cleared. Avoid prompting users to install a second virtual cable just because the Host service is idle.
-- Probe disabled and unplugged endpoint records as well as active ones. If an existing VAC/VB-CABLE pair is installed but disabled, explain how to enable it and skip the fallback installer instead of risking a duplicate virtual audio driver.
-- Download the original VB-Audio VB-CABLE package from its official source only as a fallback, verify the installer Authenticode signature and publisher, and launch the vendor installer through UAC without modifying INF/CAT/SYS files.
-- Avoid using the selected phone-microphone virtual render endpoint as the automatic PC loopback source. If Windows made a known virtual cable the default render endpoint, select another active render endpoint to prevent feeding the phone microphone back to itself.
-- Clear published Windows audio endpoint IDs while the Host audio worker restarts or shuts down so SteamVR does not keep stale endpoint selections.
-- Add Daydream touchpad radial deadzone, circular diagonal limiting and a soft analogue response curve. Present the touch surface to SteamVR as a two-sided software joystick.
-- Make the controller reference frame follow HMD horizontal yaw continuously, including when the controller gyro is stationary. Keep controller pitch and roll intact and use a time-based torso follow filter.
-
-- Correct the Daydream touchpad Y direction using the BLE wire convention: X increases left-to-right and Y increases bottom-to-top. Normalized BLE coordinates map directly to SteamVR joystick X-right/Y-up, with the untouched pad returning to center.
-- Declare `/input/joystick` as a SteamVR joystick source and use joystick binding mode, while retaining separate touch and click components.
-- Map either left or right controller to VRChat `Move` in the global action set, so a single controller works independently of its hand assignment. The `one_hand` action set also maps either side to combined Move & Rotate.
-- Add throttled diagnostics for BLE touch coordinates, Host bridge snapshots and SteamVR axis values. Add a regression test for packed BLE touch coordinates and correct contact detection.
-- Map App as a normal holdable VRChat Menu input. Keep Home short press as System and Home long press as software recenter, preventing App long-press from stealing the Action Menu gesture.
-- Change software recenter to align horizontal yaw only. Preserve controller pitch and roll, and avoid importing HMD pitch/roll into the aim alignment.
-- Bind the physical trackpad click to Interact, menu Confirm and Action Menu Select. App short press opens Quick Menu, App hold opens Action Menu, App double press opens Main Menu; Home short press opens SteamVR System and Home hold for 800 ms recenters. Volume Down maps to Grab and Volume Up maps to Jump.
-- Add touchpad-axis and yaw-only recenter regression tests, SteamVR binding contract checks and `docs/vrchat-daydream-controller-binding.md`.
-- Android metadata is `versionName 0.5.35`, `versionCode 70`; repository, Host, SteamVR driver and AOA metadata are synchronized to `0.5.35`.
+- Remove the PC-to-phone audio playback and phone-microphone audio uplink transport from LAN and USB AOA paths. PhoneVR now streams video, head pose and controller state only.
+- Remove Android microphone permission requests, PCM packet/stream workers, USB audio channels, the Host UDP audio listener and audio capability negotiation.
+- Map VRChat Global and One_Hand touchpad input to the continuous `Move` vector action. Remove `Move & Rotate` from the default one-controller binding to avoid direction-marker / release-to-move behavior.
+- Reserve App short press for Quick Menu and App long press (800 ms) for yaw recenter; Home short press remains the SteamVR System click.
+- Keep controller orientation in Daydream Start Space when the HMD turns. HMD yaw now updates only the arm-model torso frame, avoiding an extra yaw delta on the controller's world orientation.
+- Return touchpad axes and controller buttons to neutral when the latest BLE snapshot is older than 500 ms.
+- Add regression coverage for one-hand continuous movement bindings, App short/long-press handling, stable Start Space orientation and invalidated controller input.
 
 ## 0.5.34 - Daydream controller coordinate and paired render-model correction
 

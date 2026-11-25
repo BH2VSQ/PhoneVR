@@ -69,11 +69,6 @@ class NetworkClient(
     // dedicated worker, never on Android's main thread.
     private val controlWriteExecutor = Executors.newSingleThreadExecutor()
     private val controllerSenderExecutor = Executors.newCachedThreadPool()
-    private val audioReceiverExecutor = Executors.newCachedThreadPool()
-    private val audioLock = Any()
-    private val audioGeneration = AtomicLong(-1L)
-    @Volatile private var audioDatagramSocket: DatagramSocket? = null
-    @Volatile private var audioStreamEngine: AudioStreamEngine? = null
     private data class ControllerPair(val left: ControllerInputState, val right: ControllerInputState)
     private val latestControllers = AtomicReference(
         ControllerPair(ControllerInputState(false, 0L), ControllerInputState(false, 0L)),
@@ -346,109 +341,6 @@ class NetworkClient(
             if (capabilities.optString(index) == "daydream-controller-ble-v1") return true
         }
         return false
-    }
-
-    private fun startNetworkAudio(generation: Long, host: String, port: Int) {
-        stopAudioStream()
-        if (port !in 1..65535 || !isSessionActive(generation)) return
-        try {
-            val destination = InetAddress.getByName(host)
-            val socket = DatagramSocket().apply {
-                receiveBufferSize = 256 * 1024
-                sendBufferSize = 64 * 1024
-                soTimeout = 500
-            }
-            val engine = AudioStreamEngine(appContext) { payload ->
-                if (isSessionActive(generation) && !socket.isClosed) {
-                    for (fragment in AudioPacket.fragment(payload)) {
-                        socket.send(DatagramPacket(fragment, fragment.size, destination, port))
-                    }
-                }
-            }
-            synchronized(audioLock) {
-                if (!isSessionActive(generation)) {
-                    socket.close()
-                    engine.close()
-                    return
-                }
-                audioDatagramSocket = socket
-                audioStreamEngine = engine
-                audioGeneration.set(generation)
-            }
-            engine.start()
-            if (!isSessionActive(generation)) {
-                stopAudioStream(generation)
-                return
-            }
-            audioReceiverExecutor.execute {
-                val buffer = ByteArray(AudioPacket.HEADER_SIZE + AudioPacket.MAX_PAYLOAD_BYTES)
-                while (isSessionActive(generation) && !socket.isClosed) {
-                    try {
-                        val datagram = DatagramPacket(buffer, buffer.size)
-                        socket.receive(datagram)
-                        if (datagram.length > 0) {
-                            engine.acceptDownlinkPacket(datagram.data.copyOfRange(
-                                datagram.offset, datagram.offset + datagram.length,
-                            ))
-                        }
-                    } catch (_: SocketTimeoutException) {
-                        // Periodically re-check the session generation.
-                    } catch (error: Exception) {
-                        if (isSessionActive(generation) && !socket.isClosed) {
-                            Log.w(TAG, "Audio UDP receive stopped: ${error.message}")
-                        }
-                        break
-                    }
-                }
-            }
-            Log.i(TAG, "Full-duplex PCM audio started over UDP, uplink=$host:$port")
-        } catch (error: Exception) {
-            Log.w(TAG, "Unable to start UDP audio: ${error.message}", error)
-            stopAudioStream(generation)
-        }
-    }
-
-    private fun startUsbAudio(generation: Long, session: UsbAccessorySession) {
-        stopAudioStream()
-        if (!isSessionActive(generation) || session.isClosed) return
-        try {
-            val engine = AudioStreamEngine(appContext) { payload ->
-                if (isSessionActive(generation) && !session.isClosed) session.sendAudio(payload)
-            }
-            session.audioPacketListener = engine::acceptDownlinkPacket
-            synchronized(audioLock) {
-                if (!isSessionActive(generation) || session.isClosed) {
-                    session.audioPacketListener = null
-                    engine.close()
-                    return
-                }
-                audioStreamEngine = engine
-                audioGeneration.set(generation)
-            }
-            engine.start()
-            if (!isSessionActive(generation)) {
-                stopAudioStream(generation)
-                return
-            }
-            Log.i(TAG, "Full-duplex PCM audio started over USB AOA multiplex channels")
-        } catch (error: Exception) {
-            session.audioPacketListener = null
-            Log.w(TAG, "Unable to start USB audio: ${error.message}", error)
-            stopAudioStream(generation)
-        }
-    }
-
-    private fun stopAudioStream(expectedGeneration: Long? = null) {
-        synchronized(audioLock) {
-            if (expectedGeneration != null && audioGeneration.get() != expectedGeneration) return
-            audioGeneration.set(-1L)
-            audioDatagramSocket?.close()
-            audioDatagramSocket = null
-            val engine = audioStreamEngine
-            audioStreamEngine = null
-            engine?.close()
-            usbSession?.audioPacketListener = null
-        }
     }
 
     private fun startControllerStateSender(generation: Long, writer: BufferedWriter) {
@@ -1101,9 +993,6 @@ class NetworkClient(
                     throw ProtocolMismatchException("PC USB 通信协议版本不兼容")
                 }
                 configureVideoStream("127.0.0.1", welcome)
-                if (welcome.has("audioUplinkPort") && welcome.optInt("audioUplinkPort") > 0) {
-                    startUsbAudio(generation, openedSession)
-                }
                 synchronized(socketLock) {
                     activeControlWriter = writer
                     activeControlGeneration = generation
@@ -1130,7 +1019,6 @@ class NetworkClient(
                 if (!isSessionActive(generation)) return
                 postStatus("USB 连接等待/中断：${error.message ?: error.javaClass.simpleName}", false)
             } finally {
-                stopAudioStream(generation)
                 session?.close()
                 synchronized(socketLock) {
                     if (usbSession === session) usbSession = null
@@ -1204,7 +1092,6 @@ class NetworkClient(
         poseExecutor.shutdownNow()
         controlWriteExecutor.shutdownNow()
         controllerSenderExecutor.shutdownNow()
-        audioReceiverExecutor.shutdownNow()
         videoLifecycleExecutor.shutdown()
     }
 
@@ -1262,8 +1149,6 @@ class NetworkClient(
                     throw ProtocolMismatchException("PC 通信协议版本不兼容")
                 }
                 configureVideoStream(address, welcome)
-                val audioPort = welcome.optInt("audioUplinkPort", 0)
-                if (audioPort in 1..65535) startNetworkAudio(generation, address, audioPort)
 
                 synchronized(socketLock) {
                     activeControlWriter = writer
@@ -1314,7 +1199,6 @@ class NetworkClient(
                     false,
                 )
             } finally {
-                stopAudioStream(generation)
                 closeAttemptSockets(tcp, udp)
                 if (!isUsbVideoBackupConnected()) stopVideoReceiverAsync()
             }
@@ -1566,7 +1450,6 @@ class NetworkClient(
         running.get() && sessionGeneration.get() == generation
 
     private fun closeCurrentSockets() {
-        stopAudioStream()
         synchronized(socketLock) {
             try { poseSocket?.close() } catch (_: Exception) { }
             try { controlSocket?.close() } catch (_: Exception) { }
@@ -1638,7 +1521,6 @@ class NetworkClient(
         const val DEFAULT_CONTROL_PORT = 48101
         const val DEFAULT_POSE_PORT = 48102
         const val DEFAULT_VIDEO_PORT = 48104
-        const val DEFAULT_AUDIO_UPLINK_PORT = 48110
         const val DEFAULT_VIDEO_WIDTH = 1600
         const val DEFAULT_VIDEO_HEIGHT = 720
         const val DEFAULT_VIDEO_FPS = 60

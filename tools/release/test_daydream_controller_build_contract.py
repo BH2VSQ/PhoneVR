@@ -48,7 +48,8 @@ class DaydreamControllerBuildContractTests(unittest.TestCase):
         global_sources = binding["bindings"]["/actions/global"]["sources"]
         one_hand_sources = binding["bindings"]["/actions/one_hand"]["sources"]
         self.assertTrue(all(any(source["path"] == f"/user/hand/{hand}/input/joystick" and source["mode"] == "joystick" and source["inputs"].get("position", {}).get("output") == "/actions/global/in/move" for source in global_sources) for hand in ("left", "right")))
-        self.assertTrue(all(any(source["path"] == f"/user/hand/{hand}/input/joystick" and source["inputs"].get("position", {}).get("output") == "/actions/one_hand/in/move_rotate" for source in one_hand_sources) for hand in ("left", "right")))
+        self.assertTrue(all(any(source["path"] == f"/user/hand/{hand}/input/joystick" and source["inputs"].get("position", {}).get("output") == "/actions/one_hand/in/move" for source in one_hand_sources) for hand in ("left", "right")))
+        self.assertFalse(any(source.get("inputs", {}).get("position", {}).get("output") == "/actions/one_hand/in/move_rotate" for source in one_hand_sources))
         menu_sources = binding["bindings"]["/actions/menu"]["sources"]
         action_menu_sources = binding["bindings"]["/actions/action_menu"]["sources"]
         for hand in ("left", "right"):
@@ -63,7 +64,8 @@ class DaydreamControllerBuildContractTests(unittest.TestCase):
             for hand in ("left", "right"):
                 app_source = next(source for source in binding["bindings"][action_set]["sources"] if source["path"] == f"/user/hand/{hand}/input/menu")
                 self.assertIn("click", app_source["inputs"])
-                self.assertIn("held", app_source["inputs"])
+                self.assertNotIn("held", app_source["inputs"])
+                self.assertEqual(app_source["inputs"].get("click", {}).get("output"), f"{action_set}/in/menu")
                 self.assertEqual(app_source["inputs"].get("double", {}).get("output"), f"{action_set}/in/main_menu")
         self.assertIn("class DaydreamButtonGesture", model)
         self.assertIn("kLongPressNs = 800000000ULL", model)
@@ -73,7 +75,10 @@ class DaydreamControllerBuildContractTests(unittest.TestCase):
         self.assertIn(".put(\"gyroscopeX\", state.gyroscopeX.toDouble())", (ROOT / "android/app/src/main/java/com/vsq/phonvrstream/network/NetworkClient.kt").read_text(encoding="utf-8"))
         self.assertIn("GyroscopeX", (ROOT / "windows-host/internal/protocol/controller.go").read_text(encoding="utf-8"))
         self.assertIn("(void)controllerGyroscope", model)
-        self.assertIn("m_headYawReference", model)
+        self.assertNotIn("m_headYawReference", model)
+        self.assertNotIn("headYawDelta", model)
+        self.assertIn("const bool inputTouching = controllerFresh && state.touching", driver)
+        self.assertIn("m_menuPulseUntilNs", driver)
         self.assertIn("HorizontalHeadRotation(headQ)", model)
         self.assertIn("kHeadFollowTimeConstantSeconds", model)
         self.assertNotIn("(gyroMagnitude - 0.2) / 45.0", model)
@@ -81,21 +86,23 @@ class DaydreamControllerBuildContractTests(unittest.TestCase):
         self.assertIn("data[4] != 2", driver)
         self.assertIn("state.gyroX", driver)
 
-    def test_app_is_holdable_menu_and_home_long_press_recenters(self):
+    def test_app_short_press_opens_menu_and_long_press_recenters(self):
         manager = (ROOT / "android/app/src/main/java/com/vsq/phonvrstream/controller/DaydreamControllerManager.kt").read_text(encoding="utf-8")
         driver = (ROOT / "steamvr-driver/src/driver.cpp").read_text(encoding="utf-8")
         protocol = (ROOT / "android/app/src/main/java/com/vsq/phonvrstream/controller/DaydreamControllerProtocol.kt").read_text(encoding="utf-8")
         self.assertIn("Daydream App button", manager)
         self.assertNotIn("requestHardwareRecenter", manager)
         self.assertNotIn("byteArrayOf(0x00)", manager)
-        self.assertNotIn("m_appGesture", driver)
+        self.assertIn("m_appGesture.Update(controllerFresh, state.app, nowNs)", driver)
         self.assertIn("m_homeGesture.Update(controllerFresh, state.home, nowNs)", driver)
         self.assertIn("m_pendingRecenter = true", driver)
+        self.assertIn("DaydreamButtonGesture m_appGesture", driver)
         self.assertIn("DaydreamButtonGesture m_homeGesture", driver)
-        self.assertIn("connected && state.app", driver)
+        self.assertNotIn("connected && state.app", driver)
+        self.assertIn("controllerFresh && nowNs < m_menuPulseUntilNs", driver)
         self.assertIn("m_systemPulseUntilNs", driver)
         self.assertIn("m_armModel.Recenter(controllerQ, headQ)", driver)
-        self.assertIn("DaydreamTouchpadToOpenVR(state.touchX, state.touchY, state.touching)", driver)
+        self.assertIn("DaydreamTouchpadToOpenVR(state.touchX, state.touchY, inputTouching)", driver)
         self.assertIn("CONTROL_CHARACTERISTIC_UUID", protocol)
 
     def test_controller_panel_scroll_view_uses_frame_layout_params(self):

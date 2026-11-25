@@ -41,8 +41,6 @@ const (
 	usbVendorGoogle                = 0x18D1
 	usbProductAccessory            = 0x2D00
 	usbProductAccessoryADB         = 0x2D01
-	usbProductAccessoryAudio       = 0x2D04
-	usbProductAccessoryAudioADB    = 0x2D05
 	usbRequestGetProtocol          = 51
 	usbRequestSendString           = 52
 	usbRequestStartAccessory       = 53
@@ -762,5 +760,5 @@ func (d *Device) Close() error {
 }
 
 func isAccessoryProduct(pid uint16) bool {
-	return pid == usbProductAccessory || pid == usbProductAccessoryADB || pid == usbProductAccessoryAudio || pid == usbProductAccessoryAudioADB
+	return pid == usbProductAccessory || pid == usbProductAccessoryADB
 }

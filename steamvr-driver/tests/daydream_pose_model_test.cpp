@@ -102,7 +102,8 @@ int main() {
     CHECK(raisedPose.position[1] > neutralPose.position[1]);
     CHECK(std::abs(raisedPose.velocity[1]) > 0.01);
 
-    // HMD yaw must move the controller reference even if the controller gyro is still.
+    // HMD yaw updates the torso frame for arm positioning, but must not rotate
+    // the controller's Start Space orientation when the remote itself is still.
     DaydreamArmModel headRelativeModel;
     const DaydreamQuaternion headYaw = Yaw(kPi / 2.0);
     const auto headRelativeStart = headRelativeModel.Update(
@@ -112,8 +113,9 @@ int main() {
     (void)headRelativeStart;
     const auto headRelativeForward = RotateVector(
         headRelativeTurn.orientation, {0.0, 0.0, -1.0});
-    CHECK(headRelativeForward.x < -0.99);
-    CHECK(std::abs(headRelativeForward.z) < 0.02);
+    CHECK(std::abs(headRelativeForward.x) < 0.02);
+    CHECK(std::abs(headRelativeForward.y) < 0.02);
+    CHECK(headRelativeForward.z < -0.99);
 
     // Initial tracking preserves Google's Start Space orientation without an implicit HMD snap.
     DaydreamArmModel directOrientationModel;
@@ -160,21 +162,33 @@ int main() {
     CHECK(Near(yawOnlyPose.orientation.z, expectedYawOnly.z));
     CHECK(Near(yawOnlyPose.orientation.w, expectedYawOnly.w));
 
-    // App is now exposed as a normal held boolean menu input. Home alone keeps
-    // the 800 ms long-press gesture for software recenter.
-    // Home short press remains a system-button click; Home long press is also a recenter fallback.
-    DaydreamButtonGesture homeGesture;
-    auto gesture = homeGesture.Update(true, true, 7000000000ULL);
+    // App short press produces a menu click. Holding App for 800 ms consumes
+    // the menu click and triggers only the software recenter action.
+    DaydreamButtonGesture appGesture;
+    auto gesture = appGesture.Update(true, true, 7000000000ULL);
     CHECK(gesture.pressedEdge);
-    gesture = homeGesture.Update(true, false, 7100000000ULL);
+    gesture = appGesture.Update(true, false, 7100000000ULL);
     CHECK(gesture.shortPressTriggered);
-    gesture = homeGesture.Update(true, true, 7200000000ULL);
+    gesture = appGesture.Update(true, true, 7200000000ULL);
     CHECK(gesture.pressedEdge);
-    gesture = homeGesture.Update(true, true, 8000000000ULL);
+    gesture = appGesture.Update(true, true, 8000000000ULL);
     CHECK(gesture.longPressTriggered);
-    gesture = homeGesture.Update(true, false, 8010000000ULL);
+    CHECK(gesture.suppressMenuPulse);
+    gesture = appGesture.Update(true, false, 8010000000ULL);
     CHECK(gesture.suppressMenuPulse);
     CHECK(!gesture.shortPressTriggered);
+
+    // Home is independent: its short press remains a System click, while a
+    // long press must not accidentally trigger recenter.
+    DaydreamButtonGesture homeGesture;
+    gesture = homeGesture.Update(true, true, 9000000000ULL);
+    CHECK(gesture.pressedEdge);
+    gesture = homeGesture.Update(true, false, 9100000000ULL);
+    CHECK(gesture.shortPressTriggered);
+    gesture = homeGesture.Update(true, true, 9200000000ULL);
+    CHECK(gesture.pressedEdge);
+    gesture = homeGesture.Update(true, true, 10000000000ULL);
+    CHECK(gesture.longPressTriggered);
 
     std::cout << "Daydream pose model tests passed\n";
     return 0;

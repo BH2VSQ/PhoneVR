@@ -12,11 +12,9 @@ const (
 	HeaderSize           = 16
 	MaxPayloadSize       = 1024 * 1024
 
-	ChannelControl       byte = 1
-	ChannelPose          byte = 2
-	ChannelVideo         byte = 3
-	ChannelAudioDownlink byte = 4 // Windows Host -> Android playback
-	ChannelAudioUplink   byte = 5 // Android microphone -> Windows Host
+	ChannelControl byte = 1
+	ChannelPose    byte = 2
+	ChannelVideo   byte = 3
 )
 
 var frameMagic = [4]byte{'P', 'V', 'R', 'U'}
@@ -38,7 +36,7 @@ func WriteFrame(w io.Writer, frame Frame) error {
 }
 
 func encodeFrame(frame Frame) ([]byte, error) {
-	if frame.Channel < ChannelControl || frame.Channel > ChannelAudioUplink {
+	if frame.Channel < ChannelControl || frame.Channel > ChannelVideo {
 		return nil, fmt.Errorf("invalid USB multiplex channel %d", frame.Channel)
 	}
 	if len(frame.Payload) > MaxPayloadSize {
@@ -72,7 +70,7 @@ func ReadFrame(r io.Reader) (Frame, error) {
 	if header[6] != 0 || header[7] != 0 {
 		return frame, errors.New("unsupported USB multiplex flags")
 	}
-	if frame.Channel < ChannelControl || frame.Channel > ChannelAudioUplink {
+	if frame.Channel < ChannelControl || frame.Channel > ChannelVideo {
 		return frame, fmt.Errorf("invalid USB multiplex channel %d", frame.Channel)
 	}
 	length := binary.LittleEndian.Uint32(header[8:12])

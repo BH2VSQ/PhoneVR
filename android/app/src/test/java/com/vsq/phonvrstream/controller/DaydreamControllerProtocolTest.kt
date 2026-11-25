@@ -136,6 +136,23 @@ class DaydreamControllerProtocolTest {
     }
 
     @Test
+    fun keepsSmallValidTouchCoordinatesNearThePadEdgeAsContact() {
+        // Daydream's observed active surface includes small non-zero edge values.
+        // Both axes are non-zero while touched; only (0, 0) represents no contact.
+        val rawX = 9
+        val rawY = 9
+        val packet = ByteArray(19).apply {
+            this[16] = (rawX ushr 3).toByte()
+            this[17] = (((rawX and 0x07) shl 5) or (rawY ushr 3)).toByte()
+            this[18] = ((rawY and 0x07) shl 5).toByte()
+        }
+        val state = DaydreamControllerProtocol.decode(packet, 459L)!!.state
+        assertTrue(state.isTouching)
+        assertEquals(rawX / 255f, state.touchX, 1e-6f)
+        assertEquals(rawY / 255f, state.touchY, 1e-6f)
+    }
+
+    @Test
     fun accelerationAndGyroscopeAreFinite() {
         val state = DaydreamControllerProtocol.decode(ByteArray(19), 789L)!!.state
         listOf(

@@ -82,28 +82,6 @@ const VideoStreamProfile& ActiveVideoStreamProfile() {
     }();
     return profile;
 }
-std::string ReadPhoneVRAudioEndpointFile(const wchar_t* fileName) {
-    wchar_t localAppData[MAX_PATH]{};
-    const DWORD length = GetEnvironmentVariableW(L"LOCALAPPDATA", localAppData, MAX_PATH);
-    if (length == 0 || length >= MAX_PATH) return {};
-    std::wstring path(localAppData);
-    path += L"\\PhoneVR\\";
-    path += fileName;
-    HANDLE file = CreateFileW(path.c_str(), GENERIC_READ,
-        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-        nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (file == INVALID_HANDLE_VALUE) return {};
-    char buffer[4096]{};
-    DWORD bytesRead = 0;
-    const BOOL readOk = ReadFile(file, buffer, sizeof(buffer) - 1, &bytesRead, nullptr);
-    CloseHandle(file);
-    if (!readOk || bytesRead == 0) return {};
-    std::string value(buffer, bytesRead);
-    while (!value.empty() && (value.back() == '\r' || value.back() == '\n' || value.back() == ' ' || value.back() == '\t')) value.pop_back();
-    while (!value.empty() && (value.front() == ' ' || value.front() == '\t')) value.erase(value.begin());
-    return value;
-}
-
 constexpr size_t kVideoCaptureSlots = 3;
 constexpr double gDisplayRefreshRateHz = 72.0;
 constexpr double DisplayFrameIntervalSeconds() { return 1.0 / gDisplayRefreshRateHz; }
@@ -543,7 +521,6 @@ public:
         properties->SetStringProperty(container, vr::Prop_RegisteredDeviceType_String, "phonevr/phonevr_hmd");
         properties->SetBoolProperty(container, vr::Prop_HasDisplayComponent_Bool, true);
         properties->SetBoolProperty(container, vr::Prop_DeviceIsWireless_Bool, true);
-        UpdateAudioEndpointProperties(true);
         properties->SetFloatProperty(container, vr::Prop_UserIpdMeters_Float, 0.064f);
         properties->SetFloatProperty(container, vr::Prop_DisplayFrequency_Float,
                                      static_cast<float>(gDisplayRefreshRateHz));
@@ -683,7 +660,6 @@ public:
     }
 
     void RunFrame() {
-        UpdateAudioEndpointProperties(false);
         // Intentionally do not submit pose here. OpenVR's RunFrame cadence is
         // controlled by vrserver. The dedicated publisher submits every fresh
         // UDP generation immediately and records this callback cadence only as
@@ -720,34 +696,6 @@ public:
     }
 
 private:
-    void UpdateAudioEndpointProperties(bool force) {
-        const uint64_t now = MonotonicNowNs();
-        if (!force && now < m_nextAudioEndpointCheckNs) return;
-        m_nextAudioEndpointCheckNs = now + 1000000000ULL;
-        const std::string playbackId = ReadPhoneVRAudioEndpointFile(L"audio-render-endpoint.txt");
-        const std::string recordingId = ReadPhoneVRAudioEndpointFile(L"audio-record-endpoint.txt");
-        if (!force && playbackId == m_audioPlaybackEndpointId && recordingId == m_audioRecordingEndpointId) return;
-        const uint32_t objectId = m_objectId.load(std::memory_order_acquire);
-        auto* properties = vr::VRProperties();
-        if (objectId == vr::k_unTrackedDeviceIndexInvalid || !properties) return;
-        const auto container = properties->TrackedDeviceToPropertyContainer(objectId);
-        const auto playbackResult = properties->SetStringProperty(
-            container, vr::Prop_Audio_DefaultPlaybackDeviceId_String, playbackId.c_str());
-        const auto recordingResult = properties->SetStringProperty(
-            container, vr::Prop_Audio_DefaultRecordingDeviceId_String, recordingId.c_str());
-        if (playbackResult == vr::TrackedProp_Success) m_audioPlaybackEndpointId = playbackId;
-        if (recordingResult == vr::TrackedProp_Success) m_audioRecordingEndpointId = recordingId;
-        if (vr::VRDriverLog()) {
-            char line[320]{};
-            std::snprintf(line, sizeof(line),
-                "PhoneVR: audio endpoint properties refreshed playback=%s recording=%s (results=%d/%d)",
-                playbackId.empty() ? "unset" : "set",
-                recordingId.empty() ? "unset" : "set",
-                static_cast<int>(playbackResult), static_cast<int>(recordingResult));
-            vr::VRDriverLog()->Log(line);
-        }
-    }
-
     void PosePublisherLoop() {
         (void)SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL);
         uint64_t observedGeneration = 0;
@@ -818,9 +766,6 @@ private:
     }
 
     std::atomic<uint32_t> m_objectId{vr::k_unTrackedDeviceIndexInvalid};
-    std::string m_audioPlaybackEndpointId;
-    std::string m_audioRecordingEndpointId;
-    uint64_t m_nextAudioEndpointCheckNs = 0;
     std::atomic<bool> m_loggedGetComponent{false};
     PoseReceiver m_receiver;
     HmdDisplay m_display;
@@ -2080,10 +2025,12 @@ public:
             nowNs >= state.receivedAtNs && nowNs - state.receivedAtNs <= 500000000ULL;
         const bool trackingValid = controllerFresh &&
             hmdPose.deviceIsConnected && hmdPose.poseIsValid;
-        const auto touchpad = DaydreamTouchpadToOpenVR(state.touchX, state.touchY, state.touching);
+        // Only fresh BLE snapshots may drive SteamVR inputs. The wider connected
+        // timeout is for device-presence reporting, not for retaining stale axes.
+        const bool inputTouching = controllerFresh && state.touching;
+        const auto touchpad = DaydreamTouchpadToOpenVR(state.touchX, state.touchY, inputTouching);
         const double x = touchpad[0];
         const double y = touchpad[1];
-        const bool inputTouching = connected && state.touching;
         if (inputTouching && (m_lastTouchLogNs == 0 || nowNs - m_lastTouchLogNs >= 1000000000ULL)) {
             if (vr::VRDriverLog()) {
                 char line[256]{};
@@ -2103,8 +2050,34 @@ public:
             m_lastTouchingLogged = false;
         }
         DaydreamPoseOutput modeledPose{};
-        // App is a normal holdable VRChat menu input. Recenter is kept on the
-        // separate Home button so holding App can open the VRChat Action Menu.
+        // App short press opens the VRChat Quick Menu. A long press is reserved
+        // for controller yaw recenter and is consumed before SteamVR sees a menu pulse.
+        const DaydreamButtonGestureResult appGesture =
+            m_appGesture.Update(controllerFresh, state.app, nowNs);
+        if (appGesture.pressedEdge && vr::VRDriverLog()) {
+            vr::VRDriverLog()->Log(m_isLeft
+                ? "PhoneVR: left Daydream App button press received"
+                : "PhoneVR: right Daydream App button press received");
+        }
+        if (appGesture.longPressTriggered) {
+            m_pendingRecenter = true;
+            if (vr::VRDriverLog()) {
+                vr::VRDriverLog()->Log(m_isLeft
+                    ? "PhoneVR: left Daydream App long-press recognized; yaw recenter queued"
+                    : "PhoneVR: right Daydream App long-press recognized; yaw recenter queued");
+            }
+        }
+        if (appGesture.shortPressTriggered) {
+            m_menuPulseUntilNs = nowNs + kButtonPulseNs;
+        }
+        if (appGesture.releasedEdge && appGesture.suppressMenuPulse && vr::VRDriverLog()) {
+            vr::VRDriverLog()->Log(m_isLeft
+                ? "PhoneVR: left Daydream App long-press released; menu pulse suppressed"
+                : "PhoneVR: right Daydream App long-press released; menu pulse suppressed");
+        }
+
+        // Home remains a short-press SteamVR System button. It no longer owns
+        // recentering, so App has one consistent long-press reset gesture.
         const DaydreamButtonGestureResult homeGesture =
             m_homeGesture.Update(controllerFresh, state.home, nowNs);
         if (homeGesture.pressedEdge && vr::VRDriverLog()) {
@@ -2112,17 +2085,8 @@ public:
                 ? "PhoneVR: left Daydream Home button press received"
                 : "PhoneVR: right Daydream Home button press received");
         }
-        if (homeGesture.longPressTriggered) {
-            m_pendingRecenter = true;
-            if (vr::VRDriverLog()) {
-                char line[192]{};
-                std::snprintf(line, sizeof(line), "PhoneVR: %s Daydream Home long-press recognized; yaw recenter queued",
-                              m_isLeft ? "left" : "right");
-                vr::VRDriverLog()->Log(line);
-            }
-        }
         if (homeGesture.shortPressTriggered) {
-            m_systemPulseUntilNs = nowNs + kSystemButtonPulseNs;
+            m_systemPulseUntilNs = nowNs + kButtonPulseNs;
         }
         if (homeGesture.releasedEdge && homeGesture.suppressMenuPulse) {
             if (vr::VRDriverLog()) {
@@ -2154,15 +2118,16 @@ public:
         }
         (void)input->UpdateScalarComponent(m_joystickX, static_cast<float>(x), 0.0);
         (void)input->UpdateScalarComponent(m_joystickY, static_cast<float>(y), 0.0);
-        (void)input->UpdateBooleanComponent(m_joystickTouch, connected && state.touching, 0.0);
-        (void)input->UpdateBooleanComponent(m_joystickClick, connected && state.click, 0.0);
-        (void)input->UpdateBooleanComponent(m_triggerClick, connected && state.click, 0.0);
-        (void)input->UpdateScalarComponent(m_triggerValue, connected && state.click ? 1.0f : 0.0f, 0.0);
-        (void)input->UpdateBooleanComponent(m_menuClick, connected && state.app, 0.0);
+        (void)input->UpdateBooleanComponent(m_joystickTouch, inputTouching, 0.0);
+        (void)input->UpdateBooleanComponent(m_joystickClick, controllerFresh && state.click, 0.0);
+        (void)input->UpdateBooleanComponent(m_triggerClick, controllerFresh && state.click, 0.0);
+        (void)input->UpdateScalarComponent(m_triggerValue, controllerFresh && state.click ? 1.0f : 0.0f, 0.0);
+        (void)input->UpdateBooleanComponent(m_menuClick,
+            controllerFresh && nowNs < m_menuPulseUntilNs, 0.0);
         (void)input->UpdateBooleanComponent(m_systemClick,
-            connected && nowNs < m_systemPulseUntilNs, 0.0);
-        (void)input->UpdateBooleanComponent(m_volumeUpClick, connected && state.volumeUp, 0.0);
-        (void)input->UpdateBooleanComponent(m_volumeDownClick, connected && state.volumeDown, 0.0);
+            controllerFresh && nowNs < m_systemPulseUntilNs, 0.0);
+        (void)input->UpdateBooleanComponent(m_volumeUpClick, controllerFresh && state.volumeUp, 0.0);
+        (void)input->UpdateBooleanComponent(m_volumeDownClick, controllerFresh && state.volumeDown, 0.0);
 
         vr::DriverPose_t pose = MakeUntrackedPose();
         pose.deviceIsConnected = connected;
@@ -2194,7 +2159,7 @@ public:
     }
 
 private:
-    static constexpr uint64_t kSystemButtonPulseNs = 140000000ULL;
+    static constexpr uint64_t kButtonPulseNs = 140000000ULL;
 
     static vr::DriverPose_t MakeUntrackedPose() {
         vr::DriverPose_t pose{};
@@ -2212,8 +2177,10 @@ private:
 
     bool m_isLeft = false;
     DaydreamArmModel m_armModel;
+    DaydreamButtonGesture m_appGesture;
     DaydreamButtonGesture m_homeGesture;
     bool m_pendingRecenter = false;
+    uint64_t m_menuPulseUntilNs = 0;
     uint64_t m_systemPulseUntilNs = 0;
     std::atomic<uint32_t> m_objectId{vr::k_unTrackedDeviceIndexInvalid};
     mutable std::mutex m_poseMutex;

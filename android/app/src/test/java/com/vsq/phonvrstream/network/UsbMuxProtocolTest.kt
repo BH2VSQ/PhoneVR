@@ -27,15 +27,9 @@ class UsbMuxProtocolTest {
         assertEquals(1, decoded.sequence)
     }
 
-    @Test
-    fun audioChannelsMatchWindowsHost() {
-        listOf(UsbMuxProtocol.CHANNEL_AUDIO_DOWNLINK, UsbMuxProtocol.CHANNEL_AUDIO_UPLINK).forEach { channel ->
-            val header = UsbMuxProtocol.encodeHeader(channel, 1944, 7)
-            val decoded = UsbMuxProtocol.decodeHeader(header)
-            assertEquals(channel, decoded.channel)
-            assertEquals(1944, decoded.payloadLength)
-            assertEquals(7, decoded.sequence)
-        }
+    @Test(expected = IllegalArgumentException::class)
+    fun rejectsRemovedChannelFour() {
+        UsbMuxProtocol.encodeHeader(4, 1, 0)
     }
 
     @Test(expected = IllegalArgumentException::class)

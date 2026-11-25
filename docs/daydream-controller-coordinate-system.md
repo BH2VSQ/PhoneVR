@@ -23,7 +23,7 @@ These checks are deliberately independent of Euler-angle conversion. The runtime
 
 ## Startup and recenter
 
-Daydream Start Space is defined relative to the headset space when controller tracking starts. PhoneVR therefore preserves the raw quaternion on first connection. A user-triggered App/Home long-press applies an explicit alignment offset between the current controller orientation and the current HMD orientation. Startup no longer silently replaces the initial controller orientation with the HMD forward direction.
+Daydream Start Space is defined relative to the headset space when controller tracking starts. PhoneVR therefore preserves the raw quaternion on first connection. A user-triggered App long-press applies an explicit alignment offset between the current controller orientation and the current HMD orientation. Startup no longer silently replaces the initial controller orientation with the HMD forward direction.
 
 ## SteamVR controller models
 

@@ -11,7 +11,6 @@ Any incompatible change must increment the protocol version and update both impl
 | 48101 | TCP | Bidirectional | Pairing, session setup, heartbeat |
 | 48102 | UDP | Android -> Host | 3DoF head pose |
 | 48104 | UDP | Host -> Android | H.264 video transport |
-| 48110 | UDP | Bidirectional | 48 kHz PCM audio frames |
 
 The following ports are internal Windows loopback channels and are not part of
 the Android LAN protocol:
@@ -74,16 +73,6 @@ Every pose packet is exactly 36 bytes. All multibyte fields use big-endian byte 
 | 32 | 4 | Quaternion W | IEEE-754 `float32` |
 
 Quaternion values are relative to the recentered headset pose. The Android client remaps the sensor axes to the current display orientation before transmission. The Go receiver rejects malformed packets, non-finite quaternion components, and quaternion norms outside the accepted range.
-
-## Audio packet (PCM baseline)
-
-Host advertises `audioUplinkPort: 48110`, `audioSampleRate: 48000`, `audioFrameDurationMs: 20`, and capability `audio-pcm-s16le-48k-v1`. For USB AOA, the same audio payload is carried in multiplex channel `4` (Host to Android playback) and channel `5` (Android microphone to Host). Existing control, pose and video multiplex channel numbers remain unchanged.
-
-The audio datagram payload begins with a 24-byte little-endian header: `PVRA` magic, version `1`, direction (`1` Host to phone, `2` phone to Host), channels (`2` stereo playback, `1` mono microphone), format (`1` signed 16-bit little-endian PCM), `uint32` sequence, `uint64` sender-local timestamp in nanoseconds, `uint16` samples per channel (`960`), and `uint16` payload length. The payload is 3,840 bytes for stereo playback or 1,920 bytes for mono microphone audio. Each packet represents 20 ms at 48 kHz.
-
-For LAN, both directions use UDP port `48110` on the Host. Android uses one ephemeral local UDP socket for both sending microphone frames and receiving playback frames. Android sends an initial silent microphone-format frame so the Host can learn the client's UDP source port when microphone permission is denied. For USB, the packet payload is unchanged and only the outer AOA multiplex frame differs.
-
-This is a PCM transport baseline. It does not currently specify Opus, a jitter-buffer wire extension, or a system-wide Windows audio endpoint. Windows WASAPI capture and virtual microphone endpoint integration remain host-side work.
 
 ## Compatibility and security
 

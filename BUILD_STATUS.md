@@ -1,31 +1,35 @@
 # PhoneVR 0.5.35 build status
 
-## 0.5.35 user-selectable Windows audio routing
 
-- Add Windows MMDevice endpoint inventory for all playback/render and recording/capture endpoints, including disabled and unplugged devices. The Host audio dialog displays default and disabled states and permits selection by endpoint ID.
-- Keep the two directions independent. PC → Phone selects any playback endpoint as the WASAPI Loopback source. Phone microphone → PC selects a playback/render endpoint as the virtual-audio write target and a recording/capture endpoint for Windows applications to read.
-- Add explicit link-direction labels and routing guidance to **Menu → Audio & Microphone**. VAC and VB-CABLE name-based pairing are optional shortcuts; custom third-party virtual audio drivers are supported by manually selecting their render and capture endpoints.
-- Persist the three route IDs in `%LOCALAPPDATA%\PhoneVR\audio-routing.json`. Applying changes restarts only the standalone WASAPI helper, leaving Host networking, USB AOA, video and pose paths active.
-- Avoid accidental secondary virtual cable installation after a custom phone-microphone route has been selected. The optional VB-CABLE installer remains a fallback only for users who have not configured another route.
-- Detect a potential PC loopback / phone microphone feedback route and explain the signal directions in the UI. The bridge validates the selected endpoint flow before opening WASAPI.
-- Retain VAC/VB-CABLE automatic pairing for users who prefer it. No vendor-specific device is required for manual routing.
+## Current implementation status (0.5.35)
 
-### Validation
+- Audio streaming has been removed from the Android app, LAN protocol, USB AOA multiplex, Windows Host and current documentation. PhoneVR sends video, head pose and controller state only.
+- VRChat Global and One_Hand touchpad mappings now use the continuous two-axis `Move` action. App short press opens Quick Menu; App long press for 800 ms queues yaw recenter; Home short press remains System.
+- Controller pose remains in Daydream Start Space while HMD yaw drives only the arm-model torso frame. Stale BLE input (older than 500 ms) returns axes and buttons to neutral.
 
-- `cd windows-host && go test ./... -count=1`: passed, including new arbitrary endpoint, route persistence, flow and disabled-state tests.
+## This revision (0.5.35)
+
+- Remove PC-to-phone audio playback and phone-microphone uplink from LAN UDP, USB AOA, Android and Windows Host. The active product protocol carries video, head pose, controller snapshots and control messages only.
+- Remove Android microphone permissions and PCM stream workers, USB multiplex channels 4/5, Host UDP port 48110, audio capability negotiation and the superseded audio architecture/protocol sections.
+- Map both hands to VRChat `Move` in Global and One_Hand action sets. The default no longer binds `Move & Rotate`, eliminating the release-to-move landing-marker interaction from the one-hand mapping.
+- App short press generates a Menu click; App hold for 800 ms queues software yaw recenter and suppresses the menu click. Home short press remains System.
+- Keep controller orientation in Daydream Start Space while the HMD rotates. HMD yaw remains in the torso/arm-position model only.
+- Clear the touchpad axes and controller buttons when BLE input is stale by more than 500 ms. Keep the protocol's valid non-zero edge coordinates as contact.
+- Add tests for active edge contact, one-hand movement binding, App gesture behavior, Start Space orientation and removed USB channels.
+
+## 0.5.35 validation status
+
+- `cd windows-host && go test ./... -count=1`: passed.
 - `cd windows-host && go vet ./...`: passed.
-- `cd windows-host && GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build ./cmd/phonevr-host`: passed.
-- `cd windows-host && GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go test -c ./cmd/phonevr-host`: Windows test binary compiled.
+- `cd windows-host && go test -race ./internal/usbmux ./internal/protocol ./internal/encoder ./internal/aoa -count=1`: passed.
+- `GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build ./cmd/phonevr-host`: passed.
+- `GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go test -c ./cmd/phonevr-host`: passed.
+- `python3 -m unittest discover -v -s tools/release -p 'test_*.py'`: passed, 72 tests.
+- SteamVR pose-model standalone C++ tests compiled and passed with `-std=c++17 -Wall -Wextra -Werror -pedantic`.
 - `git diff --check`: passed.
-- Native `PhoneVRAudioBridge.exe` MSVC/CMake build and physical Windows audio endpoint testing remain unverified in this Linux environment because Windows SDK/MSVC and Windows MMDevice APIs are unavailable here.
-
-## Current audio route behavior
-
-- PC playback to phone: WASAPI loopback from the Windows playback endpoint selected by the user, or the Windows console default when left on automatic.
-- Phone microphone to Windows applications: Android AudioRecord to Host UDP `48110` / USB AOA channel 5, then WASAPI renders PCM into the user-selected virtual-audio playback endpoint. SteamVR/Windows applications receive the paired capture endpoint selected by the user.
-- VAC and VB-CABLE are automatically paired when their known naming conventions are found. Any third-party virtual audio driver can be configured manually with its playback/render and recording/capture endpoint IDs.
-- The Host does not rename third-party recording endpoints to `PhoneVR Microphone`; original vendor endpoint names remain visible.
-- The Host audio path remains independent of video UDP `48104`, pose UDP `48102`, control TCP `48101` and AOA video stream.
+- Android Gradle unit tests could not start because the Gradle 9.6.1 distribution download failed with `UnknownHostException: services.gradle.org`; no Android SDK is configured in this environment.
+- Full `go test -race ./...` exceeded the execution timeout; targeted race tests listed above passed.
+- Windows MSVC SteamVR driver compilation and physical SteamVR/VRChat/Android play tests require a Windows runtime and physical Daydream hardware and remain unverified.
 
 ## Previous build status: 0.5.25
 
@@ -55,7 +59,6 @@
 - Apply profile-specific H.264 target bitrates: 5, 8, 13 and 18 Mbps. Raise Android frame reassembly capacity to 8 MiB.
 - Add the Host Stream Resolution dialog and persisted `%APPDATA%\PhoneVRStream\video-profile.json` setting. Host and SteamVR driver must both be restarted after applying a new profile.
 - Android metadata is `versionName 0.5.24`, `versionCode 59`; Host, driver and AOA descriptor metadata are synchronized to `0.5.24`.
-- Audio status: no end-to-end capture, playback, virtual endpoint or audio network transport is included. `docs/audio-streaming-architecture.md` specifies the next implementation stages.
 
 ## 0.5.24 validation status
 
@@ -66,8 +69,7 @@
 - `python3 -m unittest discover -s tools/release -p 'test_*.py'`: passed, 61 tests.
 - `git diff --check`: passed.
 - SteamVR native MSVC driver build and Android Gradle packaging were not run because the Windows SDK/WDK and Android SDK build environments are unavailable here.
-- No physical phone, actual SteamVR runtime, negotiated high-resolution decode, Windows audio endpoint, or end-to-end audio test has been performed for this revision.
-- Audio is explicitly not implemented in 0.5.24. The architecture and virtual-endpoint requirements are documented in `docs/audio-streaming-architecture.md`.
+- No physical phone or actual SteamVR runtime test has been performed for this revision.
 
 # PhoneVR 0.5.23 build status
 

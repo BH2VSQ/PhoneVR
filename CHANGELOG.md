@@ -1,3 +1,8 @@
+## 2.0.0 - Automated release
+
+- Android versionName and versionCode bumped by the manual release workflow.
+- Windows Host version metadata updated from the repository VERSION file.
+
 ## 1.0.0 - Automated release
 
 - Android versionName and versionCode bumped by the manual release workflow.

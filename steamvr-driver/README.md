@@ -1,4 +1,4 @@
-# PhoneVR SteamVR Driver — 1.0.0 (Synchronized stream profile handoff)
+# PhoneVR SteamVR Driver — 2.0.0 (Synchronized stream profile handoff)
 
 Windows x64 OpenVR server driver foundation for the PhoneVR wireless HMD.
 

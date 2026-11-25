@@ -1529,7 +1529,7 @@ class NetworkClient(
         private const val MAX_VIDEO_REORDER_GRACE_MS = 250
         const val DISCOVERY_PORT = 48100
         private const val PROTOCOL_VERSION = 1
-        private const val CLIENT_VERSION = "PhoneVRStream-1.0.0"
+        private const val CLIENT_VERSION = "PhoneVRStream-2.0.0"
         private const val CONTROLLER_SEND_INTERVAL_NS = 20_000_000L
         private const val CONTROLLER_IDLE_SEND_INTERVAL_NS = 100_000_000L
         private const val DISCOVERY_REQUEST = "PHONEVR_DISCOVER_V1"

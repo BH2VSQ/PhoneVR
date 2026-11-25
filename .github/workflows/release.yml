@@ -12,6 +12,11 @@ on:
           - minor
           - major
         default: patch
+      release_tag:
+        description: Existing tag to rebuild and publish without creating a new version
+        required: false
+        type: string
+        default: ""
 
 permissions:
   contents: write
@@ -25,10 +30,10 @@ jobs:
     name: Bump version and create tag
     runs-on: ubuntu-latest
     outputs:
-      version: ${{ steps.version.outputs.version }}
-      version_code: ${{ steps.version.outputs.version_code }}
-      tag: ${{ steps.version.outputs.tag }}
-      release_sha: ${{ steps.commit.outputs.release_sha }}
+      version: ${{ steps.version.outputs.version || steps.existing.outputs.version }}
+      version_code: ${{ steps.version.outputs.version_code || steps.existing.outputs.version_code }}
+      tag: ${{ steps.version.outputs.tag || steps.existing.outputs.tag }}
+      release_sha: ${{ steps.commit.outputs.release_sha || steps.existing.outputs.release_sha }}
     steps:
       - name: Checkout full history
         uses: actions/checkout@v7
@@ -42,9 +47,12 @@ jobs:
 
       - name: Increment version metadata
         id: version
+        if: ${{ inputs.release_tag == '' }}
+        env:
+          VERSION_BUMP: ${{ inputs.bump }}
         shell: bash
         run: |
-          result="$(python tools/release/bump_version.py "${{ inputs.bump }}")"
+          result="$(python tools/release/bump_version.py "$VERSION_BUMP")"
           version="${result%%$'\t'*}"
           version_code="${result#*$'\t'}"
           tag="v${version}"
@@ -53,8 +61,41 @@ jobs:
           echo "tag=${tag}" >> "$GITHUB_OUTPUT"
           echo "Release version: ${version} (Android versionCode ${version_code})"
 
+      - name: Reuse existing release tag
+        id: existing
+        if: ${{ inputs.release_tag != '' }}
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        shell: bash
+        run: |
+          tag="$RELEASE_TAG"
+          if [[ ! "$tag" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "Invalid release tag: $tag" >&2
+            exit 1
+          fi
+          if ! git rev-parse --verify --quiet "refs/tags/${tag}^{commit}" >/dev/null; then
+            echo "Release tag does not exist in this repository: $tag" >&2
+            exit 1
+          fi
+          version="$(git show "${tag}:VERSION" | tr -d '\r\n')"
+          if [[ "v${version}" != "$tag" ]]; then
+            echo "Tag and VERSION file do not match: $tag / $version" >&2
+            exit 1
+          fi
+          version_code="$(git show "${tag}:android/app/build.gradle.kts" | sed -nE 's/^[[:space:]]*versionCode[[:space:]]*=[[:space:]]*([0-9]+).*$/\1/p' | head -n1)"
+          if [[ ! "$version_code" =~ ^[0-9]+$ ]]; then
+            echo "Could not read Android versionCode from $tag" >&2
+            exit 1
+          fi
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "version_code=${version_code}" >> "$GITHUB_OUTPUT"
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "release_sha=$(git rev-list -n1 "$tag")" >> "$GITHUB_OUTPUT"
+          echo "Reusing existing release tag: $tag (Android versionCode $version_code)"
+
       - name: Commit version bump and push release tag
         id: commit
+        if: ${{ inputs.release_tag == '' }}
         shell: bash
         run: |
           git config user.name "github-actions[bot]"
@@ -171,6 +212,12 @@ jobs:
       - windows-release
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout release tag for GitHub CLI repository context
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.prepare-release.outputs.tag }}
+          fetch-depth: 0
+
       - name: Download Android artifact
         uses: actions/download-artifact@v8
         with:
@@ -224,7 +271,7 @@ jobs:
           - SteamVR OpenVR driver: embedded in both Windows Host executables
           - Network protocol: v1
 
-          Android APK signing is enabled when the repository has all four secrets: `PHONEVR_RELEASE_KEYSTORE_BASE64`, `PHONEVR_RELEASE_STORE_PASSWORD`, `PHONEVR_RELEASE_KEY_ALIAS`, and `PHONEVR_RELEASE_KEY_PASSWORD`. Without them, the workflow publishes a clearly named unsigned APK that must be signed before installation.
+          Android APK signing is enabled when all four repository secrets are configured: PHONEVR_RELEASE_KEYSTORE_BASE64, PHONEVR_RELEASE_STORE_PASSWORD, PHONEVR_RELEASE_KEY_ALIAS, and PHONEVR_RELEASE_KEY_PASSWORD. Without them, the workflow publishes a clearly named unsigned APK that must be signed before installation.
 
           See CHANGELOG.md in the tagged source for project changes.
           EOF
@@ -238,10 +285,10 @@ jobs:
         run: |
           tag="${{ needs.prepare-release.outputs.tag }}"
           title="PhoneVRStream ${{ needs.prepare-release.outputs.version }}"
-          if gh release view "$tag" >/dev/null 2>&1; then
-            gh release edit "$tag" --title "$title" --notes-file release-notes.md
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release edit "$tag" --repo "$GITHUB_REPOSITORY" --title "$title" --notes-file release-notes.md
           else
-            gh release create "$tag" --title "$title" --notes-file release-notes.md
+            gh release create "$tag" --repo "$GITHUB_REPOSITORY" --title "$title" --notes-file release-notes.md
           fi
-          gh release upload "$tag" release-assets/PhoneVRStream-Android-*-release*.apk \
+          gh release upload "$tag" --repo "$GITHUB_REPOSITORY" release-assets/PhoneVRStream-Android-*-release*.apk \
             release-assets/PhoneVRHost-Windows-x64-*.zip release-assets/SHA256SUMS.txt --clobber
